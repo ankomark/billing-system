@@ -1,0 +1,63 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: wifi_billing
+      POSTGRES_USER: wifi_user
+      POSTGRES_PASSWORD: wifi_pass
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+  web:
+    build: .
+    command: python manage.py runserver 0.0.0.0:8000
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+      - redis
+
+  worker:
+    build: .
+    command: celery -A backend worker -l info
+    env_file:
+      - .env
+    depends_on:
+      - web
+      - redis
+      - postgres
+
+  beat:
+    build: .
+    command: celery -A backend beat -l info
+    env_file:
+      - .env
+    depends_on:
+      - web
+      - redis
+      - postgres
+
+  flower:
+    build: .
+    command: celery -A backend flower --address=0.0.0.0 --port=5555 --basic_auth=admin:STRONG_PASSWORD
+    env_file:
+      - .env
+    ports:
+      - "5555:5555"
+    depends_on:
+      - redis
+      - worker
+
+volumes:
+  pgdata:
