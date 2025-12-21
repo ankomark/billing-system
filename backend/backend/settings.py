@@ -1,6 +1,7 @@
 import os
-from datetime import timedelta
 from pathlib import Path
+from dotenv import load_dotenv
+from datetime import timedelta
 from celery.schedules import crontab
 
 # =====================================================
@@ -8,6 +9,9 @@ from celery.schedules import crontab
 # =====================================================
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# 🔴 FORCE load .env from backend directory
+load_dotenv(BASE_DIR / ".env")
 
 SECRET_KEY = "django-insecure-change-this-in-production"
 
@@ -93,13 +97,14 @@ TEMPLATES = [
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
-        "NAME": os.getenv("POSTGRES_DB"),
-        "USER": os.getenv("POSTGRES_USER"),
-        "PASSWORD": os.getenv("POSTGRES_PASSWORD"),
-        "HOST": os.getenv("POSTGRES_HOST"),
+        "NAME": os.getenv("POSTGRES_DB", "wifi_billing"),
+        "USER": os.getenv("POSTGRES_USER", "wifi_user"),
+        "PASSWORD": os.getenv("POSTGRES_PASSWORD", "wifi_pass"),
+        "HOST": os.getenv("POSTGRES_HOST", "127.0.0.1"),
         "PORT": os.getenv("POSTGRES_PORT", "5432"),
     }
 }
+
 
 
 # =====================================================
@@ -162,8 +167,9 @@ SIMPLE_JWT = {
 # Broker (Redis)
 CELERY_BROKER_URL = os.getenv(
     "CELERY_BROKER_URL",
-    "redis://localhost:6379/0"
+    "redis://127.0.0.1:6379/0"
 )
+
 
 # Serialization
 CELERY_ACCEPT_CONTENT = ["json"]

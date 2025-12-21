@@ -1,7 +1,7 @@
+import logging
 from celery import shared_task
 from django.utils import timezone
 from datetime import timedelta
-import logging
 
 from billing.models import Subscription, ExpiryReminderLog
 from billing.tasks.notification_tasks import notify_customer_task
@@ -9,21 +9,37 @@ from billing.tasks.notification_tasks import notify_customer_task
 logger = logging.getLogger(__name__)
 
 
-@shared_task
-def send_expiry_reminders():
+@shared_task(
+    bind=True,
+    autoretry_for=(Exception,),
+    retry_backoff=60,
+    retry_kwargs={"max_retries": 3},
+    retry_jitter=True,
+)
+def send_expiry_reminders(self):
+    """
+    Send expiry reminders:
+    - 3 days before
+    - 1 day before
+    Ensures no duplicate reminders.
+    """
+
     today = timezone.now().date()
-
-    rules = [
-        ("3_days", today + timedelta(days=3)),
-        ("1_day", today + timedelta(days=1)),
-    ]
-
     sent = 0
 
-    for reminder_type, target_date in rules:
-        subs = Subscription.objects.select_related("customer").filter(
-            status="active",
-            expiry_date__date=target_date,
+    rules = {
+        "3_days": today + timedelta(days=3),
+        "1_day": today + timedelta(days=1),
+    }
+
+    for reminder_type, target_date in rules.items():
+        subs = (
+            Subscription.objects
+            .select_related("customer")
+            .filter(
+                status="active",
+                expiry_date__date=target_date,
+            )
         )
 
         for sub in subs:
@@ -49,5 +65,5 @@ def send_expiry_reminders():
 
             sent += 1
 
-    logger.info(f"[reminders] Sent {sent} reminders")
+    logger.info(f"[reminders] Sent {sent} expiry reminders")
     return sent

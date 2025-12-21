@@ -23,7 +23,7 @@ import HotspotStatus from "./pages/hotspot/HotspotStatus";
 import PPPoESessions from "./pages/admin/PPPoESessions";
 import Routers from "./pages/admin/Routers";
 import FailoverLogs from "./pages/admin/FailoverLogs"; // ✅ FIXED: removed "../"
-
+import AccessLookup from "./pages/admin/AccessLookup";
 function App() {
   return (
     <Routes>
@@ -68,6 +68,13 @@ function App() {
           </ProtectedRoute>
         }
       />
+      <Route 
+        path="/admin/access-lookup" 
+        element={
+          <ProtectedRoute allowedRoles={["admin", "superadmin"]}>
+        <AccessLookup />
+        </ProtectedRoute>} 
+        />
       <Route
         path="/admin/broadcast"
         element={

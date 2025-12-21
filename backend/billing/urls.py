@@ -4,8 +4,8 @@ from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import (TokenObtainPairView,TokenRefreshView)
 from .views import CustomerSuspendResumeView,HotspotStatusView,PppoeStatusView,PPPoEUsageView,AdminDisconnectPPPoEView,AdminUsageDailyView, AdminUsageAlertsView
 from billing.views import TestMpesaView, TestSmsView, TestWhatsappView,PPPoELiveStatusView,PPPoEControlView,AdminRouterListView, HotspotUsageDailyView
-from .views import ResendVoucherView,PPPoERenewView,SystemSettingsView,AdminPPPoESessionsView,CustomerReconnectPPPoEView,PPPoEUsageDailyView, PPPoEUsageMonthlyView
-from .views import UserProfileView,HotspotVoucherValidateView,PPPoECustomerPortalView,AdminBroadcastView,AdminRouterHealthView, AdminFailoverLogsView,AdminMigrateCustomerView
+from .views import ResendVoucherView,PPPoERenewView,SystemSettingsView,AdminPPPoESessionsView,CustomerReconnectPPPoEView,PPPoEUsageDailyView, PPPoEUsageMonthlyView,AdminDeactivateAccessView
+from .views import UserProfileView,HotspotVoucherValidateView,PPPoECustomerPortalView,AdminBroadcastView,AdminRouterHealthView, AdminFailoverLogsView,AdminMigrateCustomerView, AdminAccessLookupView
 router = DefaultRouter()
 router.register("customers", CustomerViewSet, basename="customer")
 router.register("packages", PackageViewSet, basename="package")
@@ -59,6 +59,8 @@ urlpatterns = [
     path("api/hotspot/usage/daily/", HotspotUsageDailyView.as_view()),
     path("api/admin/usage/daily/", AdminUsageDailyView.as_view()),
     path("api/admin/usage/Alerts/", AdminUsageAlertsView.as_view()),
+    path("admin/access-lookup/",AdminAccessLookupView.as_view(),name="admin-access-lookup"),
+    path("admin/access-deactivate/",AdminDeactivateAccessView.as_view(),name="admin-access-deactivate"),
 
     
 

@@ -1,11 +1,7 @@
 import logging
 from celery import shared_task
 
-from billing.notifications import (
-    send_sms,
-    send_whatsapp,
-    notify_customer,
-)
+from billing.notifications import send_sms, send_whatsapp
 
 logger = logging.getLogger(__name__)
 
@@ -53,21 +49,16 @@ def send_whatsapp_task(self, phone: str, message: str) -> bool:
 
 
 # =====================================================
-# UNIFIED NOTIFICATION TASK
+# FAN-OUT NOTIFICATION TASK (NO RETRIES)
 # =====================================================
 
-@shared_task(
-    bind=True,
-    autoretry_for=(Exception,),
-    retry_backoff=20,
-    retry_kwargs={"max_retries": 3},
-    retry_jitter=True,
-)
-def notify_customer_task(self, phone: str, message: str) -> bool:
+@shared_task
+def notify_customer_task(phone: str, message: str) -> None:
     """
-    Sends SMS + WhatsApp in background.
-    One channel failing does not stop the other.
+    Fan-out notification task.
+    Each channel handles its own retries.
     """
-    notify_customer(phone, message)
-    logger.info(f"[notify_customer_task] Notification sent to {phone}")
-    return True
+    send_sms_task.delay(phone, message)
+    send_whatsapp_task.delay(phone, message)
+
+    logger.info(f"[notify_customer_task] Notification queued for {phone}")

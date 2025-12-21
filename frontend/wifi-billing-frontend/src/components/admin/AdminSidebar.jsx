@@ -11,7 +11,8 @@ import {
   LogOut,
   Activity,
   Router,
-  RefreshCw
+  RefreshCw,
+  Search 
 } from "lucide-react";
 
 export default function AdminSidebar() {
@@ -36,7 +37,8 @@ export default function AdminSidebar() {
         <NavItem to="/admin/broadcast" icon={MessageSquare} label="Broadcast" />
         <NavItem to="/admin/pppoe/sessions" icon={Activity} label="PPPoE Sessions"/>
         <NavItem to="/admin/routers" icon={Router} label="Routers" />
-         <NavItem to="/admin/failover-logs" icon={RefreshCw} label="Failover Logs" />
+        <NavItem to="/admin/failover-logs" icon={RefreshCw} label="Failover Logs" />
+        <NavItem to="/admin/access-lookup" icon={Search} label="Find customer" />
 
 
 

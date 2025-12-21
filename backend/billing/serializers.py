@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Customer, Package, Subscription,Invoice, Payment,MpesaTransaction, User,SystemSetting
+from .models import Customer, Package, Subscription,Invoice, Payment,MpesaTransaction, User,SystemSetting,Voucher
 
 
 
@@ -95,3 +95,9 @@ class BroadcastSerializer(serializers.Serializer):
         child=serializers.IntegerField(),
         required=False
     )
+
+class AccessLookupSerializer(serializers.Serializer):
+    type = serializers.CharField()
+    customer = serializers.DictField()
+    subscription = serializers.DictField()
+    voucher = serializers.DictField(allow_null=True)

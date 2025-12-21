@@ -88,6 +88,9 @@ class PaymentViewSet(viewsets.ModelViewSet):
 
         return Payment.objects.select_related("customer", "subscription")
 
+from billing.tasks.mpesa_tasks import initiate_stk_push_task
+
+
 class MpesaSTKPushView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -98,10 +101,9 @@ class MpesaSTKPushView(APIView):
         if not subscription_id or not phone_number:
             return Response(
                 {"detail": "subscription_id and phone_number are required"},
-                status=status.HTTP_400_BAD_REQUEST,
+                status=400,
             )
 
-        # 🔐 User can only pay for own subscription
         subscription = get_object_or_404(
             Subscription,
             id=subscription_id,
@@ -112,21 +114,16 @@ class MpesaSTKPushView(APIView):
         if not invoice:
             return Response(
                 {"detail": "No invoice found"},
-                status=status.HTTP_400_BAD_REQUEST,
+                status=400,
             )
 
-        # ⛔ Prevent duplicate STK pushes
         if invoice.payment_status in ("paid", "pending"):
             return Response(
-                {"detail": "Payment already initiated or completed"},
-                status=status.HTTP_400_BAD_REQUEST,
+                {"detail": "Payment already initiated"},
+                status=400,
             )
 
-        # Mark invoice pending BEFORE async call
-        invoice.payment_status = "pending"
-        invoice.save(update_fields=["payment_status"])
-
-        # 🚀 ASYNC STK PUSH
+        # 🚀 Schedule task ONLY
         initiate_stk_push_task.delay(invoice.id, phone_number)
 
         return Response(
@@ -134,8 +131,9 @@ class MpesaSTKPushView(APIView):
                 "detail": "STK Push scheduled",
                 "invoice_number": invoice.invoice_number,
             },
-            status=status.HTTP_202_ACCEPTED,
+            status=202,
         )
+
 
 class MpesaSTKCallbackView(APIView):
     permission_classes = [permissions.AllowAny]
@@ -1219,3 +1217,268 @@ class AdminUsageAlertsView(APIView):
                 })
 
         return Response(nearing_limit)
+
+class AdminAccessLookupView(APIView):
+    permission_classes = [IsAdminUser]
+
+    def get(self, request):
+        query = request.query_params.get("q")
+
+        if not query:
+            return Response(
+                {"detail": "Query parameter ?q= is required"},
+                status=400,
+            )
+
+        # --------------------------------------------------
+        # 1️⃣ Voucher lookup
+        # --------------------------------------------------
+        voucher = (
+            Voucher.objects
+            .select_related("subscription__customer", "subscription__package")
+            .filter(code=query)
+            .first()
+        )
+
+        if voucher:
+            sub = voucher.subscription
+            pkg = sub.package
+            cust = sub.customer
+
+            return Response({
+                "type": "voucher",
+                "customer": {
+                    "id": cust.id,
+                    "name": cust.full_name,
+                    "phone": cust.phone,
+                    "connection_type": cust.connection_type,
+                    "status": cust.status,
+                },
+                "subscription": {
+                    "id": sub.id,
+                    "package": pkg.name,
+                    "status": sub.status,
+                    "expires_at": sub.expiry_date,
+                    "duration": f"{pkg.duration_value} {pkg.duration_unit}",
+                },
+                "voucher": {
+                    "code": voucher.code,
+                    "created_at": voucher.created_at,
+                    "expires_at": voucher.expires_at,
+                    "is_active": voucher.is_active,
+                },
+            })
+
+        # --------------------------------------------------
+        # 2️⃣ M-Pesa receipt lookup (voucher by payment)
+        # --------------------------------------------------
+        payment = (
+            Payment.objects
+            .select_related("subscription__customer", "subscription__package")
+            .filter(reference=query)
+            .first()
+        )
+
+        if payment:
+            sub = payment.subscription
+            pkg = sub.package
+            cust = sub.customer
+
+            return Response({
+                "type": "mpesa",
+                "customer": {
+                    "id": cust.id,
+                    "name": cust.full_name,
+                    "phone": cust.phone,
+                    "connection_type": cust.connection_type,
+                    "status": cust.status,
+                },
+                "subscription": {
+                    "id": sub.id,
+                    "package": pkg.name,
+                    "status": sub.status,
+                    "expires_at": sub.expiry_date,
+                    "duration": f"{pkg.duration_value} {pkg.duration_unit}",
+                },
+                "voucher": None,
+            })
+
+        # --------------------------------------------------
+        # 3️⃣ Phone number lookup
+        # --------------------------------------------------
+        customer = Customer.objects.filter(phone=query).first()
+
+        if customer:
+            sub = (
+                customer.subscriptions
+                .select_related("package")
+                .order_by("-expiry_date")
+                .first()
+            )
+
+            if not sub:
+                return Response(
+                    {"detail": "Customer found but no subscription"},
+                    status=404,
+                )
+
+            pkg = sub.package
+            voucher = sub.vouchers.filter(is_active=True).first()
+
+            return Response({
+                "type": "phone",
+                "customer": {
+                    "id": customer.id,
+                    "name": customer.full_name,
+                    "phone": customer.phone,
+                    "connection_type": customer.connection_type,
+                    "status": customer.status,
+                },
+                "subscription": {
+                    "id": sub.id,
+                    "package": pkg.name,
+                    "status": sub.status,
+                    "expires_at": sub.expiry_date,
+                    "duration": f"{pkg.duration_value} {pkg.duration_unit}",
+                },
+                "voucher": (
+                    {
+                        "code": voucher.code,
+                        "expires_at": voucher.expires_at,
+                        "is_active": voucher.is_active,
+                    }
+                    if voucher else None
+                ),
+            })
+
+        return Response(
+            {"detail": "No access record found"},
+            status=404,
+        )
+class AdminDeactivateVoucherView(APIView):
+    permission_classes = [IsAdmin]
+
+    def post(self, request):
+        code = request.data.get("code")
+        reason = request.data.get("reason", "")
+
+        voucher = Voucher.objects.filter(code=code, is_active=True).first()
+        if not voucher:
+            return Response({"detail": "Voucher not found"}, status=404)
+
+        voucher.is_active = False
+        voucher.save(update_fields=["is_active"])
+
+        customer = voucher.subscription.customer
+        disable_customer_task.delay(customer.id)
+
+        return Response({"detail": "Voucher deactivated"})
+class AdminDeactivateAccessView(APIView):
+    permission_classes = [IsAdminUser]
+
+    def post(self, request):
+        subscription_id = request.data.get("subscription_id")
+        reason = request.data.get("reason", "Admin deactivation")
+
+        if not subscription_id:
+            return Response(
+                {"detail": "subscription_id is required"},
+                status=400,
+            )
+
+        try:
+            subscription = Subscription.objects.select_related(
+                "customer"
+            ).get(id=subscription_id)
+        except Subscription.DoesNotExist:
+            return Response(
+                {"detail": "Subscription not found"},
+                status=404,
+            )
+
+        customer = subscription.customer
+
+        with transaction.atomic():
+            # 1️⃣ Expire subscription
+            subscription.status = "expired"
+            subscription.expiry_date = timezone.now()
+            subscription.save(update_fields=["status", "expiry_date"])
+
+            # 2️⃣ Deactivate all vouchers linked to this subscription
+            Voucher.objects.filter(
+                subscription=subscription,
+                is_active=True,
+            ).update(is_active=False)
+
+            # 3️⃣ Update customer status
+            customer.status = "expired"
+            customer.save(update_fields=["status"])
+
+            # 4️⃣ Audit log
+            AccessAuditLog.objects.create(
+                customer=customer,
+                subscription=subscription,
+                action="deactivate",
+                reason=reason,
+            )
+
+        # 5️⃣ Disable router access (async)
+        disable_customer_task.delay(customer.id)
+
+        return Response(
+            {
+                "detail": "Access deactivated successfully",
+                "customer": customer.full_name,
+                "subscription_id": subscription.id,
+            },
+            status=200,
+        )
+class HotspotReconnectView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        mac = request.data.get("mac")
+
+        if not mac:
+            return Response(
+                {"detail": "MAC address required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        customer = Customer.objects.filter(
+            hotspot_username=mac,
+            status="active",
+        ).first()
+
+        if not customer:
+            return Response(
+                {"status": "denied", "reason": "not_registered"},
+                status=403,
+            )
+
+        subscription = (
+            customer.subscriptions
+            .filter(status="active")
+            .order_by("-expiry_date")
+            .first()
+        )
+
+        if not subscription:
+            return Response(
+                {"status": "denied", "reason": "no_subscription"},
+                status=403,
+            )
+
+        if subscription.expiry_date <= timezone.now():
+            return Response(
+                {"status": "expired"},
+                status=403,
+            )
+
+        # ✅ Re-enable access (ASYNC)
+        enable_customer_task.delay(customer.id)
+
+        return Response({
+            "status": "allowed",
+            "expires_at": subscription.expiry_date,
+        })

@@ -55,3 +55,17 @@ api.interceptors.response.use(
 );
 
 export default api;
+/* ===============================
+   ACCESS LOOKUP
+================================ */
+
+export const accessLookup = (query) =>
+  api.get(`/admin/access-lookup/`, {
+    params: { query },
+  });
+
+export const deactivateVoucher = (voucherId) =>
+  api.post(`/admin/vouchers/${voucherId}/deactivate/`);
+
+export const revokeSubscription = (subscriptionId) =>
+  api.post(`/admin/subscriptions/${subscriptionId}/revoke/`);

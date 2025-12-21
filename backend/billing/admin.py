@@ -48,12 +48,20 @@ class CustomerAdmin(admin.ModelAdmin):
 class PackageAdmin(admin.ModelAdmin):
     list_display = (
         "name",
+        "price",
         "download_speed",
         "upload_speed",
-        "price",
-        "duration_days",
+        "duration_display",
+        "is_hotspot",
     )
+
+    list_filter = ("duration_unit", "is_hotspot")
     search_fields = ("name",)
+
+    def duration_display(self, obj):
+        return f"{obj.duration_value} {obj.duration_unit}"
+
+    duration_display.short_description = "Duration"
 
 
 @admin.register(Subscription)

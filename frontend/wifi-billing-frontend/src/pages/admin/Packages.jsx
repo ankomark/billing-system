@@ -48,40 +48,47 @@ export default function Packages() {
           </thead>
 
           <tbody>
-            {packages.map((p) => (
-              <tr key={p.id}>
-                <td className="p-2 border">{p.name}</td>
-                <td className="p-2 border">
-                  {p.download_speed}/{p.upload_speed} Mbps
-                </td>
-                <td className="p-2 border">{p.duration_days} days</td>
-                <td className="p-2 border">KES {p.price}</td>
-                <td className="p-2 border">
-                  <button
-                    onClick={() => navigate(`/admin/packages/${p.id}`)}
-                    className="text-blue-600 mr-3"
-                  >
-                    Edit
-                  </button>
+  {packages.map((p) => (
+    <tr key={p.id}>
+      <td className="p-2 border">{p.name}</td>
 
-                  <button
-                    onClick={() => handleDelete(p.id)}
-                    className="text-red-600"
-                  >
-                    Delete
-                  </button>
-                </td>
-              </tr>
-            ))}
+      <td className="p-2 border">
+        {p.download_speed}/{p.upload_speed} Mbps
+      </td>
 
-            {packages.length === 0 && (
-              <tr>
-                <td colSpan="5" className="text-center p-4 text-gray-500">
-                  No packages found
-                </td>
-              </tr>
-            )}
-          </tbody>
+      <td className="p-2 border">
+        {p.duration_value} {p.duration_unit}
+      </td>
+
+      <td className="p-2 border">KES {p.price}</td>
+
+      <td className="p-2 border">
+        <button
+          onClick={() => navigate(`/admin/packages/${p.id}`)}
+          className="text-blue-600 mr-3"
+        >
+          Edit
+        </button>
+
+        <button
+          onClick={() => handleDelete(p.id)}
+          className="text-red-600"
+        >
+          Delete
+        </button>
+      </td>
+    </tr>
+  ))}
+
+  {packages.length === 0 && (
+    <tr>
+      <td colSpan="5" className="text-center p-4 text-gray-500">
+        No packages found
+      </td>
+    </tr>
+  )}
+</tbody>
+
         </table>
       </div>
     </AdminLayout>

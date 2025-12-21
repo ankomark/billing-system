@@ -2,7 +2,7 @@ from django.db import models, transaction
 from django.utils import timezone
 from django.contrib.auth.models import AbstractUser
 from django.core.exceptions import ValidationError
-
+from dateutil.relativedelta import relativedelta
 import secrets
 import string
 
@@ -157,17 +157,69 @@ class RouterFailoverLog(models.Model):
 # =====================================================
 
 class Package(models.Model):
+    DURATION_UNITS = [
+        ("minutes", "Minutes"),
+        ("hours", "Hours"),
+        ("days", "Days"),
+        ("weeks", "Weeks"),
+        ("months", "Months"),
+        ("years", "Years"),
+    ]
+
     name = models.CharField(max_length=100)
+
     download_speed = models.PositiveIntegerField(help_text="Mbps")
     upload_speed = models.PositiveIntegerField(help_text="Mbps")
-    duration_days = models.PositiveIntegerField()
+
     price = models.DecimalField(max_digits=10, decimal_places=2)
-    monthly_data_cap_gb = models.PositiveIntegerField(default=0)  # 0 = unlimited
+
+    duration_value = models.PositiveIntegerField(
+        help_text="Number of time units (e.g. 30, 12, 1)"
+    )
+    duration_unit = models.CharField(
+        max_length=10,
+        choices=DURATION_UNITS,
+        default="days",
+    )
+
+    monthly_data_cap_gb = models.PositiveIntegerField(
+        default=0,
+        help_text="0 = unlimited"
+    )
+
+    is_hotspot = models.BooleanField(
+        default=False,
+        help_text="Is this a hotspot-only package?"
+    )
+
+    def clean(self):
+        if self.duration_value <= 0:
+            raise ValidationError("Duration value must be greater than zero")
+
+    def calculate_expiry(self, start_date=None):
+        start = start_date or timezone.now()
+
+        if self.duration_unit == "minutes":
+            return start + timezone.timedelta(minutes=self.duration_value)
+        if self.duration_unit == "hours":
+            return start + timezone.timedelta(hours=self.duration_value)
+        if self.duration_unit == "days":
+            return start + timezone.timedelta(days=self.duration_value)
+        if self.duration_unit == "weeks":
+            return start + timezone.timedelta(weeks=self.duration_value)
+        if self.duration_unit == "months":
+            return start + relativedelta(months=self.duration_value)
+        if self.duration_unit == "years":
+            return start + relativedelta(years=self.duration_value)
+
+        raise ValueError("Invalid duration unit")
 
     def __str__(self):
-        return f"{self.name} ({self.download_speed}/{self.upload_speed} Mbps)"
-
-
+        return (
+            f"{self.name} | "
+            f"{self.download_speed}/{self.upload_speed} Mbps | "
+            f"{self.duration_value} {self.duration_unit}"
+        )
 # =====================================================
 # SUBSCRIPTION
 # =====================================================
@@ -296,16 +348,28 @@ class Voucher(models.Model):
     subscription = models.ForeignKey(
         Subscription, on_delete=models.CASCADE, related_name="vouchers"
     )
+
+    bound_mac = models.CharField(
+        max_length=50,
+        blank=True,
+        null=True,
+        help_text="MAC address bound on first use",
+    )
+
+    first_used_at = models.DateTimeField(null=True, blank=True)
+
     expires_at = models.DateTimeField()
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def is_valid(self):
-        return self.is_active and timezone.now() <= self.expires_at
+        return (
+            self.is_active
+            and timezone.now() <= self.expires_at
+        )
 
     def __str__(self):
         return self.code
-
 
 # =====================================================
 # PAYMENT
@@ -342,6 +406,8 @@ class Payment(models.Model):
         customer = self.customer
         subscription = self.subscription
         package = subscription.package
+        is_revoked = models.BooleanField(default=False)
+        revoked_reason = models.TextField(blank=True)
 
         # Make billing state changes atomic
         with transaction.atomic():
