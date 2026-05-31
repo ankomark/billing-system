@@ -68,7 +68,7 @@ export default function HotspotPackages() {
             </p>
 
             <p className="text-sm text-gray-600">
-              Validity: {pkg.duration_days} days
+              Validity: {pkg.duration_value} {pkg.duration_unit}
             </p>
 
             <p className="font-bold text-blue-700 mt-2">

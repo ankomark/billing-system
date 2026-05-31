@@ -1,177 +1,120 @@
-import { Routes, Route } from "react-router-dom";
+import { Routes, Route, Navigate } from "react-router-dom";
 
-// ✅ Auth
+// Auth
 import Login from "./pages/Login";
+import ProtectedRoute from "./components/ProtectedRoute";
 
-// ✅ Admin
+// Admin
 import Dashboard from "./pages/admin/Dashboard";
-import Packages from "./pages/admin/Packages";
-import PackageForm from "./pages/admin/PackageForm";
 import Customers from "./pages/admin/Customers";
 import CustomerDetail from "./pages/admin/CustomerDetail";
+import Packages from "./pages/admin/Packages";
+import PackageForm from "./pages/admin/PackageForm";
 import UnpaidInvoices from "./pages/admin/UnpaidInvoices";
 import FailedMpesa from "./pages/admin/FailedMpesa";
-import HotspotSuccess from "./pages/hotspot/HotspotSuccess";
-import ProtectedRoute from "./components/ProtectedRoute";
-import PPPoEPortal from "./pages/customer/PPPoEPortal";
-import PPPoERenew from "./pages/customer/PPPoERenew";
-import SystemSettings from "./pages/admin/SystemSettings";
-import Broadcast from "./pages/admin/Broadcast";
-// ✅ Hotspot (PUBLIC)
-import HotspotPackages from "./pages/hotspot/HotspotPackages";
-import HotspotStatus from "./pages/hotspot/HotspotStatus";
 import PPPoESessions from "./pages/admin/PPPoESessions";
 import Routers from "./pages/admin/Routers";
-import FailoverLogs from "./pages/admin/FailoverLogs"; // ✅ FIXED: removed "../"
+import RouterHealth from "./pages/admin/RouterHealth";
+import FailoverLogs from "./pages/admin/FailoverLogs";
+import UsageAlerts from "./pages/admin/UsageAlerts";
 import AccessLookup from "./pages/admin/AccessLookup";
+import Broadcast from "./pages/admin/Broadcast";
+import SystemSettings from "./pages/admin/SystemSettings";
+
+// Customer
+import PPPoEPortal from "./pages/customer/PPPoEPortal";
+import PPPoERenew from "./pages/customer/PPPoERenew";
+
+// Hotspot (public)
+import HotspotPackages from "./pages/hotspot/HotspotPackages";
+import HotspotPay from "./pages/hotspot/HotspotPay";
+import HotspotStatus from "./pages/hotspot/HotspotStatus";
+import HotspotSuccess from "./pages/hotspot/HotspotSuccess";
+
+const ADMIN_ROLES = ["admin", "staff", "superadmin"];
+const SUPER_ROLES = ["admin", "superadmin"];
+
 function App() {
   return (
     <Routes>
-      {/* 🔓 PUBLIC ROUTES */}
-      <Route path="/login" element={<Login />} />
+      {/* Root redirect */}
+      <Route path="/" element={<Navigate to="/login" replace />} />
 
-      {/* ✅ HOTSPOT CAPTIVE PORTAL */}
+      {/* Public */}
+      <Route path="/login" element={<Login />} />
       <Route path="/hotspot" element={<HotspotPackages />} />
+      <Route path="/hotspot/pay" element={<HotspotPay />} />
       <Route path="/hotspot/status" element={<HotspotStatus />} />
       <Route path="/hotspot/success" element={<HotspotSuccess />} />
 
-      {/* 🔐 ADMIN ROUTES */}
-      <Route
-        path="/admin/dashboard"
-        element={
-          <ProtectedRoute allowedRoles={["admin", "staff", "superadmin"]}>
-            <Dashboard />
-          </ProtectedRoute>
-        }
-      />
-      <Route 
-        path="/admin/routers" 
-        element={
-          <ProtectedRoute allowedRoles={["admin", "superadmin", "staff"]}>
-            <Routers />
-          </ProtectedRoute>
-        }
-      />
-      <Route 
-        path="/admin/failover-logs" 
-        element={
-          <ProtectedRoute allowedRoles={["admin", "superadmin"]}>
-            <FailoverLogs />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/admin/settings"
-        element={
-          <ProtectedRoute allowedRoles={["admin", "superadmin"]}>
-            <SystemSettings />
-          </ProtectedRoute>
-        }
-      />
-      <Route 
-        path="/admin/access-lookup" 
-        element={
-          <ProtectedRoute allowedRoles={["admin", "superadmin"]}>
-        <AccessLookup />
-        </ProtectedRoute>} 
-        />
-      <Route
-        path="/admin/broadcast"
-        element={
-          <ProtectedRoute allowedRoles={["admin", "superadmin"]}>
-            <Broadcast />
-          </ProtectedRoute>
-        }
-      />
-      {/* ✅ PACKAGES */}
-      <Route
-        path="/admin/packages"
-        element={
-          <ProtectedRoute allowedRoles={["admin", "staff"]}>
-            <Packages />
-          </ProtectedRoute>
-        }
-      />
+      {/* Admin — overview */}
+      <Route path="/admin/dashboard" element={
+        <ProtectedRoute allowedRoles={ADMIN_ROLES}><Dashboard /></ProtectedRoute>
+      } />
 
-      <Route
-        path="/admin/packages/new"
-        element={
-          <ProtectedRoute allowedRoles={["admin"]}>
-            <PackageForm />
-          </ProtectedRoute>
-        }
-      />
+      {/* Admin — billing */}
+      <Route path="/admin/customers" element={
+        <ProtectedRoute allowedRoles={ADMIN_ROLES}><Customers /></ProtectedRoute>
+      } />
+      <Route path="/admin/customers/:id" element={
+        <ProtectedRoute allowedRoles={ADMIN_ROLES}><CustomerDetail /></ProtectedRoute>
+      } />
+      <Route path="/admin/packages" element={
+        <ProtectedRoute allowedRoles={ADMIN_ROLES}><Packages /></ProtectedRoute>
+      } />
+      <Route path="/admin/packages/new" element={
+        <ProtectedRoute allowedRoles={SUPER_ROLES}><PackageForm /></ProtectedRoute>
+      } />
+      <Route path="/admin/packages/:id" element={
+        <ProtectedRoute allowedRoles={SUPER_ROLES}><PackageForm /></ProtectedRoute>
+      } />
+      <Route path="/admin/invoices/unpaid" element={
+        <ProtectedRoute allowedRoles={ADMIN_ROLES}><UnpaidInvoices /></ProtectedRoute>
+      } />
+      <Route path="/admin/mpesa/failed" element={
+        <ProtectedRoute allowedRoles={SUPER_ROLES}><FailedMpesa /></ProtectedRoute>
+      } />
 
-      <Route
-        path="/admin/packages/:id"
-        element={
-          <ProtectedRoute allowedRoles={["admin"]}>
-            <PackageForm />
-          </ProtectedRoute>
-        }
-      />
+      {/* Admin — network */}
+      <Route path="/admin/pppoe/sessions" element={
+        <ProtectedRoute allowedRoles={ADMIN_ROLES}><PPPoESessions /></ProtectedRoute>
+      } />
+      <Route path="/admin/routers" element={
+        <ProtectedRoute allowedRoles={ADMIN_ROLES}><Routers /></ProtectedRoute>
+      } />
+      <Route path="/admin/router-health" element={
+        <ProtectedRoute allowedRoles={ADMIN_ROLES}><RouterHealth /></ProtectedRoute>
+      } />
+      <Route path="/admin/failover-logs" element={
+        <ProtectedRoute allowedRoles={SUPER_ROLES}><FailoverLogs /></ProtectedRoute>
+      } />
+      <Route path="/admin/usage-alerts" element={
+        <ProtectedRoute allowedRoles={ADMIN_ROLES}><UsageAlerts /></ProtectedRoute>
+      } />
 
-      {/* ✅ CUSTOMERS */}
-      <Route
-        path="/admin/customers"
-        element={
-          <ProtectedRoute allowedRoles={["admin"]}>
-            <Customers />
-          </ProtectedRoute>
-        }
-      />
+      {/* Admin — communications */}
+      <Route path="/admin/broadcast" element={
+        <ProtectedRoute allowedRoles={SUPER_ROLES}><Broadcast /></ProtectedRoute>
+      } />
+      <Route path="/admin/access-lookup" element={
+        <ProtectedRoute allowedRoles={ADMIN_ROLES}><AccessLookup /></ProtectedRoute>
+      } />
 
-      <Route
-        path="/admin/customers/:id"
-        element={
-          <ProtectedRoute allowedRoles={["admin"]}>
-            <CustomerDetail />
-          </ProtectedRoute>
-        }
-      />
+      {/* Admin — system */}
+      <Route path="/admin/settings" element={
+        <ProtectedRoute allowedRoles={SUPER_ROLES}><SystemSettings /></ProtectedRoute>
+      } />
 
-      {/* ✅ FINANCE */}
-      <Route
-        path="/admin/invoices/unpaid"
-        element={
-          <ProtectedRoute allowedRoles={["admin", "staff"]}>
-            <UnpaidInvoices />
-          </ProtectedRoute>
-        }
-      />
+      {/* Customer portal */}
+      <Route path="/customer/pppoe" element={
+        <ProtectedRoute allowedRoles={["customer"]}><PPPoEPortal /></ProtectedRoute>
+      } />
+      <Route path="/customer/pppoe/renew" element={
+        <ProtectedRoute allowedRoles={["customer"]}><PPPoERenew /></ProtectedRoute>
+      } />
 
-      <Route
-        path="/admin/mpesa/failed"
-        element={
-          <ProtectedRoute allowedRoles={["admin"]}>
-            <FailedMpesa />
-          </ProtectedRoute>
-        }
-      />
-      <Route 
-        path="/admin/pppoe/sessions" 
-        element={
-          <ProtectedRoute allowedRoles={["admin", "superadmin"]}>
-            <PPPoESessions />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/customer/pppoe"
-        element={
-          <ProtectedRoute allowedRoles={["customer"]}>
-            <PPPoEPortal />
-          </ProtectedRoute>
-        }
-     />
-     <Route
-        path="/customer/pppoe/renew"
-        element={
-          <ProtectedRoute allowedRoles={["customer"]}>
-            <PPPoERenew />
-          </ProtectedRoute>
-        }
-      />
+      {/* 404 catch-all */}
+      <Route path="*" element={<Navigate to="/login" replace />} />
     </Routes>
   );
 }

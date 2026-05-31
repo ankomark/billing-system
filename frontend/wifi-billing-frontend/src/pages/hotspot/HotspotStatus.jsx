@@ -1,15 +1,15 @@
 import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import api from "../../services/api";
 
 export default function HotspotStatus() {
-  const [status, setStatus] = useState("checking");
+  const [searchParams] = useSearchParams();
+  const mac            = searchParams.get("mac");
+  const subscriptionId = searchParams.get("subscription");
+
+  const [status, setStatus]     = useState("pending");
   const [expiresAt, setExpiresAt] = useState(null);
 
-  // Extract MAC + Subscription ID from URL
-  const query = new URLSearchParams(window.location.search);
-  const mac = query.get("mac");
-  const subscriptionId = query.get("subscription");
-
-  // Poll backend every 3 seconds
   useEffect(() => {
     if (!mac || !subscriptionId) {
       setStatus("invalid_params");
@@ -18,26 +18,20 @@ export default function HotspotStatus() {
 
     const interval = setInterval(async () => {
       try {
-        const res = await fetch(
-          `${process.env.REACT_APP_API_URL}/api/subscriptions/${subscriptionId}/`
-        );
-        const data = await res.json();
+        const res  = await api.get(`subscriptions/${subscriptionId}/`);
+        const data = res.data;
 
-        // Check payment status
         if (data.invoice?.payment_status === "paid") {
           setExpiresAt(data.expiry_date);
           setStatus("active");
-
           clearInterval(interval);
-
-          // Wait 2 seconds → then redirect to hotspot auto-login
           setTimeout(() => {
             window.location.href = `/hotspot/success?mac=${mac}&expires=${data.expiry_date}`;
           }, 2000);
         } else {
           setStatus("pending");
         }
-      } catch (error) {
+      } catch {
         setStatus("error");
       }
     }, 3000);
@@ -45,64 +39,42 @@ export default function HotspotStatus() {
     return () => clearInterval(interval);
   }, [mac, subscriptionId]);
 
-  const renderContent = () => {
-    switch (status) {
-      case "invalid_params":
-        return (
-          <>
-            <h2 className="text-xl font-bold mb-2 text-red-600">
-              Invalid Request
-            </h2>
-            <p className="text-gray-600">Missing MAC or subscription ID.</p>
-          </>
-        );
-
-      case "checking":
-      case "pending":
-        return (
-          <>
-            <h2 className="text-xl font-bold mb-2">Processing Payment...</h2>
-            <p className="text-gray-600">
-              Please approve the M-Pesa STK push on your phone.
-            </p>
-            <p className="mt-3 text-blue-600 font-semibold animate-pulse">
-              Waiting for payment confirmation...
-            </p>
-          </>
-        );
-
-      case "active":
-        return (
-          <>
-            <h2 className="text-xl font-bold mb-2 text-green-600">
-              Payment Confirmed!
-            </h2>
-            <p className="text-gray-700">Connecting your device...</p>
-            <p className="mt-3 font-semibold text-gray-800">
-              Package Expires: {expiresAt}
-            </p>
-          </>
-        );
-
-      case "error":
-        return (
-          <>
-            <h2 className="text-xl font-bold mb-2 text-red-600">Error</h2>
-            <p className="text-gray-700">
-              Cannot reach the server. Check your network.
-            </p>
-          </>
-        );
-
-      default:
-        return null;
-    }
-  };
+  const content = {
+    invalid_params: {
+      icon: "⚠️",
+      title: "Invalid Request",
+      titleClass: "text-red-600",
+      body: "Missing MAC or subscription ID. Please reconnect through the hotspot portal.",
+    },
+    pending: {
+      icon: "📱",
+      title: "Waiting for Payment…",
+      titleClass: "text-slate-800",
+      body: "Please approve the M-Pesa STK push prompt on your phone.",
+      extra: <p className="text-blue-600 font-semibold animate-pulse mt-3">Checking payment status…</p>,
+    },
+    active: {
+      icon: "✅",
+      title: "Payment Confirmed!",
+      titleClass: "text-emerald-600",
+      body: "Your device is being connected. Please wait…",
+      extra: expiresAt && <p className="text-slate-600 mt-2 text-sm">Expires: {new Date(expiresAt).toLocaleString()}</p>,
+    },
+    error: {
+      icon: "❌",
+      title: "Connection Error",
+      titleClass: "text-red-600",
+      body: "Cannot reach the server. Please check your connection.",
+    },
+  }[status] || {};
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-100 p-6">
-      <div className="bg-white p-6 rounded shadow text-center w-full max-w-md">
-        {renderContent()}
+    <div className="min-h-screen flex items-center justify-center bg-slate-100 p-6">
+      <div className="bg-white rounded-2xl shadow-lg p-8 text-center w-full max-w-sm">
+        <div className="text-5xl mb-4">{content.icon}</div>
+        <h2 className={`text-xl font-bold mb-2 ${content.titleClass}`}>{content.title}</h2>
+        <p className="text-slate-600 text-sm">{content.body}</p>
+        {content.extra}
       </div>
     </div>
   );

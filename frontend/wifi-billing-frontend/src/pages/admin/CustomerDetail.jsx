@@ -1,242 +1,213 @@
 import { useEffect, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, useNavigate } from "react-router-dom";
 import AdminLayout from "../../components/admin/AdminLayout";
-import {
-  fetchCustomerDetail,
-  suspendOrResumeCustomer,
-  resendVoucher,
-} from "../../services/customers";
+import { fetchCustomerDetail, suspendOrResumeCustomer, resendVoucher } from "../../services/customers";
 import api from "../../services/api";
 
+function Badge({ status }) {
+  const map = {
+    active:    "bg-emerald-50 text-emerald-700 border-emerald-200",
+    expired:   "bg-red-50 text-red-700 border-red-200",
+    suspended: "bg-amber-50 text-amber-700 border-amber-200",
+  };
+  return (
+    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold border capitalize ${map[status] || "bg-slate-100 text-slate-600 border-slate-200"}`}>
+      {status}
+    </span>
+  );
+}
+
 export default function CustomerDetail() {
-  const { id } = useParams();
-  const [customer, setCustomer] = useState(null);
-  const [routers, setRouters] = useState([]);
+  const { id }     = useParams();
+  const navigate   = useNavigate();
+  const [customer, setCustomer]       = useState(null);
+  const [routers, setRouters]         = useState([]);
   const [selectedRouter, setSelectedRouter] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading]         = useState(false);
+  const [toast, setToast]             = useState("");
 
-  const loadCustomer = async () => {
-    const data = await fetchCustomerDetail(id);
-    setCustomer(data);
-  };
+  const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(""), 3000); };
 
-  const loadRouters = async () => {
+  const loadCustomer = async () => { setCustomer(await fetchCustomerDetail(id)); };
+  const loadRouters  = async () => {
     const res = await api.get("/admin/routers/");
-    setRouters(res.data || []);
+    setRouters(Array.isArray(res.data) ? res.data : res.data.results || []);
   };
 
-  useEffect(() => {
-    loadCustomer();
-    loadRouters();
-  }, [id]);
+  useEffect(() => { loadCustomer(); loadRouters(); }, [id]);
 
   if (!customer) {
     return (
       <AdminLayout>
-        <div className="p-6">Loading customer details...</div>
+        <div className="flex items-center justify-center h-48 text-slate-400 text-sm">Loading customer…</div>
       </AdminLayout>
     );
   }
 
-  // -----------------------------
-  // ACTIONS
-  // -----------------------------
   const handleSuspendResume = async (action) => {
-    if (action === "suspend") {
-      const ok = window.confirm("Suspend this customer?");
-      if (!ok) return;
-    }
-
+    if (action === "suspend" && !window.confirm("Suspend this customer?")) return;
     setLoading(true);
     await suspendOrResumeCustomer(customer.id, action);
     await loadCustomer();
     setLoading(false);
+    showToast(action === "suspend" ? "Customer suspended" : "Customer resumed");
   };
 
   const handleResendVoucher = async () => {
     setLoading(true);
-    try {
-      await resendVoucher(customer.id);
-      alert("✅ Voucher sent to customer");
-    } catch {
-      alert("❌ Failed to send voucher");
-    }
+    try { await resendVoucher(customer.id); showToast("Voucher sent"); }
+    catch { showToast("Failed to send voucher"); }
     setLoading(false);
   };
 
-  const handleAutoMigrate = async () => {
-    const ok = window.confirm(
-      "Automatically migrate customer to best available router?"
-    );
-    if (!ok) return;
-
+  const handleMigrate = async (routerId) => {
+    if (!window.confirm(routerId ? "Migrate to selected router?" : "Auto-migrate to best router?")) return;
     setLoading(true);
     try {
-      await api.post("/admin/customers/migrate/", {
-        customer_id: customer.id,
-      });
-      alert("✅ Customer migrated automatically");
+      await api.post("/admin/customers/migrate/", { customer_id: customer.id, ...(routerId && { router_id: routerId }) });
       await loadCustomer();
+      showToast("Migration successful");
     } catch (err) {
-      alert(err.response?.data?.detail || "❌ Migration failed");
-    }
-    setLoading(false);
-  };
-
-  const handleManualMigrate = async () => {
-    if (!selectedRouter) {
-      alert("Select a router first");
-      return;
-    }
-
-    const ok = window.confirm(
-      "Manually migrate customer to selected router?"
-    );
-    if (!ok) return;
-
-    setLoading(true);
-    try {
-      await api.post("/admin/customers/migrate/", {
-        customer_id: customer.id,
-        router_id: selectedRouter,
-      });
-      alert("✅ Customer migrated successfully");
-      await loadCustomer();
-    } catch (err) {
-      alert(err.response?.data?.detail || "❌ Migration failed");
+      showToast(err.response?.data?.detail || "Migration failed");
     }
     setLoading(false);
   };
 
   return (
     <AdminLayout>
-      <div className="p-6 space-y-6">
-        {/* HEADER */}
-        <h1 className="text-2xl font-bold">{customer.full_name}</h1>
+      <div className="space-y-6 max-w-3xl">
+        {/* Toast */}
+        {toast && (
+          <div className="fixed top-4 right-4 bg-slate-800 text-white px-4 py-2 rounded-lg text-sm shadow-lg z-50">
+            {toast}
+          </div>
+        )}
 
-        {/* BASIC INFO */}
-        <div className="bg-white p-4 rounded shadow">
-          <p><b>Phone:</b> {customer.phone}</p>
-          <p><b>Connection:</b> {customer.connection_type}</p>
-          <p>
-            <b>Status:</b>{" "}
-            <span
-              className={
-                customer.status === "active"
-                  ? "text-green-600 font-semibold"
-                  : "text-red-600 font-semibold"
-              }
-            >
-              {customer.status}
-            </span>
-          </p>
-          <p>
-            <b>Assigned Router:</b>{" "}
-            {customer.router_name || "Not assigned"}
-          </p>
+        {/* Header */}
+        <div className="flex items-center gap-3">
+          <button onClick={() => navigate("/admin/customers")} className="text-slate-400 hover:text-slate-700 transition-colors text-sm">
+            ← Back
+          </button>
+          <div>
+            <h1 className="text-2xl font-bold text-slate-800">{customer.full_name}</h1>
+            <p className="text-slate-500 text-sm mt-0.5">Customer #{customer.id}</p>
+          </div>
+        </div>
 
-          {/* ACTION BUTTONS */}
-          <div className="flex flex-wrap gap-3 mt-4">
+        {/* Info card */}
+        <div className="bg-white rounded-xl border border-slate-200 p-5">
+          <h2 className="text-sm font-semibold text-slate-500 uppercase tracking-wider mb-4">Profile</h2>
+          <div className="grid grid-cols-2 gap-4 text-sm">
+            <InfoRow label="Phone"      value={customer.phone} />
+            <InfoRow label="Connection" value={customer.connection_type} />
+            <div>
+              <p className="text-slate-400 text-xs mb-1">Status</p>
+              <Badge status={customer.status} />
+            </div>
+            <InfoRow label="Router" value={customer.router_name || "Not assigned"} />
+          </div>
+
+          {/* Actions */}
+          <div className="flex flex-wrap gap-2 mt-5 pt-4 border-t border-slate-100">
             {customer.status === "active" ? (
-              <button
-                disabled={loading}
-                onClick={() => handleSuspendResume("suspend")}
-                className="bg-red-600 text-white px-4 py-2 rounded"
-              >
-                Suspend
-              </button>
+              <Btn color="red" onClick={() => handleSuspendResume("suspend")} disabled={loading}>Suspend</Btn>
             ) : (
-              <button
-                disabled={loading}
-                onClick={() => handleSuspendResume("resume")}
-                className="bg-green-600 text-white px-4 py-2 rounded"
-              >
-                Resume
-              </button>
+              <Btn color="green" onClick={() => handleSuspendResume("resume")} disabled={loading}>Resume</Btn>
             )}
-
-            <button
-              disabled={loading}
-              onClick={handleResendVoucher}
-              className="bg-blue-600 text-white px-4 py-2 rounded"
-            >
-              Resend Voucher
-            </button>
+            {customer.connection_type === "hotspot" && (
+              <Btn color="blue" onClick={handleResendVoucher} disabled={loading}>Resend Voucher</Btn>
+            )}
           </div>
         </div>
 
-        {/* ROUTER MIGRATION */}
-        <div className="bg-white p-4 rounded shadow">
-          <h2 className="text-lg font-semibold mb-3">
-            Router Migration
-          </h2>
-
-          <div className="flex flex-col md:flex-row gap-4">
-            <button
-              disabled={loading}
-              onClick={handleAutoMigrate}
-              className="bg-purple-600 text-white px-4 py-2 rounded"
+        {/* Router migration */}
+        <div className="bg-white rounded-xl border border-slate-200 p-5">
+          <h2 className="text-sm font-semibold text-slate-500 uppercase tracking-wider mb-4">Router Migration</h2>
+          <div className="flex flex-wrap gap-3 items-center">
+            <Btn color="purple" onClick={() => handleMigrate(null)} disabled={loading}>
+              Auto Failover
+            </Btn>
+            <select
+              value={selectedRouter}
+              onChange={(e) => setSelectedRouter(e.target.value)}
+              className="border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
-              Auto Failover Migrate
-            </button>
-
-            <div className="flex gap-2">
-              <select
-                value={selectedRouter}
-                onChange={(e) => setSelectedRouter(e.target.value)}
-                className="border rounded px-3 py-2"
-              >
-                <option value="">Select Router</option>
-                {routers.map((r) => (
-                  <option key={r.id} value={r.id}>
-                    {r.name} {r.is_online ? "(online)" : "(offline)"}
-                  </option>
-                ))}
-              </select>
-
-              <button
-                disabled={loading}
-                onClick={handleManualMigrate}
-                className="bg-orange-600 text-white px-4 py-2 rounded"
-              >
-                Manual Migrate
-              </button>
-            </div>
+              <option value="">Select router…</option>
+              {routers.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.name} {r.online ? "(online)" : "(offline)"}
+                </option>
+              ))}
+            </select>
+            <Btn color="orange" onClick={() => { if (!selectedRouter) { showToast("Select a router first"); return; } handleMigrate(selectedRouter); }} disabled={loading || !selectedRouter}>
+              Manual Migrate
+            </Btn>
           </div>
         </div>
 
-        {/* SUBSCRIPTIONS */}
-        <div>
-          <h2 className="text-lg font-semibold mb-2">Subscriptions</h2>
-
-          {customer.subscriptions.length === 0 && (
-            <p className="text-gray-500">No subscriptions</p>
+        {/* Subscriptions */}
+        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+          <div className="px-5 py-4 border-b border-slate-100">
+            <h2 className="text-sm font-semibold text-slate-700">Subscriptions</h2>
+          </div>
+          {customer.subscriptions?.length === 0 ? (
+            <p className="px-5 py-4 text-slate-400 text-sm">No subscriptions</p>
+          ) : (
+            customer.subscriptions?.map((s) => (
+              <div key={s.id} className="px-5 py-4 border-b border-slate-100 last:border-0 text-sm flex items-center justify-between">
+                <div>
+                  <p className="font-medium text-slate-800">{s.package_name}</p>
+                  <p className="text-slate-400 text-xs mt-0.5">Expires {new Date(s.expiry_date).toLocaleDateString()}</p>
+                </div>
+                <Badge status={s.status} />
+              </div>
+            ))
           )}
-
-          {customer.subscriptions.map((s) => (
-            <div key={s.id} className="bg-white p-4 mb-2 rounded shadow">
-              <p><b>Package:</b> {s.package_name}</p>
-              <p><b>Expires:</b> {s.expiry_date}</p>
-              <p><b>Status:</b> {s.status}</p>
-            </div>
-          ))}
         </div>
 
-        {/* VOUCHERS */}
-        <div>
-          <h2 className="text-lg font-semibold mb-2">Vouchers</h2>
-
-          {customer.vouchers.length === 0 && (
-            <p className="text-gray-500">No vouchers</p>
-          )}
-
-          {customer.vouchers.map((v) => (
-            <div key={v.code} className="bg-gray-100 p-2 rounded mb-1">
-              <b>{v.code}</b> — expires {v.expires_at}
+        {/* Vouchers */}
+        {customer.vouchers?.length > 0 && (
+          <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+            <div className="px-5 py-4 border-b border-slate-100">
+              <h2 className="text-sm font-semibold text-slate-700">Vouchers</h2>
             </div>
-          ))}
-        </div>
+            {customer.vouchers.map((v) => (
+              <div key={v.code} className="px-5 py-3 border-b border-slate-100 last:border-0 flex items-center justify-between text-sm">
+                <code className="bg-slate-100 text-slate-700 px-2 py-0.5 rounded text-xs">{v.code}</code>
+                <span className="text-slate-400 text-xs">Expires {new Date(v.expires_at).toLocaleDateString()}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </AdminLayout>
+  );
+}
+
+function InfoRow({ label, value }) {
+  return (
+    <div>
+      <p className="text-slate-400 text-xs mb-0.5">{label}</p>
+      <p className="font-medium text-slate-800 capitalize">{value || "—"}</p>
+    </div>
+  );
+}
+
+function Btn({ color, children, onClick, disabled }) {
+  const colors = {
+    red:    "bg-red-600 hover:bg-red-700",
+    green:  "bg-emerald-600 hover:bg-emerald-700",
+    blue:   "bg-blue-600 hover:bg-blue-700",
+    purple: "bg-violet-600 hover:bg-violet-700",
+    orange: "bg-orange-600 hover:bg-orange-700",
+  };
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className={`${colors[color]} text-white px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-50 transition-colors`}
+    >
+      {children}
+    </button>
   );
 }

@@ -14,7 +14,9 @@ export default function Broadcast() {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    fetchCustomers().then(setCustomers).catch(() => {});
+    fetchCustomers()
+      .then((data) => setCustomers(data.results || []))
+      .catch(() => {});
   }, []);
 
   const toggleCustomer = (id) => {
