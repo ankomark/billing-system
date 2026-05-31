@@ -5,28 +5,35 @@ import AdminLayout from "../../components/admin/AdminLayout";
 
 export default function Packages() {
   const [packages, setPackages] = useState([]);
+  const [page, setPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [count, setCount] = useState(0);
   const navigate = useNavigate();
 
-  const loadPackages = async () => {
-    const data = await fetchPackages();
-    setPackages(data);
+  const loadPackages = async (p = page) => {
+    const data = await fetchPackages(p);
+    setPackages(data.results);
+    setTotalPages(data.total_pages);
+    setCount(data.count);
   };
 
   useEffect(() => {
-    loadPackages();
-  }, []);
+    loadPackages(page);
+  }, [page]);
 
   const handleDelete = async (id) => {
     if (!window.confirm("Delete this package?")) return;
     await deletePackage(id);
-    loadPackages();
+    loadPackages(page);
   };
 
   return (
     <AdminLayout>
       <div className="p-6">
         <div className="flex justify-between mb-4">
-          <h1 className="text-xl font-bold">Packages</h1>
+          <h1 className="text-xl font-bold">
+            Packages{count > 0 && <span className="text-sm text-gray-500 font-normal ml-2">({count} total)</span>}
+          </h1>
 
           <button
             onClick={() => navigate("/admin/packages/new")}
@@ -48,48 +55,66 @@ export default function Packages() {
           </thead>
 
           <tbody>
-  {packages.map((p) => (
-    <tr key={p.id}>
-      <td className="p-2 border">{p.name}</td>
+            {packages.map((p) => (
+              <tr key={p.id}>
+                <td className="p-2 border">{p.name}</td>
+                <td className="p-2 border">
+                  {p.download_speed}/{p.upload_speed} Mbps
+                </td>
+                <td className="p-2 border">
+                  {p.duration_value} {p.duration_unit}
+                </td>
+                <td className="p-2 border">KES {p.price}</td>
+                <td className="p-2 border">
+                  <button
+                    onClick={() => navigate(`/admin/packages/${p.id}`)}
+                    className="text-blue-600 mr-3"
+                  >
+                    Edit
+                  </button>
+                  <button
+                    onClick={() => handleDelete(p.id)}
+                    className="text-red-600"
+                  >
+                    Delete
+                  </button>
+                </td>
+              </tr>
+            ))}
 
-      <td className="p-2 border">
-        {p.download_speed}/{p.upload_speed} Mbps
-      </td>
-
-      <td className="p-2 border">
-        {p.duration_value} {p.duration_unit}
-      </td>
-
-      <td className="p-2 border">KES {p.price}</td>
-
-      <td className="p-2 border">
-        <button
-          onClick={() => navigate(`/admin/packages/${p.id}`)}
-          className="text-blue-600 mr-3"
-        >
-          Edit
-        </button>
-
-        <button
-          onClick={() => handleDelete(p.id)}
-          className="text-red-600"
-        >
-          Delete
-        </button>
-      </td>
-    </tr>
-  ))}
-
-  {packages.length === 0 && (
-    <tr>
-      <td colSpan="5" className="text-center p-4 text-gray-500">
-        No packages found
-      </td>
-    </tr>
-  )}
-</tbody>
-
+            {packages.length === 0 && (
+              <tr>
+                <td colSpan="5" className="text-center p-4 text-gray-500">
+                  No packages found
+                </td>
+              </tr>
+            )}
+          </tbody>
         </table>
+
+        {totalPages > 1 && (
+          <div className="flex items-center justify-between mt-4">
+            <button
+              onClick={() => setPage((p) => Math.max(p - 1, 1))}
+              disabled={page <= 1}
+              className="px-4 py-2 border rounded disabled:opacity-40 hover:bg-gray-100"
+            >
+              ← Previous
+            </button>
+
+            <span className="text-sm text-gray-600">
+              Page {page} of {totalPages}
+            </span>
+
+            <button
+              onClick={() => setPage((p) => Math.min(p + 1, totalPages))}
+              disabled={page >= totalPages}
+              className="px-4 py-2 border rounded disabled:opacity-40 hover:bg-gray-100"
+            >
+              Next →
+            </button>
+          </div>
+        )}
       </div>
     </AdminLayout>
   );

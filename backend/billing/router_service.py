@@ -164,17 +164,22 @@ def get_pppoe_usage(router, username):
     if not router or not username:
         return None
 
-    api = connect_router(router)
-    actives = api.path("ppp", "active")
+    api = safe_connect_router(router)
+    if not api:
+        return None
 
-    for a in actives:
-        if a.get("name") == username:
-            return {
-                "ip_address": a.get("address"),
-                "uptime": a.get("uptime"),
-                "caller_id": a.get("caller-id"),
-                "router": router.name,
-            }
+    try:
+        actives = api.path("ppp", "active")
+        for a in actives:
+            if a.get("name") == username:
+                return {
+                    "ip_address": a.get("address"),
+                    "uptime": a.get("uptime"),
+                    "caller_id": a.get("caller-id"),
+                    "router": router.name,
+                }
+    except Exception:
+        return None
 
     return None  # not connected
 def disconnect_pppoe_user(customer):
@@ -193,11 +198,12 @@ def reconnect_pppoe_user(customer):
     if not customer.router or not customer.pppoe_username:
         return
 
-    api = safe_connect_router(customer.router)  
+    api = safe_connect_router(customer.router)
     if not api:
         return
-        
+
     disconnect_pppoe_session(api, customer.pppoe_username)
+    enable_customer_access(customer)
 def get_all_pppoe_sessions(router):
     """
     Fetch all active PPPoE sessions from MikroTik

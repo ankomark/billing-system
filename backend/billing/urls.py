@@ -1,7 +1,7 @@
 from django.urls import path, include
-from .views import home,RevenueDashboardView, UnpaidInvoicesView,PendingInvoicesView,FailedMpesaTransactionsView,CustomerViewSet, PackageViewSet, SubscriptionViewSet,InvoiceViewSet,PaymentViewSet,MpesaSTKPushView,MpesaSTKCallbackView
+from .views import home,RevenueDashboardView, UnpaidInvoicesView,PendingInvoicesView,FailedMpesaTransactionsView,CustomerViewSet, PackageViewSet, SubscriptionViewSet,InvoiceViewSet,PaymentViewSet,MpesaSTKPushView,MpesaSTKCallbackView,ThrottledLoginView
 from rest_framework.routers import DefaultRouter
-from rest_framework_simplejwt.views import (TokenObtainPairView,TokenRefreshView)
+from rest_framework_simplejwt.views import TokenRefreshView
 from .views import CustomerSuspendResumeView,HotspotStatusView,PppoeStatusView,PPPoEUsageView,AdminDisconnectPPPoEView,AdminUsageDailyView, AdminUsageAlertsView
 from billing.views import TestMpesaView, TestSmsView, TestWhatsappView,PPPoELiveStatusView,PPPoEControlView,AdminRouterListView, HotspotUsageDailyView
 from .views import ResendVoucherView,PPPoERenewView,SystemSettingsView,AdminPPPoESessionsView,CustomerReconnectPPPoEView,PPPoEUsageDailyView, PPPoEUsageMonthlyView,AdminDeactivateAccessView
@@ -18,7 +18,7 @@ urlpatterns = [
     path("", home, name="home"),
 
     # ✅ AUTH
-    path("api/auth/login/", TokenObtainPairView.as_view(), name="token_obtain_pair"),
+    path("api/auth/login/", ThrottledLoginView.as_view(), name="token_obtain_pair"),
     path("api/auth/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
     path("api/auth/profile/", UserProfileView.as_view(), name="auth-profile"),
     path("api/system/settings/",SystemSettingsView.as_view(),name="system-settings"),

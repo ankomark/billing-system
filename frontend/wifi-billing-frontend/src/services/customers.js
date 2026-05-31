@@ -1,9 +1,11 @@
 import api from "./api";
 
-// ✅ Fetch all customers
-export const fetchCustomers = async () => {
-  const res = await api.get("/customers/");
-  return res.data;
+// ✅ Fetch customers (paginated)
+export const fetchCustomers = async (page = 1, pageSize = 25) => {
+  const res = await api.get("/customers/", {
+    params: { page, page_size: pageSize },
+  });
+  return res.data; // { count, total_pages, current_page, next, previous, results }
 };
 
 // ✅ Fetch ONE customer (DETAIL PAGE)

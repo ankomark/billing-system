@@ -1,9 +1,11 @@
 import api from "./api";
 
-// ✅ get all packages
-export const fetchPackages = async () => {
-  const res = await api.get("/packages/");
-  return res.data;
+// ✅ get all packages (paginated)
+export const fetchPackages = async (page = 1, pageSize = 25) => {
+  const res = await api.get("/packages/", {
+    params: { page, page_size: pageSize },
+  });
+  return res.data; // { count, total_pages, current_page, next, previous, results }
 };
 
 // ✅ get ONE package (FOR EDIT)

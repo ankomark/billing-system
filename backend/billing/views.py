@@ -1,6 +1,10 @@
+from decimal import Decimal
 from django.http import HttpResponse
 from django.db import transaction
+from celery import chain
+from rest_framework_simplejwt.views import TokenObtainPairView
 from .permissions import IsStaffOrAdmin,IsCustomer,IsAdmin
+from .throttles import LoginRateThrottle, HotspotPublicThrottle, MpesaCallbackThrottle, STKPushThrottle
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, permissions
@@ -24,7 +28,7 @@ from billing.models import Voucher
 from billing.tasks.mpesa_tasks import initiate_stk_push_task
 from django.utils import timezone
 from rest_framework import viewsets
-from .models import Customer, Package, Subscription,Invoice, Payment,MpesaTransaction,SystemSetting,RouterFailoverLog, HotspotUsageRecord
+from .models import Customer, Package, Subscription,Invoice, Payment,MpesaTransaction,SystemSetting,RouterFailoverLog, HotspotUsageRecord, AccessAuditLog
 from .serializers import (CustomerSerializer,PackageSerializer,SubscriptionSerializer,InvoiceSerializer,  PaymentSerializer,SystemSettingSerializer,)
 from billing.tasks.notification_tasks import notify_customer_task,send_sms_task, send_whatsapp_task
 from .config import get_setting
@@ -32,6 +36,10 @@ from rest_framework.permissions import IsAuthenticated
 from .serializers import UserProfileSerializer
 from billing.router_service import enable_customer_access
 from billing.tasks.router_tasks import (enable_customer_task,disable_customer_task,disconnect_pppoe_task)
+
+class ThrottledLoginView(TokenObtainPairView):
+    throttle_classes = [LoginRateThrottle]
+
 
 def home(request):
     return HttpResponse("WiFi Billing Backend is Running")
@@ -93,6 +101,7 @@ from billing.tasks.mpesa_tasks import initiate_stk_push_task
 
 class MpesaSTKPushView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [STKPushThrottle]
 
     def post(self, request):
         subscription_id = request.data.get("subscription_id")
@@ -137,6 +146,7 @@ class MpesaSTKPushView(APIView):
 
 class MpesaSTKCallbackView(APIView):
     permission_classes = [permissions.AllowAny]
+    throttle_classes = [MpesaCallbackThrottle]
 
     def post(self, request):
         if not is_trusted_mpesa_ip(request):
@@ -195,7 +205,7 @@ class MpesaSTKCallbackView(APIView):
             tx.save()
             return Response(status=400)
 
-        if float(amount) != float(invoice.total_amount):
+        if Decimal(str(amount)) != invoice.total_amount:
             tx.status = "failed"
             tx.error_message = "Amount mismatch"
             tx.processed = True
@@ -240,7 +250,7 @@ class ManualPaymentView(APIView):
         if invoice.payment_status == "paid":
             return Response({"detail": "Invoice already paid"}, status=400)
 
-        if float(amount) != float(invoice.total_amount):
+        if Decimal(str(amount)) != invoice.total_amount:
             return Response({"detail": "Amount mismatch"}, status=400)
 
         with transaction.atomic():
@@ -292,6 +302,7 @@ class FailedMpesaTransactionsView(APIView):
 
 class HotspotVoucherValidateView(APIView):
     permission_classes = [permissions.AllowAny]
+    throttle_classes = [HotspotPublicThrottle]
 
     def post(self, request):
         code = request.data.get("code")
@@ -415,6 +426,7 @@ class ResendVoucherView(APIView):
     
 class HotspotStatusView(APIView):
     permission_classes = [permissions.AllowAny]
+    throttle_classes = [HotspotPublicThrottle]
 
     def get(self, request):
         mac = request.GET.get("mac")
@@ -552,6 +564,7 @@ class PPPoERenewView(APIView):
                 description="PPPoE Subscription Renewal",
             )
         except Exception as e:
+            subscription.delete()  # cascade-deletes the invoice, prevents ghost record
             return Response(
                 {"detail": f"STK Push failed: {e}"},
                 status=500
@@ -563,11 +576,24 @@ class PPPoERenewView(APIView):
             "subscription_id": subscription.id,
         })
 class PppoeStatusView(APIView):
+    permission_classes = [IsAuthenticated]
+
     def get(self, request, customer_id):
-        try:
-            customer = Customer.objects.get(id=customer_id)
-        except Customer.DoesNotExist:
-            return Response({"detail": "Customer not found"}, status=404)
+        user = request.user
+
+        if user.role == "customer":
+            try:
+                own = user.customer_profile
+            except Customer.DoesNotExist:
+                return Response({"detail": "Customer not found"}, status=404)
+            if own.id != int(customer_id):
+                return Response({"detail": "Forbidden"}, status=403)
+            customer = own
+        else:
+            try:
+                customer = Customer.objects.get(id=customer_id)
+            except Customer.DoesNotExist:
+                return Response({"detail": "Customer not found"}, status=404)
 
         subscription = (
             customer.subscriptions.filter(status="active")
@@ -767,9 +793,11 @@ class PPPoEControlView(APIView):
             disconnect_pppoe_task.delay(customer.id)
             return Response({"detail": "Disconnect scheduled"}, status=202)
 
-        # reconnect
-        disconnect_pppoe_task.delay(customer.id)
-        enable_customer_task.delay(customer.id)
+        # reconnect — chain guarantees disconnect completes before enable
+        chain(
+            disconnect_pppoe_task.si(customer.id),
+            enable_customer_task.si(customer.id),
+        ).delay()
         return Response({"detail": "Reconnect scheduled"}, status=202)
 
 from billing.router_service import get_pppoe_usage   
@@ -879,9 +907,10 @@ class CustomerReconnectPPPoEView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # 🔁 Schedule reconnect (non-blocking)
-        disconnect_pppoe_task.delay(customer.id)
-        enable_customer_task.delay(customer.id)
+        chain(
+            disconnect_pppoe_task.si(customer.id),
+            enable_customer_task.si(customer.id),
+        ).delay()
 
         return Response(
             {"detail": "PPPoE reconnection scheduled"},
@@ -1063,7 +1092,7 @@ class PPPoEUsageDailyView(APIView):
 
     def get(self, request):
         customer = request.user.customer_profile
-        days = int(request.query_params.get("days", 7))
+        days = min(max(int(request.query_params.get("days", 7)), 1), 365)
 
         since = timezone.now() - timezone.timedelta(days=days)
 
@@ -1093,7 +1122,7 @@ class PPPoEUsageMonthlyView(APIView):
 
     def get(self, request):
         customer = request.user.customer_profile
-        months = int(request.query_params.get("months", 6))
+        months = min(max(int(request.query_params.get("months", 6)), 1), 24)
 
         since = timezone.now() - timezone.timedelta(days=months * 31)
 
@@ -1147,7 +1176,7 @@ class AdminUsageDailyView(APIView):
     permission_classes = [IsAdminUser]
 
     def get(self, request):
-        days = int(request.query_params.get("days", 7))
+        days = min(max(int(request.query_params.get("days", 7)), 1), 365)
         since = timezone.now() - timezone.timedelta(days=days)
 
         pppoe = (
@@ -1196,27 +1225,50 @@ class AdminUsageAlertsView(APIView):
     def get(self, request):
         nearing_limit = []
 
-        for c in Customer.objects.filter(status="active"):
-            # Compute % used based on your business logic
-            # Example 1: If you have usage and limit fields
-            if hasattr(c, 'usage') and hasattr(c, 'limit') and c.limit > 0:
-                percent = (c.usage / c.limit) * 100
-            # Example 2: Custom calculation method on Customer model
-            elif hasattr(c, 'calculate_usage_percent'):
-                percent = c.calculate_usage_percent()
-            # Example 3: Placeholder - replace with your actual logic
+        customers = (
+            Customer.objects.filter(status="active")
+            .prefetch_related("subscriptions__package")
+        )
+
+        for customer in customers:
+            subscription = (
+                customer.subscriptions.filter(status="active")
+                .order_by("-expiry_date")
+                .first()
+            )
+            if not subscription:
+                continue
+
+            cap_gb = customer.custom_data_cap_gb or subscription.package.monthly_data_cap_gb
+            if not cap_gb:
+                continue  # unlimited plan
+
+            period_start = subscription.start_date
+
+            if customer.connection_type == "pppoe":
+                result = PPPoEUsageRecord.objects.filter(
+                    customer=customer,
+                    period_start__gte=period_start,
+                ).aggregate(total=Sum("download_bytes") + Sum("upload_bytes"))
             else:
-                # You need to implement your actual percent calculation
-                percent = 0  # Replace with actual calculation
-            
+                result = HotspotUsageRecord.objects.filter(
+                    customer=customer,
+                    period_start__gte=period_start,
+                ).aggregate(total=Sum("download_bytes") + Sum("upload_bytes"))
+
+            total_gb = (result["total"] or 0) / (1024 ** 3)
+            percent = (total_gb / cap_gb) * 100
+
             if percent >= 80:
                 nearing_limit.append({
-                    "customer": c.full_name,
-                    "phone": c.phone,
-                    "percent": percent,
+                    "customer": customer.full_name,
+                    "phone": customer.phone,
+                    "used_gb": round(total_gb, 2),
+                    "cap_gb": cap_gb,
+                    "percent": round(percent, 1),
                 })
 
-        return Response(nearing_limit)
+        return Response(sorted(nearing_limit, key=lambda x: x["percent"], reverse=True))
 
 class AdminAccessLookupView(APIView):
     permission_classes = [IsAdminUser]

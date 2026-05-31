@@ -13,14 +13,25 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # 🔴 FORCE load .env from backend directory
 load_dotenv(BASE_DIR / ".env")
 
-SECRET_KEY = "django-insecure-change-this-in-production"
+SECRET_KEY = os.getenv("SECRET_KEY", "django-insecure-change-this-in-production")
 
-DEBUG = True  # ❗ Set False in production
+DEBUG = os.getenv("DEBUG", "False") == "True"
 
-ALLOWED_HOSTS = [
-    "localhost",
-    "127.0.0.1",
-]
+ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
+
+# =====================================================
+# HTTPS / SECURITY HEADERS  (production only)
+# =====================================================
+if not DEBUG:
+    SECURE_SSL_REDIRECT = True
+    SECURE_HSTS_SECONDS = 31536000          # 1 year — tells browsers to always use HTTPS
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
+    SESSION_COOKIE_SECURE = True            # session cookie only sent over HTTPS
+    CSRF_COOKIE_SECURE = True               # CSRF cookie only sent over HTTPS
+    SECURE_BROWSER_XSS_FILTER = True
+    SECURE_CONTENT_TYPE_NOSNIFF = True
+    X_FRAME_OPTIONS = "DENY"               # clickjacking protection
 
 # =====================================================
 # APPLICATIONS
@@ -135,10 +146,16 @@ USE_TZ = True
 STATIC_URL = "/static/"
 
 # =====================================================
-# CORS (DEV ONLY)
+# CORS
 # =====================================================
 
-CORS_ALLOW_ALL_ORIGINS = True
+if DEBUG:
+    CORS_ALLOW_ALL_ORIGINS = True
+else:
+    CORS_ALLOWED_ORIGINS = os.getenv(
+        "CORS_ALLOWED_ORIGINS", "http://localhost:3000"
+    ).split(",")
+
 CORS_ALLOW_CREDENTIALS = True
 
 # =====================================================
@@ -152,6 +169,20 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": (
         "rest_framework.permissions.IsAuthenticated",
     ),
+    "DEFAULT_PAGINATION_CLASS": "billing.pagination.StandardPagination",
+    "PAGE_SIZE": 25,
+    "DEFAULT_THROTTLE_CLASSES": [
+        "rest_framework.throttling.AnonRateThrottle",
+        "rest_framework.throttling.UserRateThrottle",
+    ],
+    "DEFAULT_THROTTLE_RATES": {
+        "anon": "120/min",
+        "user": "300/min",
+        "login": "5/min",
+        "hotspot_public": "15/min",
+        "mpesa_callback": "60/min",
+        "stk_push": "10/min",
+    },
 }
 
 SIMPLE_JWT = {
@@ -205,7 +236,7 @@ MPESA_TRUSTED_IPS = [
     "196.201.214.208",
 ]
 
-MPESA_ALLOW_LOCAL_CALLBACK = True  # ❗ Disable in production
+MPESA_ALLOW_LOCAL_CALLBACK = os.getenv("MPESA_ALLOW_LOCAL_CALLBACK", "False") == "True"
 
 # =====================================================
 # OPTIONAL FALLBACK ENV CONFIGS
@@ -217,3 +248,33 @@ AT_USERNAME = os.getenv("AT_USERNAME", "")
 AT_API_KEY = os.getenv("AT_API_KEY", "")
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN", "")
 WHATSAPP_PHONE_ID = os.getenv("WHATSAPP_PHONE_ID", "")
+
+# =====================================================
+# FIELD-LEVEL ENCRYPTION
+# =====================================================
+# Generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+FIELD_ENCRYPTION_KEY = os.getenv("FIELD_ENCRYPTION_KEY", "")
+
+# =====================================================
+# ERROR MONITORING (SENTRY)
+# =====================================================
+
+SENTRY_DSN = os.getenv("SENTRY_DSN", "")
+
+if SENTRY_DSN:
+    import sentry_sdk
+    from sentry_sdk.integrations.django import DjangoIntegration
+    from sentry_sdk.integrations.celery import CeleryIntegration
+    from sentry_sdk.integrations.redis import RedisIntegration
+
+    sentry_sdk.init(
+        dsn=SENTRY_DSN,
+        integrations=[
+            DjangoIntegration(),
+            CeleryIntegration(),
+            RedisIntegration(),
+        ],
+        traces_sample_rate=0.2,
+        send_default_pii=False,
+        environment=os.getenv("ENVIRONMENT", "production"),
+    )

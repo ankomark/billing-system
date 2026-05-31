@@ -8,6 +8,7 @@ import string
 
 from billing.services.notification_service import notify_customer
 from .utils import generate_invoice_number
+from .fields import EncryptedCharField
 
 
 # =====================================================
@@ -40,7 +41,7 @@ class RouterDevice(models.Model):
     name = models.CharField(max_length=100)
     ip_address = models.GenericIPAddressField()
     username = models.CharField(max_length=100)
-    password = models.CharField(max_length=100)  # Never expose via API serializers
+    password = EncryptedCharField()  # encrypted at rest; decrypted transparently on read
     api_port = models.IntegerField(default=8728)
 
     # failover priority: 1 = best
@@ -93,7 +94,7 @@ class Customer(models.Model):
 
     # Identifiers (only one should be used based on connection_type)
     pppoe_username = models.CharField(max_length=100, blank=True)
-    pppoe_password = models.CharField(max_length=100, blank=True)
+    pppoe_password = EncryptedCharField(blank=True)  # encrypted at rest
     hotspot_username = models.CharField(max_length=100, blank=True)
 
     # Optional caps
@@ -115,8 +116,9 @@ class Customer(models.Model):
             raise ValidationError("PPPoE username should be empty for hotspot customers")
 
     def save(self, *args, **kwargs):
-        # Enforce clean() in all code paths (API, scripts, admin, tasks)
-        self.full_clean()
+        # Skip full validation on partial updates — only validate complete saves
+        if not kwargs.get("update_fields"):
+            self.full_clean()
         super().save(*args, **kwargs)
 
     def __str__(self):
@@ -246,9 +248,7 @@ class Subscription(models.Model):
         creating = self.pk is None
 
         if not self.expiry_date:
-            self.expiry_date = self.start_date + timezone.timedelta(
-                days=self.package.duration_days
-            )
+            self.expiry_date = self.package.calculate_expiry(self.start_date)
 
         # Keep DB writes atomic
         with transaction.atomic():
@@ -406,66 +406,76 @@ class Payment(models.Model):
         customer = self.customer
         subscription = self.subscription
         package = subscription.package
-        is_revoked = models.BooleanField(default=False)
-        revoked_reason = models.TextField(blank=True)
+        voucher_code = None
 
-        # Make billing state changes atomic
+        # DB-only changes go inside the transaction
         with transaction.atomic():
-            # 1) Mark invoice paid
             invoice = subscription.invoice
             invoice.payment_status = "paid"
             invoice.save(update_fields=["payment_status"])
 
-            # 2) Activate subscription
             subscription.status = "active"
             subscription.save(update_fields=["status"])
 
-            # 3) Assign router if missing (load balancing)
             if not customer.router:
                 router, _api = pick_best_router_for_new_customer()
                 if router:
                     customer.router = router
                     customer.save(update_fields=["router"])
 
-        # 4) Enable access (external system)
-        enable_customer_access(customer)
+            # Voucher is a DB write — belongs inside the transaction
+            if customer.connection_type == "hotspot":
+                voucher = Voucher.objects.create(
+                    code=generate_voucher_code(),
+                    subscription=subscription,
+                    expires_at=subscription.expiry_date,
+                )
+                voucher_code = voucher.code
 
-        # 5) Customer messaging (and voucher if hotspot)
-        if customer.connection_type == "hotspot":
-            voucher = Voucher.objects.create(
-                code=generate_voucher_code(),
-                subscription=subscription,
-                expires_at=subscription.expiry_date,
-            )
+        # Capture primitives for the closure (avoids stale ORM objects)
+        customer_id = customer.id
+        phone = customer.phone
+        pkg_name = package.name
+        expiry = subscription.expiry_date
+        pppoe_username = customer.pppoe_username
+        pppoe_password = customer.pppoe_password
+        connection_type = customer.connection_type
+        _voucher_code = voucher_code
 
-            message = (
-                "Welcome to Skylink WiFi!\n\n"
-                f"Package: {package.name}\n"
-                f"Valid Until: {subscription.expiry_date:%d %b %Y %I:%M %p}\n\n"
-                f"Voucher Code: {voucher.code}\n\n"
-                "Just stay connected — auto-login will work.\n"
-                "Support: 0700 XXX XXX"
-            )
+        def _post_payment_effects():
+            # Runs after the DB transaction commits — safe to call external systems
+            from billing.models import Customer as _Customer
+            fresh = _Customer.objects.select_related("router").get(id=customer_id)
+            enable_customer_access(fresh)
 
-        elif customer.connection_type == "pppoe":
-            message = (
-                "Welcome to Skylink Internet!\n\n"
-                "Your PPPoE account is ready:\n"
-                f"Username: {customer.pppoe_username}\n"
-                f"Password: {customer.pppoe_password}\n\n"
-                f"Package: {package.name}\n"
-                f"Valid Until: {subscription.expiry_date:%d %b %Y %I:%M %p}\n\n"
-                "Use these details on your router.\n"
-                "Support: 0700 XXX XXX"
-            )
-        else:
-            return
+            if connection_type == "hotspot" and _voucher_code:
+                message = (
+                    "Welcome to Skylink WiFi!\n\n"
+                    f"Package: {pkg_name}\n"
+                    f"Valid Until: {expiry:%d %b %Y %I:%M %p}\n\n"
+                    f"Voucher Code: {_voucher_code}\n\n"
+                    "Just stay connected — auto-login will work.\n"
+                    "Support: 0700 XXX XXX"
+                )
+            elif connection_type == "pppoe":
+                message = (
+                    "Welcome to Skylink Internet!\n\n"
+                    "Your PPPoE account is ready:\n"
+                    f"Username: {pppoe_username}\n"
+                    f"Password: {pppoe_password}\n\n"
+                    f"Package: {pkg_name}\n"
+                    f"Valid Until: {expiry:%d %b %Y %I:%M %p}\n\n"
+                    "Use these details on your router.\n"
+                    "Support: 0700 XXX XXX"
+                )
+            else:
+                return
+            try:
+                notify_customer(phone, message)
+            except Exception:
+                pass
 
-        try:
-            notify_customer(customer.phone, message)
-        except Exception:
-            # Notification must not break billing state
-            pass
+        transaction.on_commit(_post_payment_effects)
 
     def __str__(self):
         return f"{self.customer.full_name} - {self.amount}"
@@ -492,6 +502,30 @@ class ExpiryReminderLog(models.Model):
 
     def __str__(self):
         return f"{self.subscription} - {self.reminder_type}"
+
+
+# =====================================================
+# ACCESS AUDIT LOG
+# =====================================================
+
+class AccessAuditLog(models.Model):
+    ACTION_CHOICES = (
+        ("deactivate", "Deactivate"),
+        ("activate", "Activate"),
+    )
+
+    customer = models.ForeignKey(
+        Customer, on_delete=models.CASCADE, related_name="audit_logs"
+    )
+    subscription = models.ForeignKey(
+        "Subscription", on_delete=models.SET_NULL, null=True, blank=True
+    )
+    action = models.CharField(max_length=20, choices=ACTION_CHOICES)
+    reason = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.customer.full_name} — {self.action} — {self.created_at:%Y-%m-%d %H:%M}"
 
 
 # =====================================================
