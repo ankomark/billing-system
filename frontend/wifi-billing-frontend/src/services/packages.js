@@ -22,7 +22,7 @@ export const createPackage = async (data) => {
 
 // ✅ update
 export const updatePackage = async (id, data) => {
-  const res = await api.put(`packages/${id}/`, data);
+  const res = await api.patch(`packages/${id}/`, data);
   return res.data;
 };
 
