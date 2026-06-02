@@ -3,6 +3,7 @@ from django.http import HttpResponse
 from django.db import transaction
 from celery import chain
 from rest_framework_simplejwt.views import TokenObtainPairView
+from rest_framework.filters import SearchFilter
 from .permissions import IsStaffOrAdmin,IsCustomer,IsAdmin
 from .throttles import LoginRateThrottle, HotspotPublicThrottle, MpesaCallbackThrottle, STKPushThrottle
 from rest_framework.views import APIView
@@ -24,6 +25,7 @@ from .reports import (revenue_summary,revenue_by_method,revenue_by_package,custo
 from .dashboards import (unpaid_invoices,pending_invoices,failed_mpesa_transactions,)
 from .serializers import (InvoiceDashboardSerializer,MpesaTransactionDashboardSerializer,)
 from .permissions import IsAdmin
+from .pagination import StandardPagination
 from billing.models import Voucher
 from billing.tasks.mpesa_tasks import initiate_stk_push_task
 from django.utils import timezone
@@ -45,6 +47,36 @@ def home(request):
     return HttpResponse("WiFi Billing Backend is Running")
 
 
+def health_check(request):
+    from django.db import connection
+    from django.http import JsonResponse
+
+    checks = {}
+    overall = "ok"
+
+    # Database
+    try:
+        connection.ensure_connection()
+        checks["db"] = "ok"
+    except Exception as exc:
+        checks["db"] = str(exc)
+        overall = "error"
+
+    # Redis / cache
+    try:
+        from django.core.cache import cache
+        cache.set("_hc", "1", timeout=5)
+        checks["redis"] = "ok" if cache.get("_hc") == "1" else "miss"
+        if checks["redis"] != "ok":
+            overall = "degraded"
+    except Exception as exc:
+        checks["redis"] = str(exc)
+        overall = "degraded"  # degraded, not full error — app still runs without cache
+
+    http_status = 200 if overall == "ok" else (503 if overall == "error" else 200)
+    return JsonResponse({"status": overall, "checks": checks}, status=http_status)
+
+
 class UserProfileView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -54,9 +86,24 @@ class UserProfileView(APIView):
 
 
 class CustomerViewSet(viewsets.ModelViewSet):
-    queryset = Customer.objects.all().order_by("-created_at")
     serializer_class = CustomerSerializer
     permission_classes = [IsAdmin]
+    filter_backends = [SearchFilter]
+    search_fields = ["full_name", "phone", "pppoe_username"]
+
+    def get_queryset(self):
+        qs = (
+            Customer.objects
+            .select_related("user", "router")
+            .order_by("-created_at")
+        )
+        status_filter = self.request.query_params.get("status")
+        conn_filter   = self.request.query_params.get("connection_type")
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+        if conn_filter:
+            qs = qs.filter(connection_type=conn_filter)
+        return qs
 
 
 class PackageViewSet(viewsets.ModelViewSet):
@@ -168,18 +215,30 @@ class MpesaSTKCallbackView(APIView):
         phone = str(data.get("PhoneNumber")) if data.get("PhoneNumber") else None
         reference = data.get("AccountReference")
 
-        # 🔁 Idempotency check
-        if mpesa_receipt and MpesaTransaction.objects.filter(mpesa_receipt=mpesa_receipt).exists():
-            return Response({"detail": "Duplicate callback ignored"})
-
-        tx = MpesaTransaction.objects.create(
-            mpesa_receipt=mpesa_receipt,
-            amount=amount or 0,
-            phone_number=phone,
-            account_reference=reference,
-            raw_payload=request.data,
-            status="success" if result_code == 0 else "failed",
-        )
+        # Idempotency — use get_or_create to prevent race conditions where two
+        # concurrent Safaricom retry callbacks both pass an .exists() check before
+        # either has committed, resulting in duplicate MpesaTransaction rows.
+        if mpesa_receipt:
+            tx, created = MpesaTransaction.objects.get_or_create(
+                mpesa_receipt=mpesa_receipt,
+                defaults={
+                    "amount": amount or 0,
+                    "phone_number": phone,
+                    "account_reference": reference,
+                    "raw_payload": request.data,
+                    "status": "success" if result_code == 0 else "failed",
+                },
+            )
+            if not created:
+                return Response({"detail": "Duplicate callback ignored"})
+        else:
+            tx = MpesaTransaction.objects.create(
+                amount=amount or 0,
+                phone_number=phone,
+                account_reference=reference,
+                raw_payload=request.data,
+                status="success" if result_code == 0 else "failed",
+            )
 
         if result_code != 0:
             tx.error_message = result_desc
@@ -245,24 +304,38 @@ class ManualPaymentView(APIView):
                 status=400,
             )
 
-        invoice = get_object_or_404(Invoice, invoice_number=invoice_number)
-
-        if invoice.payment_status == "paid":
-            return Response({"detail": "Invoice already paid"}, status=400)
-
-        if Decimal(str(amount)) != invoice.total_amount:
-            return Response({"detail": "Amount mismatch"}, status=400)
+        method = request.data.get("method", "cash")
+        if method not in {"cash", "mpesa", "bank"}:
+            return Response({"detail": "method must be cash, mpesa, or bank"}, status=400)
 
         with transaction.atomic():
+            # select_for_update prevents two concurrent manual payments from
+            # both passing the "already paid" check before either commits.
+            invoice = (
+                Invoice.objects
+                .select_for_update()
+                .select_related("customer", "subscription")
+                .filter(invoice_number=invoice_number)
+                .first()
+            )
+            if not invoice:
+                return Response({"detail": "Invoice not found"}, status=404)
+
+            if invoice.payment_status == "paid":
+                return Response({"detail": "Invoice already paid"}, status=400)
+
+            if Decimal(str(amount)) != invoice.total_amount:
+                return Response({"detail": "Amount mismatch"}, status=400)
+
             Payment.objects.create(
                 customer=invoice.customer,
                 subscription=invoice.subscription,
                 amount=amount,
-                method="cash",
+                method=method,
                 reference=reference,
             )
 
-        return Response({"detail": "Manual payment recorded"}, status=201)
+        return Response({"detail": "Payment recorded successfully"}, status=201)
 
 
 class RevenueDashboardView(APIView):
@@ -281,24 +354,32 @@ class UnpaidInvoicesView(APIView):
 
     def get(self, request):
         qs = unpaid_invoices()
-        serializer = InvoiceDashboardSerializer(qs, many=True)
-        return Response(serializer.data)
+        paginator = StandardPagination()
+        page = paginator.paginate_queryset(qs, request)
+        serializer = InvoiceDashboardSerializer(page, many=True)
+        return paginator.get_paginated_response(serializer.data)
+
 
 class PendingInvoicesView(APIView):
     permission_classes = [IsAdmin]
 
     def get(self, request):
         qs = pending_invoices()
-        serializer = InvoiceDashboardSerializer(qs, many=True)
-        return Response(serializer.data)
+        paginator = StandardPagination()
+        page = paginator.paginate_queryset(qs, request)
+        serializer = InvoiceDashboardSerializer(page, many=True)
+        return paginator.get_paginated_response(serializer.data)
+
 
 class FailedMpesaTransactionsView(APIView):
     permission_classes = [IsAdmin]
 
     def get(self, request):
         qs = failed_mpesa_transactions()
-        serializer = MpesaTransactionDashboardSerializer(qs, many=True)
-        return Response(serializer.data)
+        paginator = StandardPagination()
+        page = paginator.paginate_queryset(qs, request)
+        serializer = MpesaTransactionDashboardSerializer(page, many=True)
+        return paginator.get_paginated_response(serializer.data)
 
 class HotspotVoucherValidateView(APIView):
     permission_classes = [permissions.AllowAny]
@@ -660,8 +741,9 @@ class SystemSettingsView(APIView):
                 defaults={"value": value},
             )
 
-        # ✅ Clear cache so new values apply immediately
-        get_setting.cache_clear()
+        # Invalidate Redis cache across all workers so new values apply immediately
+        from .config import clear_settings_cache
+        clear_settings_cache()
 
         return Response({"detail": "Settings updated successfully"})
 
@@ -698,52 +780,31 @@ class AdminBroadcastView(APIView):
         serializer = BroadcastSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        channel = serializer.validated_data["channel"]
-        audience = serializer.validated_data["audience"]
-        message = serializer.validated_data["message"]
+        channel      = serializer.validated_data["channel"]
+        audience     = serializer.validated_data["audience"]
+        message      = serializer.validated_data["message"]
         customer_ids = serializer.validated_data.get("customer_ids", [])
 
-        qs = Customer.objects.all()
+        if audience == "custom" and not customer_ids:
+            return Response(
+                {"detail": "customer_ids is required when audience=custom"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        if audience == "active":
-            qs = qs.filter(status="active")
-
-        elif audience == "expired":
-            qs = qs.filter(status="expired")
-
-        elif audience == "custom":
-            if not customer_ids:
-                return Response(
-                    {"detail": "customer_ids is required when audience=custom"},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            qs = qs.filter(id__in=customer_ids)
-
-        sent = 0
-        failed = 0
-        errors = []
-
-        for c in qs:
-            try:
-                if channel == "sms":
-                   send_sms_task.delay(c.phone, message)
-                else:
-                    send_whatsapp_task.delay(c.phone, message)
-                sent += 1
-            except Exception as e:
-                failed += 1
-                errors.append({"customer_id": c.id, "phone": c.phone, "error": str(e)})
+        # Dispatch a single Celery task that iterates customers in chunks.
+        # The old pattern loaded every Customer into the web worker's memory
+        # and looped synchronously — at 10k customers this blocked the worker.
+        from billing.tasks.notification_tasks import dispatch_broadcast_task
+        task = dispatch_broadcast_task.delay(audience, channel, message, customer_ids)
 
         return Response(
             {
-                "detail": "Broadcast completed",
+                "detail": "Broadcast queued for delivery",
+                "task_id": task.id,
                 "audience": audience,
                 "channel": channel,
-                "sent": sent,
-                "failed": failed,
-                "errors": errors[:20],  # don't return too much
             },
-            status=status.HTTP_200_OK,
+            status=status.HTTP_202_ACCEPTED,
         )
         
 from billing.router_service import get_pppoe_live_usage
@@ -837,22 +898,28 @@ class AdminPPPoESessionsView(APIView):
     permission_classes = [IsAdminUser]
 
     def get(self, request):
-        data = []
+        # Pre-load all PPPoE customers into a dict for O(1) lookup per session.
+        # Without this, the original code fired one DB query per active PPPoE
+        # session (N+1): with 300 sessions = 300 individual SELECT queries.
+        customer_by_username = {
+            c.pppoe_username: c
+            for c in Customer.objects.filter(
+                connection_type="pppoe",
+                pppoe_username__isnull=False,
+            ).exclude(pppoe_username="")
+        }
 
+        data = []
         routers = RouterDevice.objects.filter(is_active=True)
 
         for router in routers:
             try:
                 sessions = get_all_pppoe_sessions(router)
-            except Exception as e:
-                # Skip router if MikroTik is unreachable
+            except Exception:
                 continue
 
             for s in sessions:
-                customer = Customer.objects.filter(
-                    pppoe_username=s.get("username")
-                ).first()
-
+                customer = customer_by_username.get(s.get("username"))
                 data.append({
                     "router": router.name,
                     "username": s.get("username"),
@@ -969,23 +1036,67 @@ class AdminRouterListView(APIView):
     permission_classes = [IsAdminUser]
 
     def get(self, request):
+        # Use cached is_online from the background health task — do NOT make
+        # live socket probes here. Probing N routers synchronously during an
+        # HTTP request blocks a Gunicorn worker for N × timeout seconds.
         routers = RouterDevice.objects.all().order_by("priority")
-
-        data = []
-        for router in routers:
-            online = is_router_reachable(router)
-
-            data.append({
-                "id": router.id,
-                "name": router.name,
-                "ip_address": router.ip_address,
-                "api_port": router.api_port,
-                "priority": router.priority,
-                "is_active": router.is_active,
-                "online": online,
-            })
-
+        data = [
+            {
+                "id": r.id,
+                "name": r.name,
+                "ip_address": r.ip_address,
+                "api_port": r.api_port,
+                "priority": r.priority,
+                "is_active": r.is_active,
+                "max_pppoe_sessions": r.max_pppoe_sessions,
+                "online": r.is_online,
+                "last_seen": r.last_seen,
+                "last_error": r.last_error,
+            }
+            for r in routers
+        ]
         return Response(data)
+
+    def post(self, request):
+        from .serializers import RouterSerializer
+        serializer = RouterSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        router = serializer.save()
+        return Response(RouterSerializer(router).data, status=status.HTTP_201_CREATED)
+
+
+class AdminRouterDetailView(APIView):
+    permission_classes = [IsAdminUser]
+
+    def _get(self, pk):
+        try:
+            return RouterDevice.objects.get(pk=pk)
+        except RouterDevice.DoesNotExist:
+            return None
+
+    def get(self, request, pk):
+        router = self._get(pk)
+        if not router:
+            return Response({"detail": "Not found"}, status=404)
+        from .serializers import RouterSerializer
+        return Response(RouterSerializer(router).data)
+
+    def put(self, request, pk):
+        router = self._get(pk)
+        if not router:
+            return Response({"detail": "Not found"}, status=404)
+        from .serializers import RouterSerializer
+        serializer = RouterSerializer(router, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(RouterSerializer(router).data)
+
+    def delete(self, request, pk):
+        router = self._get(pk)
+        if not router:
+            return Response({"detail": "Not found"}, status=404)
+        router.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 from billing.router_service import safe_connect_router, provision_customer_on_router,migrate_customer_router  
 
 
@@ -1223,52 +1334,74 @@ class AdminUsageAlertsView(APIView):
     permission_classes = [IsAdminUser]
 
     def get(self, request):
-        nearing_limit = []
+        from django.db.models import F
 
-        customers = (
-            Customer.objects.filter(status="active")
-            .prefetch_related("subscriptions__package")
+        # ── Step 1: one query — active subscriptions with customer + package ─
+        # Deduplicate in Python to get one subscription per customer (most recent).
+        active_subs = (
+            Subscription.objects
+            .filter(status="active", customer__status="active")
+            .select_related("customer", "package")
+            .order_by("customer_id", "-expiry_date")
         )
 
-        for customer in customers:
-            subscription = (
-                customer.subscriptions.filter(status="active")
-                .order_by("-expiry_date")
-                .first()
-            )
-            if not subscription:
-                continue
+        # customer_id → (subscription, cap_gb)
+        sub_map: dict = {}
+        for sub in active_subs:
+            cid = sub.customer_id
+            if cid in sub_map:
+                continue  # already have the most-recent active sub for this customer
+            cap_gb = sub.customer.custom_data_cap_gb or sub.package.monthly_data_cap_gb
+            if cap_gb:
+                sub_map[cid] = (sub, cap_gb)
 
-            cap_gb = customer.custom_data_cap_gb or subscription.package.monthly_data_cap_gb
-            if not cap_gb:
-                continue  # unlimited plan
+        if not sub_map:
+            return Response([])
 
-            period_start = subscription.start_date
+        customer_ids = list(sub_map.keys())
 
+        # ── Step 2: bulk aggregate PPPoE usage (1 query) ──────────────────────
+        pppoe_usage = dict(
+            PPPoEUsageRecord.objects
+            .filter(customer_id__in=customer_ids)
+            .values("customer_id")
+            .annotate(total=Sum(F("download_bytes") + F("upload_bytes")))
+            .values_list("customer_id", "total")
+        )
+
+        # ── Step 3: bulk aggregate Hotspot usage (1 query) ───────────────────
+        hotspot_usage = dict(
+            HotspotUsageRecord.objects
+            .filter(customer_id__in=customer_ids)
+            .values("customer_id")
+            .annotate(total=Sum(F("download_bytes") + F("upload_bytes")))
+            .values_list("customer_id", "total")
+        )
+
+        # ── Step 4: join in Python — zero additional DB queries ───────────────
+        nearing_limit = []
+        for cid, (sub, cap_gb) in sub_map.items():
+            customer = sub.customer
             if customer.connection_type == "pppoe":
-                result = PPPoEUsageRecord.objects.filter(
-                    customer=customer,
-                    period_start__gte=period_start,
-                ).aggregate(total=Sum("download_bytes") + Sum("upload_bytes"))
+                total_bytes = pppoe_usage.get(cid, 0) or 0
             else:
-                result = HotspotUsageRecord.objects.filter(
-                    customer=customer,
-                    period_start__gte=period_start,
-                ).aggregate(total=Sum("download_bytes") + Sum("upload_bytes"))
+                total_bytes = hotspot_usage.get(cid, 0) or 0
 
-            total_gb = (result["total"] or 0) / (1024 ** 3)
-            percent = (total_gb / cap_gb) * 100
+            total_gb = total_bytes / (1024 ** 3)
+            percent  = (total_gb / cap_gb) * 100
 
             if percent >= 80:
                 nearing_limit.append({
                     "customer": customer.full_name,
-                    "phone": customer.phone,
-                    "used_gb": round(total_gb, 2),
-                    "cap_gb": cap_gb,
-                    "percent": round(percent, 1),
+                    "phone":    customer.phone,
+                    "used_gb":  round(total_gb, 2),
+                    "cap_gb":   cap_gb,
+                    "percent":  round(percent, 1),
                 })
 
-        return Response(sorted(nearing_limit, key=lambda x: x["percent"], reverse=True))
+        return Response(
+            sorted(nearing_limit, key=lambda x: x["percent"], reverse=True)
+        )
 
 class AdminAccessLookupView(APIView):
     permission_classes = [IsAdminUser]
@@ -1485,6 +1618,27 @@ class AdminDeactivateAccessView(APIView):
             },
             status=200,
         )
+class DailyRevenueView(APIView):
+    permission_classes = [IsAdmin]
+
+    def get(self, request):
+        days = min(max(int(request.query_params.get("days", 30)), 1), 90)
+        since = timezone.now() - timezone.timedelta(days=days)
+        from .models import Payment
+        data = (
+            Payment.objects
+            .filter(paid_at__gte=since)
+            .annotate(day=TruncDate("paid_at"))
+            .values("day")
+            .annotate(revenue=Sum("amount"))
+            .order_by("day")
+        )
+        return Response([
+            {"date": str(x["day"]), "revenue": float(x["revenue"] or 0)}
+            for x in data
+        ])
+
+
 class HotspotReconnectView(APIView):
     permission_classes = [permissions.AllowAny]
 

@@ -113,8 +113,42 @@ DATABASES = {
         "PASSWORD": os.getenv("POSTGRES_PASSWORD", "wifi_pass"),
         "HOST": os.getenv("POSTGRES_HOST", "127.0.0.1"),
         "PORT": os.getenv("POSTGRES_PORT", "5432"),
+        # Keep connections alive per-worker. Use pgBouncer in production for
+        # true connection pooling when running 8+ Gunicorn workers.
+        "CONN_MAX_AGE": int(os.getenv("CONN_MAX_AGE", "60")),
     }
 }
+
+# =====================================================
+# CACHE (Redis — shared across all workers)
+# =====================================================
+# Redis DB layout:
+#  0 → Celery broker
+#  1 → Django cache (get_setting + any app caching)
+#  2 → Celery results
+
+REDIS_URL = os.getenv("REDIS_URL", "")
+
+if REDIS_URL:
+    # Production / staging: Redis is available — shared cache across all workers.
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.redis.RedisCache",
+            "LOCATION": f"{REDIS_URL}/1",
+            "OPTIONS": {
+                "socket_connect_timeout": 3,
+                "socket_timeout": 3,
+            },
+        }
+    }
+else:
+    # Development: no Redis — use in-process memory cache.
+    # get_setting() still works; cache is per-process (not shared across workers).
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        }
+    }
 
 
 
@@ -144,6 +178,7 @@ USE_TZ = True
 # =====================================================
 
 STATIC_URL = "/static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"  # target for `python manage.py collectstatic`
 
 # =====================================================
 # CORS
@@ -195,32 +230,64 @@ SIMPLE_JWT = {
 # CELERY CONFIGURATION (CRITICAL)
 # =====================================================
 
-# Broker (Redis)
+# Broker — Redis in production, memory:// in dev (env var always wins)
 CELERY_BROKER_URL = os.getenv(
     "CELERY_BROKER_URL",
-    "redis://127.0.0.1:6379/0"
+    f"{REDIS_URL}/0" if REDIS_URL else "memory://",
 )
-
 
 # Serialization
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
 
-# ✅ RESULT BACKEND (Django DB)
-CELERY_RESULT_BACKEND = "django-db"
-CELERY_CACHE_BACKEND = "django-cache"
+# Result backend — Redis in production, django-db in dev (when no Redis URL set).
+# In production Redis prevents the task result table growing 800k+ rows/day.
+if REDIS_URL:
+    CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", f"{REDIS_URL}/2")
+    CELERY_RESULT_EXPIRES = 60 * 60 * 24  # auto-expire results after 24 hours
+else:
+    CELERY_RESULT_BACKEND = "django-db"
+    CELERY_CACHE_BACKEND = "django-cache"
 
 # Timezone consistency
 CELERY_TIMEZONE = TIME_ZONE
 
 # Task safety
 CELERY_TASK_TRACK_STARTED = True
-CELERY_TASK_TIME_LIMIT = 300        # Hard kill
-CELERY_TASK_SOFT_TIME_LIMIT = 240   # Graceful stop
+CELERY_TASK_TIME_LIMIT = 300        # Hard kill after 5 min
+CELERY_TASK_SOFT_TIME_LIMIT = 240   # Graceful stop at 4 min
 CELERY_WORKER_PREFETCH_MULTIPLIER = 1
 
-# Beat (DB scheduler)
+# Beat scheduler — DB so schedules survive deploys and are editable in admin
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
+
+# Pre-seed schedules on fresh deploys (DatabaseScheduler syncs these to DB)
+CELERY_BEAT_SCHEDULE = {
+    "expire-subscriptions": {
+        "task": "billing.tasks.subscription_tasks.enforce_subscription_expiry",
+        "schedule": crontab(minute="*/5"),
+        "options": {"expires": 240},
+    },
+    "send-expiry-reminders": {
+        "task": "billing.tasks.reminder_tasks.send_expiry_reminders",
+        "schedule": crontab(hour=8, minute=0),
+    },
+    "check-router-health": {
+        "task": "billing.tasks.router_health.check_router_health_task",
+        "schedule": crontab(minute="*/2"),
+        "options": {"expires": 90},
+    },
+    "collect-pppoe-usage": {
+        "task": "billing.tasks.usage_tasks.collect_pppoe_usage_snapshots",
+        "schedule": crontab(minute="*/5"),
+        "options": {"expires": 240},
+    },
+    "auto-failover": {
+        "task": "billing.tasks.auto_failover.run_auto_failover_task",
+        "schedule": crontab(minute="*/3"),
+        "options": {"expires": 150},
+    },
+}
 
 # =====================================================
 # M-PESA CONFIG

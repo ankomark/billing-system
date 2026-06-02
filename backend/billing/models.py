@@ -6,7 +6,7 @@ from dateutil.relativedelta import relativedelta
 import secrets
 import string
 
-from billing.services.notification_service import notify_customer
+from billing.notifications import notify_customer
 from .utils import generate_invoice_number
 from .fields import EncryptedCharField
 
@@ -107,6 +107,13 @@ class Customer(models.Model):
     )
 
     created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["status"],           name="customer_status_idx"),
+            models.Index(fields=["pppoe_username"],   name="customer_pppoe_username_idx"),
+            models.Index(fields=["connection_type"],  name="customer_connection_type_idx"),
+        ]
 
     def clean(self):
         # Enforce data integrity: only one identifier should be set
@@ -244,6 +251,13 @@ class Subscription(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True)
 
+    class Meta:
+        indexes = [
+            models.Index(fields=["status"],                 name="subscription_status_idx"),
+            models.Index(fields=["expiry_date"],            name="subscription_expiry_date_idx"),
+            models.Index(fields=["status", "expiry_date"],  name="subscription_status_expiry_idx"),
+        ]
+
     def save(self, *args, **kwargs):
         creating = self.pk is None
 
@@ -322,6 +336,12 @@ class Invoice(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True)
 
+    class Meta:
+        indexes = [
+            models.Index(fields=["payment_status"], name="invoice_payment_status_idx"),
+            models.Index(fields=["created_at"],     name="invoice_created_at_idx"),
+        ]
+
     def __str__(self):
         return self.invoice_number
 
@@ -389,6 +409,13 @@ class Payment(models.Model):
     reference = models.CharField(max_length=100, blank=True)
     paid_at = models.DateTimeField(auto_now_add=True)
 
+    class Meta:
+        indexes = [
+            models.Index(fields=["paid_at"],           name="payment_paid_at_idx"),
+            models.Index(fields=["method"],             name="payment_method_idx"),
+            models.Index(fields=["paid_at", "method"], name="payment_paid_at_method_idx"),
+        ]
+
     def save(self, *args, **kwargs):
         creating = self.pk is None
         super().save(*args, **kwargs)
@@ -396,19 +423,26 @@ class Payment(models.Model):
         if not creating:
             return
 
-        # Local imports to avoid circular issues
         from billing.router_service import (
             enable_customer_access,
             pick_best_router_for_new_customer,
         )
-        from billing.services.notification_service import notify_customer
 
         customer = self.customer
         subscription = self.subscription
         package = subscription.package
         voucher_code = None
 
-        # DB-only changes go inside the transaction
+        # Resolve the best router BEFORE opening a DB transaction.
+        # pick_best_router_for_new_customer() makes TCP connections to every
+        # router (up to 5 s per router). Holding DB row locks during that
+        # blocking I/O would block concurrent payments for other customers.
+        assigned_router = None
+        if not customer.router:
+            router, _ = pick_best_router_for_new_customer()
+            assigned_router = router
+
+        # DB-only changes inside the transaction (no blocking I/O here)
         with transaction.atomic():
             invoice = subscription.invoice
             invoice.payment_status = "paid"
@@ -417,11 +451,9 @@ class Payment(models.Model):
             subscription.status = "active"
             subscription.save(update_fields=["status"])
 
-            if not customer.router:
-                router, _api = pick_best_router_for_new_customer()
-                if router:
-                    customer.router = router
-                    customer.save(update_fields=["router"])
+            if assigned_router:
+                customer.router = assigned_router
+                customer.save(update_fields=["router"])
 
             # Voucher is a DB write — belongs inside the transaction
             if customer.connection_type == "hotspot":
@@ -591,6 +623,14 @@ class MpesaTransaction(models.Model):
     raw_payload = models.JSONField()
     status = models.CharField(max_length=10, choices=RESULT_STATUS)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["status"],             name="mpesa_status_idx"),
+            models.Index(fields=["processed"],          name="mpesa_processed_idx"),
+            models.Index(fields=["status","processed"], name="mpesa_status_processed_idx"),
+            models.Index(fields=["created_at"],         name="mpesa_created_at_idx"),
+        ]
 
     def __str__(self):
         return f"{self.mpesa_receipt or 'NO-RECEIPT'} - {self.status}"

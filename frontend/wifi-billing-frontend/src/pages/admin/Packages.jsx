@@ -19,7 +19,7 @@ export default function Packages() {
 
   useEffect(() => {
     loadPackages(page);
-  }, [page]);
+  }, [page]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleDelete = async (id) => {
     if (!window.confirm("Delete this package?")) return;

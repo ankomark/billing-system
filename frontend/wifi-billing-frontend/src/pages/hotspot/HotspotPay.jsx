@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
 import api from "../../services/api";
 
@@ -8,9 +8,7 @@ export default function HotspotPay() {
 
   // Values sent from HotspotPackages.jsx
   const packageId = params.get("package");
-  const mac = params.get("mac");
-  const ip = params.get("ip");
-  const mikrotikUser = params.get("username");
+  const mac       = params.get("mac");
 
   const [phone, setPhone] = useState("");
   const [loading, setLoading] = useState(false);

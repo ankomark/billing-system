@@ -1,56 +1,12 @@
-import requests
-from django.conf import settings
-import africastalking
+"""
+Thin compatibility shim — re-exports from billing.notifications.
 
-# ==================================
-# SMS USING AFRICA'S TALKING
-# ==================================
+Previously this module read AT_USERNAME/AT_API_KEY from Django settings
+(environment variables only), so credential updates through the SystemSettings
+UI had no effect here. All logic is now in billing.notifications which reads
+from get_setting() (DB-backed, multi-worker-safe cache).
 
-def send_sms(phone, message):
-    try:
-        africastalking.initialize(
-            username=settings.AT_USERNAME,
-            api_key=settings.AT_API_KEY,
-        )
-        sms = africastalking.SMS
-        sms.send(message, [phone])
-        return True
-    except Exception as e:
-        print("SMS ERROR:", e)
-        return False
-
-
-# ==================================
-# WHATSAPP (META CLOUD API)
-# ==================================
-
-def send_whatsapp(phone, message):
-    try:
-        url = f"https://graph.facebook.com/v18.0/{settings.WHATSAPP_PHONE_ID}/messages"
-
-        payload = {
-            "messaging_product": "whatsapp",
-            "to": phone,
-            "type": "text",
-            "text": {"body": message},
-        }
-
-        headers = {
-            "Authorization": f"Bearer {settings.WHATSAPP_TOKEN}",
-            "Content-Type": "application/json",
-        }
-
-        requests.post(url, json=payload, headers=headers)
-        return True
-    except Exception as e:
-        print("WHATSAPP ERROR:", e)
-        return False
-
-
-# ==================================
-# UNIFIED SEND FUNCTION
-# ==================================
-
-def notify_customer(phone, message):
-    send_sms(phone, message)
-    send_whatsapp(phone, message)
+Kept to avoid breaking any management commands or third-party code that still
+imports from this path. Import billing.notifications directly in new code.
+"""
+from billing.notifications import notify_customer, send_sms, send_whatsapp  # noqa: F401

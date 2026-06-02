@@ -8,8 +8,11 @@ __pycache__/
 *.log
 
 # Django
-/staticfiles/
+staticfiles/
 media/
+.env.local
+.env.production
+.env.staging
 
 # Virtualenv
 venv/

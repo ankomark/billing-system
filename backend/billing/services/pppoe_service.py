@@ -2,7 +2,6 @@ import secrets
 import string
 
 from billing.models import Customer
-from billing.router_service import create_pppoe_secret
 
 
 # -----------------------------------------------------
@@ -63,5 +62,10 @@ def provision_pppoe_on_router(subscription):
     if not customer.pppoe_username or not customer.pppoe_password:
         return  # no credentials to provision yet
 
-    # Create PPPoE secret if not existing
-    create_pppoe_secret(router, customer, subscription.package)
+    from billing.router_service import safe_connect_router, create_pppoe_secret
+
+    api = safe_connect_router(router)
+    if not api:
+        return  # router unreachable — access will be enabled when router comes back online
+
+    create_pppoe_secret(api, router, customer, subscription.package)
