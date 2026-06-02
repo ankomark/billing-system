@@ -1,6 +1,10 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import toast from "react-hot-toast";
+import { ArrowLeft, Save, Loader } from "lucide-react";
 import AdminLayout from "../../components/admin/AdminLayout";
+import { Skeleton } from "../../components/ui/Skeleton";
 import { fetchPackage, createPackage, updatePackage } from "../../services/packages";
 
 const DURATION_UNITS = [
@@ -12,31 +16,39 @@ const DURATION_UNITS = [
   { value: "years",   label: "Years"   },
 ];
 
-const EMPTY = { name: "", download_speed: "", upload_speed: "", duration_value: "", duration_unit: "days", price: "" };
+const EMPTY = {
+  name: "", download_speed: "", upload_speed: "",
+  duration_value: "", duration_unit: "days", price: "",
+};
 
 export default function PackageForm() {
-  const { id } = useParams();
-  const navigate = useNavigate();
-  const isEdit = Boolean(id);
+  const { id }    = useParams();
+  const navigate  = useNavigate();
+  const qc        = useQueryClient();
+  const isEdit    = Boolean(id);
 
-  const [form, setForm] = useState(EMPTY);
+  const [form, setForm]     = useState(EMPTY);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
+
+  const { data: existing, isLoading } = useQuery({
+    queryKey: ["package", id],
+    queryFn: () => fetchPackage(id),
+    enabled: isEdit,
+    staleTime: 5 * 60 * 1000,
+  });
 
   useEffect(() => {
-    if (isEdit) {
-      fetchPackage(id).then((pkg) =>
-        setForm({
-          name:           pkg.name           || "",
-          download_speed: pkg.download_speed || "",
-          upload_speed:   pkg.upload_speed   || "",
-          duration_value: pkg.duration_value || "",
-          duration_unit:  pkg.duration_unit  || "days",
-          price:          pkg.price          || "",
-        })
-      );
+    if (existing) {
+      setForm({
+        name:           existing.name           ?? "",
+        download_speed: existing.download_speed ?? "",
+        upload_speed:   existing.upload_speed   ?? "",
+        duration_value: existing.duration_value ?? "",
+        duration_unit:  existing.duration_unit  ?? "days",
+        price:          existing.price          ?? "",
+      });
     }
-  }, [id, isEdit]);
+  }, [existing]);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -46,39 +58,63 @@ export default function PackageForm() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setSaving(true);
-    setError("");
     try {
-      if (isEdit) await updatePackage(id, form);
-      else await createPackage(form);
+      if (isEdit) {
+        await updatePackage(id, form);
+        toast.success("Package updated");
+        qc.invalidateQueries({ queryKey: ["package", id] });
+      } else {
+        await createPackage(form);
+        toast.success("Package created");
+      }
+      qc.invalidateQueries({ queryKey: ["packages"] });
       navigate("/admin/packages");
     } catch (err) {
-      setError(err.response?.data?.detail || "Failed to save package");
+      toast.error(err.response?.data?.detail || "Failed to save package");
+    } finally {
       setSaving(false);
     }
   };
 
+  if (isEdit && isLoading) {
+    return (
+      <AdminLayout>
+        <div className="max-w-xl space-y-4">
+          <Skeleton className="h-8 w-48" />
+          <div className="bg-white rounded-xl border border-slate-200 p-6 space-y-4">
+            {[...Array(5)].map((_, i) => <Skeleton key={i} className="h-10 w-full" />)}
+          </div>
+        </div>
+      </AdminLayout>
+    );
+  }
+
   return (
     <AdminLayout>
       <div className="max-w-xl space-y-6">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-800">{isEdit ? "Edit Package" : "New Package"}</h1>
-          <p className="text-slate-500 text-sm mt-1">
-            {isEdit ? "Update the package details below" : "Fill in the details for the new package"}
-          </p>
-        </div>
-
-        {error && (
-          <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm">
-            {error}
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => navigate("/admin/packages")}
+            className="text-slate-400 hover:text-slate-700 transition-colors"
+          >
+            <ArrowLeft size={20} />
+          </button>
+          <div>
+            <h1 className="text-2xl font-bold text-slate-800">
+              {isEdit ? "Edit Package" : "New Package"}
+            </h1>
+            <p className="text-slate-500 text-sm mt-0.5">
+              {isEdit ? `Editing ${existing?.name}` : "Fill in the details for the new package"}
+            </p>
           </div>
-        )}
+        </div>
 
         <form onSubmit={handleSubmit} className="bg-white rounded-xl border border-slate-200 p-6 space-y-5">
           <Field label="Package Name" name="name" value={form.name} onChange={handleChange} placeholder="e.g. Basic 5Mbps" required />
 
           <div className="grid grid-cols-2 gap-4">
-            <Field label="Download Speed (Mbps)" type="number" name="download_speed" value={form.download_speed} onChange={handleChange} placeholder="e.g. 5" required />
-            <Field label="Upload Speed (Mbps)"   type="number" name="upload_speed"   value={form.upload_speed}   onChange={handleChange} placeholder="e.g. 2" required />
+            <Field label="Download Speed (Mbps)" type="number" name="download_speed" value={form.download_speed} onChange={handleChange} placeholder="e.g. 5"  required />
+            <Field label="Upload Speed (Mbps)"   type="number" name="upload_speed"   value={form.upload_speed}   onChange={handleChange} placeholder="e.g. 2"  required />
           </div>
 
           <div className="grid grid-cols-2 gap-4">
@@ -104,8 +140,9 @@ export default function PackageForm() {
             <button
               type="submit"
               disabled={saving}
-              className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2.5 rounded-lg font-medium text-sm disabled:opacity-50 transition-colors"
+              className="inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white px-6 py-2.5 rounded-lg font-semibold text-sm transition-colors"
             >
+              {saving ? <Loader size={14} className="animate-spin" /> : <Save size={14} />}
               {saving ? "Saving…" : isEdit ? "Save Changes" : "Create Package"}
             </button>
             <button
@@ -122,10 +159,12 @@ export default function PackageForm() {
   );
 }
 
-function Field({ label, name, value, onChange, type = "text", placeholder, required, className = "" }) {
+function Field({ label, name, value, onChange, type = "text", placeholder, required }) {
   return (
-    <div className={className}>
-      <label className="block text-sm font-medium text-slate-700 mb-1.5">{label}</label>
+    <div>
+      <label className="block text-sm font-medium text-slate-700 mb-1.5">
+        {label} {required && <span className="text-red-500">*</span>}
+      </label>
       <input
         type={type}
         name={name}
