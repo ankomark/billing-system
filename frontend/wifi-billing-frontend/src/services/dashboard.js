@@ -15,6 +15,6 @@ export const fetchFailedMpesa = async () => {
   return res.data;
 };
 export async function fetchAdminUsageDaily(days = 7) {
-  const res = await api.get(`/admin/usage/daily/?days=${days}`);
+  const res = await api.get("admin/usage/daily/", { params: { days } });
   return res.data;
 }

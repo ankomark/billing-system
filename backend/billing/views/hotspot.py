@@ -30,8 +30,8 @@ class HotspotVoucherValidateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # ✅ Validate voucher / receipt
-        subscription = validate_voucher(code)
+        # ✅ Validate voucher / receipt (MAC rebind protection enforced here)
+        subscription = validate_voucher(code, mac_address=mac_address)
 
         if not subscription:
             return Response(

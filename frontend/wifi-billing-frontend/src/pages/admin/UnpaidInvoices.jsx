@@ -6,12 +6,13 @@ import EmptyState from "../../components/ui/EmptyState";
 import { fetchUnpaidInvoices } from "../../services/dashboard";
 
 export default function UnpaidInvoices() {
-  const { data: invoices = [], isLoading, isError, refetch, isFetching } = useQuery({
+  const { data, isLoading, isError, refetch, isFetching } = useQuery({
     queryKey: ["unpaid-invoices"],
     queryFn: fetchUnpaidInvoices,
     staleTime: 60 * 1000,
   });
 
+  const invoices = data?.results ?? [];
   const totalOwed = invoices.reduce((sum, inv) => sum + Number(inv.total_amount || 0), 0);
 
   return (

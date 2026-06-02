@@ -8,7 +8,7 @@ export default function FailedMpesa() {
 
   useEffect(() => {
     fetchFailedMpesa()
-      .then(setTxs)
+      .then((data) => setTxs(data?.results ?? []))
       .finally(() => setLoading(false));
   }, []);
 

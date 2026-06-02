@@ -12,6 +12,6 @@ export const hotspotPay = async (payload) => {
   return res.data;
 };
 export async function fetchHotspotUsageDaily(days = 7) {
-  const res = await api.get(`/hotspot/usage/daily/?days=${days}`);
+  const res = await api.get("hotspot/usage/daily/", { params: { days } });
   return res.data;
 }

@@ -54,7 +54,7 @@ export default function UsageAlerts() {
   const { data: alerts = [], isLoading, isError, refetch, isFetching } = useQuery({
     queryKey: ["usage-alerts"],
     queryFn: () =>
-      api.get("admin/usage/Alerts/").then((r) => r.data || []),
+      api.get("admin/usage/alerts/").then((r) => r.data || []),
     staleTime: 2 * 60 * 1000,
   });
 

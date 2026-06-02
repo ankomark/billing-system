@@ -42,13 +42,15 @@ def make_admin(username="admin_user"):
 
 
 def make_router(name="Main Router", ip="192.168.1.1", **kwargs):
-    return RouterDevice.objects.create(
-        name=name, ip_address=ip,
-        username="admin", password="routerpass",
-        api_port=8728, priority=1,
-        is_active=True, is_online=True,
-        **kwargs,
-    )
+    defaults = {
+        "username": "admin",
+        "password": "routerpass",
+        "api_port": 8728,
+        "priority": 1,
+        "is_active": True,
+        "is_online": True,
+    }
+    return RouterDevice.objects.create(name=name, ip_address=ip, **{**defaults, **kwargs})
 
 
 def make_package(name="Basic 30d", price="500.00",
@@ -195,7 +197,7 @@ class PaymentProcessingTests(TestCase):
         self.invoice = self.sub.invoice
 
     @patch("billing.router_service.enable_customer_access")
-    @patch("billing.services.notification_service.notify_customer")
+    @patch("billing.models.notify_customer")
     def test_invoice_marked_paid(self, _, __):
         with self.captureOnCommitCallbacks(execute=True):
             Payment.objects.create(
@@ -206,7 +208,7 @@ class PaymentProcessingTests(TestCase):
         self.assertEqual(self.invoice.payment_status, "paid")
 
     @patch("billing.router_service.enable_customer_access")
-    @patch("billing.services.notification_service.notify_customer")
+    @patch("billing.models.notify_customer")
     def test_subscription_set_to_active(self, _, __):
         with self.captureOnCommitCallbacks(execute=True):
             Payment.objects.create(
@@ -217,7 +219,7 @@ class PaymentProcessingTests(TestCase):
         self.assertEqual(self.sub.status, "active")
 
     @patch("billing.router_service.enable_customer_access")
-    @patch("billing.services.notification_service.notify_customer")
+    @patch("billing.models.notify_customer")
     def test_router_access_enabled_exactly_once(self, _, mock_enable):
         with self.captureOnCommitCallbacks(execute=True):
             Payment.objects.create(
@@ -227,7 +229,7 @@ class PaymentProcessingTests(TestCase):
         mock_enable.assert_called_once()
 
     @patch("billing.router_service.enable_customer_access")
-    @patch("billing.services.notification_service.notify_customer")
+    @patch("billing.models.notify_customer")
     def test_pppoe_notification_contains_credentials(self, mock_notify, _):
         with self.captureOnCommitCallbacks(execute=True):
             Payment.objects.create(
@@ -240,7 +242,7 @@ class PaymentProcessingTests(TestCase):
         self.assertIn("PPPoE", message_arg)
 
     @patch("billing.router_service.enable_customer_access")
-    @patch("billing.services.notification_service.notify_customer")
+    @patch("billing.models.notify_customer")
     def test_hotspot_voucher_created_on_payment(self, _, __):
         hotspot_pkg = make_hotspot_package()
         router2 = make_router(name="R2", ip="10.0.0.2")
@@ -260,7 +262,7 @@ class PaymentProcessingTests(TestCase):
         self.assertEqual(voucher.expires_at, hs_sub.expiry_date)
 
     @patch("billing.router_service.enable_customer_access")
-    @patch("billing.services.notification_service.notify_customer")
+    @patch("billing.models.notify_customer")
     def test_second_payment_does_not_double_process(self, _, __):
         """A second payment on the same subscription must not create a second invoice or voucher."""
         with self.captureOnCommitCallbacks(execute=True):
@@ -326,7 +328,7 @@ class MpesaCallbackTests(TestCase):
         return json.dumps(payload)
 
     @patch("billing.router_service.enable_customer_access")
-    @patch("billing.services.notification_service.notify_customer")
+    @patch("billing.models.notify_customer")
     def test_success_marks_invoice_paid(self, _, __):
         with self.captureOnCommitCallbacks(execute=True):
             resp = self.client.post(self.URL, data=self._build_callback(),
@@ -336,7 +338,7 @@ class MpesaCallbackTests(TestCase):
         self.assertEqual(self.invoice.payment_status, "paid")
 
     @patch("billing.router_service.enable_customer_access")
-    @patch("billing.services.notification_service.notify_customer")
+    @patch("billing.models.notify_customer")
     def test_success_creates_payment_and_transaction(self, _, __):
         with self.captureOnCommitCallbacks(execute=True):
             self.client.post(self.URL, data=self._build_callback(),
@@ -360,7 +362,7 @@ class MpesaCallbackTests(TestCase):
         self.assertTrue(MpesaTransaction.objects.filter(status="failed").exists())
 
     @patch("billing.router_service.enable_customer_access")
-    @patch("billing.services.notification_service.notify_customer")
+    @patch("billing.models.notify_customer")
     def test_duplicate_receipt_ignored(self, _, __):
         body = self._build_callback()
         with self.captureOnCommitCallbacks(execute=True):

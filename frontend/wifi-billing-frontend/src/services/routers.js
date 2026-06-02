@@ -10,6 +10,6 @@ export const fetchFailoverLogs = async () => {
   return res.data;
 };
 export async function fetchRouters() {
-  const res = await api.get("/admin/routers/");
+  const res = await api.get("admin/routers/");
   return res.data;
 }
