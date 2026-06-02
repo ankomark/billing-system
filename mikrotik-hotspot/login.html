@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Skylink WiFi — Connect</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      min-height: 100vh;
+      background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 50%, #0f172a 100%);
+      display: flex; align-items: center; justify-content: center;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      padding: 1rem;
+    }
+
+    .container { width: 100%; max-width: 420px; }
+
+    /* ── Brand ── */
+    .brand { text-align: center; margin-bottom: 2rem; }
+    .brand-icon {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 64px; height: 64px; background: #2563eb;
+      border-radius: 18px; margin-bottom: 1rem; box-shadow: 0 8px 32px rgba(37,99,235,.5);
+    }
+    .brand h1 { color: #fff; font-size: 1.5rem; font-weight: 700; letter-spacing: -.5px; }
+    .brand p { color: #94a3b8; font-size: .875rem; margin-top: .25rem; }
+
+    /* ── Card ── */
+    .card {
+      background: #fff; border-radius: 20px; overflow: hidden;
+      box-shadow: 0 24px 64px rgba(0,0,0,.35);
+    }
+
+    /* ── Error banner (MikroTik injects $(error)) ── */
+    .error-banner {
+      background: #fef2f2; border-bottom: 1px solid #fecaca;
+      color: #dc2626; padding: .875rem 1.25rem; font-size: .875rem;
+      display: flex; align-items: center; gap: .5rem;
+    }
+    .error-banner svg { flex-shrink: 0; }
+
+    /* ── Tabs ── */
+    .tabs { display: flex; border-bottom: 1px solid #e2e8f0; }
+    .tab {
+      flex: 1; padding: 1rem; text-align: center; font-size: .875rem;
+      font-weight: 600; cursor: pointer; color: #64748b;
+      border-bottom: 2px solid transparent; margin-bottom: -1px;
+      transition: color .15s, border-color .15s;
+    }
+    .tab.active { color: #2563eb; border-color: #2563eb; }
+
+    /* ── Tab content ── */
+    .tab-content { display: none; padding: 1.75rem; }
+    .tab-content.active { display: block; }
+
+    /* ── Form elements ── */
+    label {
+      display: block; font-size: .8125rem; font-weight: 600;
+      color: #374151; margin-bottom: .5rem;
+    }
+    input[type="text"], input[type="password"] {
+      width: 100%; border: 1.5px solid #d1d5db; border-radius: 10px;
+      padding: .75rem 1rem; font-size: .9375rem; color: #111827;
+      outline: none; transition: border-color .15s, box-shadow .15s;
+      letter-spacing: .1em;
+    }
+    input[type="text"]:focus, input[type="password"]:focus {
+      border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,.15);
+    }
+    input::placeholder { color: #9ca3af; letter-spacing: normal; }
+
+    .input-hint { font-size: .75rem; color: #6b7280; margin-top: .4rem; }
+
+    /* ── Buttons ── */
+    .btn {
+      display: flex; align-items: center; justify-content: center; gap: .5rem;
+      width: 100%; padding: .875rem; border: none; border-radius: 10px;
+      font-size: .9375rem; font-weight: 700; cursor: pointer;
+      transition: background .15s, opacity .15s; margin-top: 1rem;
+    }
+    .btn-primary { background: #2563eb; color: #fff; }
+    .btn-primary:hover { background: #1d4ed8; }
+    .btn-primary:disabled { opacity: .55; cursor: not-allowed; }
+    .btn-outline {
+      background: transparent; color: #2563eb;
+      border: 1.5px solid #2563eb; margin-top: .75rem;
+    }
+    .btn-outline:hover { background: #eff6ff; }
+
+    /* ── Spinner ── */
+    .spinner {
+      width: 18px; height: 18px; border: 2.5px solid rgba(255,255,255,.3);
+      border-top-color: #fff; border-radius: 50%;
+      animation: spin .6s linear infinite; display: none;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Status messages ── */
+    .msg {
+      border-radius: 10px; padding: .875rem 1rem;
+      font-size: .875rem; font-weight: 500;
+      margin-top: 1rem; display: none; align-items: center; gap: .5rem;
+    }
+    .msg.success { background: #f0fdf4; color: #16a34a; border: 1px solid #bbf7d0; display: flex; }
+    .msg.error   { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; display: flex; }
+
+    /* ── Buy data section ── */
+    .package-info {
+      background: linear-gradient(135deg, #eff6ff, #e0e7ff);
+      border: 1px solid #bfdbfe; border-radius: 12px;
+      padding: 1.25rem; margin-bottom: 1rem;
+    }
+    .package-info h3 { font-size: 1rem; font-weight: 700; color: #1e40af; margin-bottom: .25rem; }
+    .package-info p { font-size: .8125rem; color: #3730a3; line-height: 1.5; }
+
+    /* ── Footer ── */
+    .footer { text-align: center; color: #64748b; font-size: .75rem; padding: 1rem 1.75rem; }
+    .footer a { color: #2563eb; text-decoration: none; }
+    .footer a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════════
+     CONFIGURATION — edit these two values to match your setup
+     ═══════════════════════════════════════════════════════════ -->
+<script>
+  var API_BASE       = 'https://your-backend.com/api';   // ← Your backend URL (no trailing slash)
+  var PAYMENT_URL    = 'https://your-backend.com/hotspot'; // ← Hotspot payment page
+</script>
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<div class="container">
+
+  <!-- Brand header -->
+  <div class="brand">
+    <div class="brand-icon">
+      <svg width="32" height="32" fill="none" stroke="#fff" stroke-width="2.5"
+           stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24">
+        <path d="M5 12.55a11 11 0 0 1 14.08 0"/>
+        <path d="M1.42 9a16 16 0 0 1 21.16 0"/>
+        <path d="M8.53 16.11a6 6 0 0 1 6.95 0"/>
+        <circle cx="12" cy="20" r="1" fill="#fff" stroke="none"/>
+      </svg>
+    </div>
+    <h1>Skylink WiFi</h1>
+    <p>Fast, Reliable Internet Access</p>
+  </div>
+
+  <div class="card">
+
+    <!-- MikroTik error (only shown when $(error) is non-empty) -->
+    $(if error)
+    <div class="error-banner">
+      <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/>
+        <line x1="12" y1="16" x2="12.01" y2="16"/>
+      </svg>
+      $(error)
+    </div>
+    $(endif)
+
+    <!-- Tabs -->
+    <div class="tabs">
+      <div class="tab active" onclick="switchTab('voucher')">I Have a Voucher</div>
+      <div class="tab"        onclick="switchTab('buy')">Buy Data</div>
+    </div>
+
+    <!-- ── Voucher tab ── -->
+    <div id="tab-voucher" class="tab-content active">
+      <label for="voucherCode">Enter your voucher code</label>
+      <input
+        id="voucherCode"
+        type="text"
+        placeholder="WIFI-XXXXXX"
+        maxlength="30"
+        autocomplete="off"
+        autocapitalize="characters"
+        spellcheck="false"
+        oninput="clearMsg()"
+      />
+      <p class="input-hint">Received via SMS or WhatsApp after payment.</p>
+
+      <button class="btn btn-primary" id="connectBtn" onclick="handleConnect()">
+        <span id="btnText">Connect to Internet</span>
+        <div class="spinner" id="spinner"></div>
+      </button>
+
+      <div class="msg" id="successMsg">
+        <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+          <polyline points="20 6 9 17 4 12"/>
+        </svg>
+        <span id="successText">Access granted — connecting…</span>
+      </div>
+      <div class="msg" id="errorMsg">
+        <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/>
+          <line x1="12" y1="16" x2="12.01" y2="16"/>
+        </svg>
+        <span id="errorText">Invalid or expired voucher.</span>
+      </div>
+    </div>
+
+    <!-- ── Buy Data tab ── -->
+    <div id="tab-buy" class="tab-content">
+      <div class="package-info">
+        <h3>Get Connected in Minutes</h3>
+        <p>Purchase a data bundle using M-Pesa. Your voucher code will be sent via SMS and WhatsApp immediately after payment.</p>
+      </div>
+      <button class="btn btn-primary" onclick="goToPayment()">
+        <svg width="18" height="18" fill="none" stroke="#fff" stroke-width="2.5" viewBox="0 0 24 24">
+          <rect x="1" y="4" width="22" height="16" rx="2" ry="2"/>
+          <line x1="1" y1="10" x2="23" y2="10"/>
+        </svg>
+        View Packages &amp; Pay
+      </button>
+      <button class="btn btn-outline" onclick="switchTab('voucher')">Already have a voucher?</button>
+    </div>
+
+    <!-- Hidden MikroTik login form — submitted by JavaScript after validation -->
+    <form id="loginForm" action="$(link-login-only)" method="post" style="display:none">
+      <input type="hidden" name="username" id="username" value="">
+      <input type="hidden" name="password" id="password" value="">
+      <input type="hidden" name="dst"      id="dst"      value="$(link-orig)">
+    </form>
+
+    <div class="footer">
+      Device: $(mac) &nbsp;|&nbsp;
+      Need help? <a href="tel:0700000000">Call Support</a>
+    </div>
+  </div><!-- /card -->
+
+</div><!-- /container -->
+
+<script>
+  /* ─── Read MikroTik-injected values ─── */
+  var DEVICE_MAC = '$(mac)';   // e.g. "AA:BB:CC:DD:EE:FF" — injected by MikroTik
+
+  /* ─── Tab switching ─── */
+  function switchTab(name) {
+    document.querySelectorAll('.tab').forEach(function(t, i) {
+      var active = (i === 0 && name === 'voucher') || (i === 1 && name === 'buy');
+      t.classList.toggle('active', active);
+    });
+    document.getElementById('tab-voucher').classList.toggle('active', name === 'voucher');
+    document.getElementById('tab-buy').classList.toggle('active', name === 'buy');
+    clearMsg();
+  }
+
+  /* ─── Clear feedback messages ─── */
+  function clearMsg() {
+    document.getElementById('successMsg').classList.remove('success');
+    document.getElementById('errorMsg').classList.remove('error');
+  }
+
+  /* ─── Show / hide loading state ─── */
+  function setLoading(on) {
+    document.getElementById('connectBtn').disabled = on;
+    document.getElementById('btnText').textContent = on ? 'Validating…' : 'Connect to Internet';
+    document.getElementById('spinner').style.display = on ? 'block' : 'none';
+  }
+
+  /* ─── Redirect to payment page (stays in walled garden scope) ─── */
+  function goToPayment() {
+    window.location.href = PAYMENT_URL;
+  }
+
+  /* ─── Main connect handler ─── */
+  function handleConnect() {
+    var code = document.getElementById('voucherCode').value.trim();
+    if (!code) {
+      showError('Please enter your voucher code.');
+      return;
+    }
+
+    setLoading(true);
+    clearMsg();
+
+    var xhr = new XMLHttpRequest();
+    xhr.open('POST', API_BASE + '/hotspot/validate/', true);
+    xhr.setRequestHeader('Content-Type', 'application/json');
+    xhr.timeout = 15000;
+
+    xhr.onload = function() {
+      setLoading(false);
+      if (xhr.status === 200) {
+        var data = JSON.parse(xhr.responseText);
+        showSuccess('Access granted! Connecting you now…');
+        /*
+         * After our backend validates the voucher it:
+         *   1. Binds DEVICE_MAC to the customer
+         *   2. Creates a MikroTik hotspot user: name=MAC, password=""
+         *
+         * We now log into MikroTik using those exact credentials.
+         */
+        setTimeout(function() {
+          document.getElementById('username').value = DEVICE_MAC;
+          document.getElementById('password').value = '';
+          document.getElementById('loginForm').submit();
+        }, 800);
+      } else {
+        try {
+          var err = JSON.parse(xhr.responseText);
+          showError(err.detail || 'Invalid or expired voucher. Please try again.');
+        } catch(e) {
+          showError('Invalid or expired voucher. Please try again.');
+        }
+      }
+    };
+
+    xhr.onerror   = function() { setLoading(false); showError('Network error — check your connection and try again.'); };
+    xhr.ontimeout = function() { setLoading(false); showError('Request timed out. Please try again.'); };
+
+    xhr.send(JSON.stringify({ code: code, mac_address: DEVICE_MAC }));
+  }
+
+  /* ─── Feedback helpers ─── */
+  function showSuccess(msg) {
+    document.getElementById('successText').textContent = msg;
+    document.getElementById('successMsg').classList.add('success');
+    document.getElementById('errorMsg').classList.remove('error');
+  }
+  function showError(msg) {
+    document.getElementById('errorText').textContent = msg;
+    document.getElementById('errorMsg').classList.add('error');
+    document.getElementById('successMsg').classList.remove('success');
+  }
+
+  /* ─── Allow Enter key to submit ─── */
+  document.getElementById('voucherCode').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') handleConnect();
+  });
+
+  /* ─── Auto-focus voucher field on load ─── */
+  document.getElementById('voucherCode').focus();
+</script>
+
+</body>
+</html>

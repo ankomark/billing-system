@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Skylink WiFi — Connected</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      min-height: 100vh;
+      background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 50%, #0f172a 100%);
+      display: flex; align-items: center; justify-content: center;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      padding: 1rem;
+    }
+    .container { width: 100%; max-width: 400px; text-align: center; }
+
+    .icon-wrap {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 80px; height: 80px; background: #16a34a;
+      border-radius: 50%; margin-bottom: 1.5rem;
+      box-shadow: 0 0 0 12px rgba(22,163,74,.15), 0 0 0 24px rgba(22,163,74,.07);
+      animation: pulse 2s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { box-shadow: 0 0 0 12px rgba(22,163,74,.15), 0 0 0 24px rgba(22,163,74,.07); }
+      50%       { box-shadow: 0 0 0 16px rgba(22,163,74,.1),  0 0 0 32px rgba(22,163,74,.04); }
+    }
+
+    h1 { color: #fff; font-size: 1.75rem; font-weight: 800; margin-bottom: .5rem; }
+    .sub { color: #94a3b8; font-size: .9375rem; margin-bottom: 2rem; }
+
+    .card {
+      background: #fff; border-radius: 20px; padding: 1.75rem;
+      box-shadow: 0 24px 64px rgba(0,0,0,.35); margin-bottom: 1rem;
+    }
+
+    .info-row {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: .75rem 0; border-bottom: 1px solid #f1f5f9;
+    }
+    .info-row:last-child { border-bottom: none; }
+    .info-label { font-size: .8125rem; color: #64748b; font-weight: 500; }
+    .info-value { font-size: .875rem; color: #1e293b; font-weight: 700; font-family: monospace; }
+
+    .btn-logout {
+      display: flex; align-items: center; justify-content: center; gap: .5rem;
+      width: 100%; padding: .875rem; background: #ef4444; color: #fff;
+      border: none; border-radius: 12px; font-size: .9375rem; font-weight: 700;
+      cursor: pointer; transition: background .15s; margin-top: 1rem;
+      text-decoration: none;
+    }
+    .btn-logout:hover { background: #dc2626; }
+
+    .footer { color: #475569; font-size: .75rem; margin-top: 1rem; }
+  </style>
+</head>
+<body>
+<div class="container">
+
+  <div class="icon-wrap">
+    <svg width="40" height="40" fill="none" stroke="#fff" stroke-width="2.5"
+         stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24">
+      <polyline points="20 6 9 17 4 12"/>
+    </svg>
+  </div>
+
+  <h1>You're Connected!</h1>
+  <p class="sub">Welcome to Skylink WiFi. Enjoy your session.</p>
+
+  <div class="card">
+    <div class="info-row">
+      <span class="info-label">Username</span>
+      <span class="info-value">$(username)</span>
+    </div>
+    <div class="info-row">
+      <span class="info-label">IP Address</span>
+      <span class="info-value">$(ip)</span>
+    </div>
+    <div class="info-row">
+      <span class="info-label">Session Time Left</span>
+      <span class="info-value" id="countdown">$(session-time-left)</span>
+    </div>
+
+    <a class="btn-logout" href="$(link-logout)">
+      <svg width="16" height="16" fill="none" stroke="#fff" stroke-width="2.5" viewBox="0 0 24 24">
+        <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+        <polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>
+      </svg>
+      Disconnect
+    </a>
+  </div>
+
+  <p class="footer">
+    <a href="$(link-status)" style="color:#60a5fa; text-decoration:none">View session status</a>
+    &nbsp;·&nbsp; Skylink WiFi
+  </p>
+
+</div>
+</body>
+</html>

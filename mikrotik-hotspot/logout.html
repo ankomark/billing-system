@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Skylink WiFi — Disconnected</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      min-height: 100vh;
+      background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 50%, #0f172a 100%);
+      display: flex; align-items: center; justify-content: center;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      padding: 1rem;
+    }
+    .container { width: 100%; max-width: 400px; text-align: center; }
+
+    .icon-wrap {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 80px; height: 80px; background: #475569;
+      border-radius: 50%; margin-bottom: 1.5rem;
+      box-shadow: 0 0 0 12px rgba(71,85,105,.2);
+    }
+
+    h1 { color: #fff; font-size: 1.75rem; font-weight: 800; margin-bottom: .5rem; }
+    .sub { color: #94a3b8; font-size: .9375rem; margin-bottom: 2rem; }
+
+    .card {
+      background: #fff; border-radius: 20px; padding: 1.75rem;
+      box-shadow: 0 24px 64px rgba(0,0,0,.35); margin-bottom: 1rem;
+    }
+
+    .session-summary {
+      background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px;
+      padding: 1.25rem; margin-bottom: 1.5rem; text-align: left;
+    }
+    .session-summary h3 {
+      font-size: .8125rem; color: #64748b; font-weight: 600;
+      text-transform: uppercase; letter-spacing: .05em; margin-bottom: .75rem;
+    }
+    .sum-row {
+      display: flex; justify-content: space-between;
+      font-size: .875rem; padding: .3rem 0;
+    }
+    .sum-key { color: #64748b; }
+    .sum-val { color: #1e293b; font-weight: 700; font-family: monospace; }
+
+    .btn {
+      display: flex; align-items: center; justify-content: center; gap: .5rem;
+      width: 100%; padding: .875rem; border: none; border-radius: 12px;
+      font-size: .9375rem; font-weight: 700; cursor: pointer;
+      text-decoration: none; transition: background .15s; margin-bottom: .75rem;
+    }
+    .btn-primary { background: #2563eb; color: #fff; }
+    .btn-primary:hover { background: #1d4ed8; }
+    .btn-ghost { background: #f1f5f9; color: #475569; }
+    .btn-ghost:hover { background: #e2e8f0; }
+
+    .footer { color: #475569; font-size: .75rem; margin-top: .5rem; }
+  </style>
+</head>
+<body>
+
+<!-- CONFIGURATION -->
+<script>
+  var PAYMENT_URL = 'https://your-backend.com/hotspot'; // ← update to match login.html
+</script>
+
+<div class="container">
+
+  <div class="icon-wrap">
+    <svg width="36" height="36" fill="none" stroke="#fff" stroke-width="2.5"
+         stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24">
+      <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+      <polyline points="16 17 21 12 16 7"/>
+      <line x1="21" y1="12" x2="9" y2="12"/>
+    </svg>
+  </div>
+
+  <h1>Disconnected</h1>
+  <p class="sub">Your session has ended. Thank you for using Skylink WiFi.</p>
+
+  <div class="card">
+    <div class="session-summary">
+      <h3>Session Summary</h3>
+      <div class="sum-row">
+        <span class="sum-key">Duration</span>
+        <span class="sum-val">$(uptime)</span>
+      </div>
+      <div class="sum-row">
+        <span class="sum-key">Downloaded</span>
+        <span class="sum-val" id="rxVal">$(bytes-in)</span>
+      </div>
+      <div class="sum-row">
+        <span class="sum-key">Uploaded</span>
+        <span class="sum-val" id="txVal">$(bytes-out)</span>
+      </div>
+    </div>
+
+    <a class="btn btn-primary" href="$(link-login)">
+      <svg width="16" height="16" fill="none" stroke="#fff" stroke-width="2.5" viewBox="0 0 24 24">
+        <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/>
+        <polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/>
+      </svg>
+      Connect Again
+    </a>
+    <a class="btn btn-ghost" href="javascript:void(0)" onclick="window.location.href=PAYMENT_URL">
+      <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <rect x="1" y="4" width="22" height="16" rx="2" ry="2"/>
+        <line x1="1" y1="10" x2="23" y2="10"/>
+      </svg>
+      Buy More Data
+    </a>
+  </div>
+
+  <p class="footer">Skylink WiFi &nbsp;·&nbsp; Fast. Reliable. Connected.</p>
+</div>
+
+<script>
+  function fmtBytes(el) {
+    var raw = parseInt(el.textContent, 10);
+    if (isNaN(raw)) return;
+    var units = ['B', 'KB', 'MB', 'GB'];
+    var i = 0;
+    while (raw >= 1024 && i < units.length - 1) { raw /= 1024; i++; }
+    el.textContent = raw.toFixed(i > 0 ? 2 : 0) + ' ' + units[i];
+  }
+  fmtBytes(document.getElementById('rxVal'));
+  fmtBytes(document.getElementById('txVal'));
+</script>
+</body>
+</html>
