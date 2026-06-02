@@ -19,6 +19,7 @@ const DURATION_UNITS = [
 const EMPTY = {
   name: "", download_speed: "", upload_speed: "",
   duration_value: "", duration_unit: "days", price: "",
+  monthly_data_cap_gb: 0, is_hotspot: false,
 };
 
 export default function PackageForm() {
@@ -40,19 +41,21 @@ export default function PackageForm() {
   useEffect(() => {
     if (existing) {
       setForm({
-        name:           existing.name           ?? "",
-        download_speed: existing.download_speed ?? "",
-        upload_speed:   existing.upload_speed   ?? "",
-        duration_value: existing.duration_value ?? "",
-        duration_unit:  existing.duration_unit  ?? "days",
-        price:          existing.price          ?? "",
+        name:                existing.name                ?? "",
+        download_speed:      existing.download_speed      ?? "",
+        upload_speed:        existing.upload_speed        ?? "",
+        duration_value:      existing.duration_value      ?? "",
+        duration_unit:       existing.duration_unit       ?? "days",
+        price:               existing.price               ?? "",
+        monthly_data_cap_gb: existing.monthly_data_cap_gb ?? 0,
+        is_hotspot:          existing.is_hotspot          ?? false,
       });
     }
   }, [existing]);
 
   const handleChange = (e) => {
-    const { name, value } = e.target;
-    setForm((prev) => ({ ...prev, [name]: value }));
+    const { name, value, type, checked } = e.target;
+    setForm((prev) => ({ ...prev, [name]: type === "checkbox" ? checked : value }));
   };
 
   const handleSubmit = async (e) => {
@@ -136,6 +139,38 @@ export default function PackageForm() {
 
           <Field label="Price (KES)" type="number" name="price" value={form.price} onChange={handleChange} placeholder="e.g. 500" required />
 
+          <div className="border-t border-slate-100 pt-5 space-y-4">
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Advanced</p>
+
+            <Field
+              label="Monthly Data Cap (GB)"
+              type="number"
+              name="monthly_data_cap_gb"
+              value={form.monthly_data_cap_gb}
+              onChange={handleChange}
+              placeholder="0 = unlimited"
+              min="0"
+            />
+
+            <label className="flex items-center gap-3 cursor-pointer select-none">
+              <div className="relative">
+                <input
+                  type="checkbox"
+                  name="is_hotspot"
+                  checked={form.is_hotspot}
+                  onChange={handleChange}
+                  className="sr-only peer"
+                />
+                <div className="w-10 h-6 bg-slate-200 rounded-full peer-checked:bg-blue-600 transition-colors" />
+                <div className="absolute top-1 left-1 w-4 h-4 bg-white rounded-full shadow transition-transform peer-checked:translate-x-4" />
+              </div>
+              <div>
+                <p className="text-sm font-medium text-slate-700">Hotspot package</p>
+                <p className="text-xs text-slate-400">Only available for hotspot customers</p>
+              </div>
+            </label>
+          </div>
+
           <div className="flex gap-3 pt-2">
             <button
               type="submit"
@@ -159,7 +194,7 @@ export default function PackageForm() {
   );
 }
 
-function Field({ label, name, value, onChange, type = "text", placeholder, required }) {
+function Field({ label, name, value, onChange, type = "text", placeholder, required, min }) {
   return (
     <div>
       <label className="block text-sm font-medium text-slate-700 mb-1.5">
@@ -172,6 +207,7 @@ function Field({ label, name, value, onChange, type = "text", placeholder, requi
         onChange={onChange}
         placeholder={placeholder}
         required={required}
+        min={min}
         className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
       />
     </div>
