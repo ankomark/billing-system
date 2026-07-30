@@ -11,7 +11,9 @@ from .models import (
     Voucher,  # <-- You already have this
     ExpiryReminderLog,  # <-- ADD THIS
     MpesaTransaction,
-    SystemSetting
+    SystemSetting,
+    PlatformPlan, PlatformSetting,
+    TenantSubscription, TenantInvoice, TenantPayment,
 )
 from django.contrib.auth.admin import UserAdmin
 
@@ -203,3 +205,45 @@ class MpesaTransactionAdmin(admin.ModelAdmin):
 class SystemSettingAdmin(admin.ModelAdmin):
     list_display = ("key", "value")
     search_fields = ("key",)
+
+# =====================================================
+# PLATFORM BILLING
+# =====================================================
+# The platform charging operators. Distinct from Invoice/Payment above, which
+# are operators charging subscribers.
+
+@admin.register(PlatformPlan)
+class PlatformPlanAdmin(admin.ModelAdmin):
+    list_display = ("name", "price", "billing_period_days", "max_customers",
+                    "max_routers", "is_active")
+    list_filter = ("is_active",)
+    prepopulated_fields = {"slug": ("name",)}
+
+
+@admin.register(PlatformSetting)
+class PlatformSettingAdmin(admin.ModelAdmin):
+    """Platform's own credentials. Never exposed through the operator API."""
+    list_display = ("key", "value")
+    search_fields = ("key",)
+
+
+@admin.register(TenantSubscription)
+class TenantSubscriptionAdmin(admin.ModelAdmin):
+    list_display = ("tenant", "plan", "status", "current_period_end", "trial_ends_at")
+    list_filter = ("status", "plan")
+    search_fields = ("tenant__name", "tenant__business_name")
+
+
+@admin.register(TenantInvoice)
+class TenantInvoiceAdmin(admin.ModelAdmin):
+    list_display = ("number", "tenant", "amount", "status", "due_date", "issued_at")
+    list_filter = ("status",)
+    search_fields = ("number", "tenant__name")
+    readonly_fields = ("number", "issued_at")
+
+
+@admin.register(TenantPayment)
+class TenantPaymentAdmin(admin.ModelAdmin):
+    list_display = ("tenant", "invoice", "amount", "method", "paid_at")
+    list_filter = ("method",)
+    search_fields = ("reference", "invoice__number")

@@ -31,7 +31,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from billing.auth_tokens import TenantTokenObtainPairSerializer
 
-from billing.config import clear_settings_cache, get_setting
+from billing.config import clear_settings_cache, get_platform_setting, get_setting
 from billing.mpesa_client import (
     PaymentsNotConfigured,
     callback_url_for,
@@ -41,6 +41,10 @@ from billing.mpesa_client import (
 )
 from billing.services.pppoe_service import generate_pppoe_credentials
 from billing.tasks.mpesa_tasks import initiate_stk_push_task
+from billing.tasks.platform_billing_tasks import (
+    generate_tenant_invoices,
+    mark_overdue_tenants,
+)
 from billing.router_service import (
     pick_best_router_for_new_customer,
     pick_working_router,
@@ -53,6 +57,7 @@ from billing.models import (
     AccessAuditLog, Tenant, RouterFailoverLog, ExpiryReminderLog,
     SystemSetting, PPPoEUsageSnapshot, PPPoEUsageState, PPPoEUsageRecord,
     HotspotUsageState, HotspotUsageRecord, UsageRecord,
+    PlatformPlan, PlatformSetting, TenantSubscription, TenantInvoice, TenantPayment,
 )
 from billing.fields import ENCRYPTED_PREFIX
 
@@ -1062,6 +1067,9 @@ SCOPED_MODELS = [
     Voucher, Payment, ExpiryReminderLog, AccessAuditLog, SystemSetting,
     MpesaTransaction, PPPoEUsageSnapshot, PPPoEUsageState, PPPoEUsageRecord,
     HotspotUsageState, HotspotUsageRecord, UsageRecord,
+    # Platform billing — scoped so an operator sees their own bills and
+    # platform staff see everyone's.
+    TenantSubscription, TenantInvoice, TenantPayment,
 ]
 
 
@@ -2187,3 +2195,196 @@ class TokenClaimTests(TwoOperatorMixin, TestCase):
         resp = self.auth(self.admin1).get("/api/auth/profile/")
         self.assertEqual(resp.data["tenant"], self.t1.id)
         self.assertFalse(resp.data["is_platform_staff"])
+
+
+# ===========================================================
+# 14. Phase 5 — platform billing
+# ===========================================================
+
+class PlatformBillingMixin(TwoOperatorMixin):
+    """Two operators, each on a plan, with a period that has just ended."""
+
+    def build_billing(self):
+        self.build_operators()
+        self.plan = PlatformPlan.objects.create(
+            name="Starter", slug="starter", price=Decimal("2000.00"),
+            billing_period_days=30, max_customers=100, max_routers=2)
+
+        self.subs = {}
+        for tag, tenant in (("t1", self.t1), ("t2", self.t2)):
+            self.subs[tag] = TenantSubscription.objects.create(
+                tenant=tenant, plan=self.plan, status="active",
+                current_period_start=timezone.now() - timezone.timedelta(days=30),
+                current_period_end=timezone.now() - timezone.timedelta(minutes=1),
+            )
+
+
+class PlatformInvoiceGenerationTests(PlatformBillingMixin, TestCase):
+
+    def setUp(self):
+        cache.clear()
+        self.build_billing()
+
+    def test_invoices_are_issued_when_the_period_ends(self):
+        issued = generate_tenant_invoices()
+        self.assertEqual(issued, 2)
+        self.assertEqual(TenantInvoice.objects.all_tenants().count(), 2)
+
+    def test_invoice_numbers_are_distinguishable_from_subscriber_invoices(self):
+        """
+        PINV- against INV-. Both resolve an operator from an M-Pesa callback,
+        so confusing them would credit the wrong ledger entirely.
+        """
+        generate_tenant_invoices()
+        for invoice in TenantInvoice.objects.all_tenants():
+            self.assertTrue(invoice.number.startswith("PINV-"), invoice.number)
+
+    def test_generation_is_idempotent(self):
+        """Safe to re-run after a partial failure — nobody is double-billed."""
+        generate_tenant_invoices()
+        again = generate_tenant_invoices()
+        self.assertEqual(again, 0)
+        self.assertEqual(TenantInvoice.objects.all_tenants().count(), 2)
+
+    def test_operators_still_in_trial_are_not_billed(self):
+        self.subs["t2"].trial_ends_at = timezone.now() + timezone.timedelta(days=7)
+        self.subs["t2"].save()
+        generate_tenant_invoices()
+        self.assertFalse(
+            TenantInvoice.objects.all_tenants().filter(tenant=self.t2).exists())
+
+    def test_cancelled_operators_are_not_billed(self):
+        self.subs["t2"].status = "cancelled"
+        self.subs["t2"].save()
+        generate_tenant_invoices()
+        self.assertFalse(
+            TenantInvoice.objects.all_tenants().filter(tenant=self.t2).exists())
+
+    def test_invoice_charges_the_plan_price(self):
+        generate_tenant_invoices()
+        invoice = TenantInvoice.objects.all_tenants().filter(tenant=self.t1).first()
+        self.assertEqual(invoice.amount, self.plan.price)
+
+
+class PlatformPaymentTests(PlatformBillingMixin, TestCase):
+
+    def setUp(self):
+        cache.clear()
+        self.build_billing()
+        generate_tenant_invoices()
+        self.invoice = TenantInvoice.objects.all_tenants().get(tenant=self.t1)
+
+    def test_payment_settles_the_invoice(self):
+        TenantPayment.objects.create(
+            tenant=self.t1, invoice=self.invoice,
+            amount=self.invoice.amount, method="mpesa", reference="R1")
+        self.invoice.refresh_from_db()
+        self.assertEqual(self.invoice.status, "paid")
+
+    def test_payment_rolls_the_billing_period_forward(self):
+        old_end = self.subs["t1"].current_period_end
+        TenantPayment.objects.create(
+            tenant=self.t1, invoice=self.invoice,
+            amount=self.invoice.amount, method="mpesa", reference="R2")
+        self.subs["t1"].refresh_from_db()
+        self.assertGreater(self.subs["t1"].current_period_end, old_end)
+        self.assertEqual(self.subs["t1"].status, "active")
+
+    def test_payment_lifts_a_restriction_immediately(self):
+        """An operator who pays must not stay locked out until a sweep runs."""
+        self.t1.status = "restricted"
+        self.t1.save()
+        TenantPayment.objects.create(
+            tenant=self.t1, invoice=self.invoice,
+            amount=self.invoice.amount, method="manual", reference="R3")
+        self.t1.refresh_from_db()
+        self.assertEqual(self.t1.status, "active")
+
+    def test_overdue_sweep_flags_but_does_not_cut_anyone_off(self):
+        """
+        Restriction is deliberate and manual — cutting an operator off has
+        consequences for subscribers who have done nothing wrong.
+        """
+        TenantInvoice.objects.all_tenants().update(
+            due_date=timezone.now() - timezone.timedelta(days=1))
+        flagged = mark_overdue_tenants()
+
+        self.assertEqual(flagged, 2)
+        self.t1.refresh_from_db()
+        self.assertEqual(self.t1.status, "past_due")
+        self.assertNotEqual(self.t1.status, "restricted")
+
+
+class PlatformBillingAccessTests(PlatformBillingMixin, TestCase):
+    """
+    Who may see and settle what. The platform ledger must never be writable by
+    the operator it bills.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_billing()
+        generate_tenant_invoices()
+
+    def test_operator_sees_only_their_own_bills(self):
+        resp = self.auth(self.admin1).get("/api/platform/invoices/")
+        self.assertEqual(resp.status_code, 200)
+        operators = {r["tenant"] for r in resp.data["results"]}
+        self.assertEqual(operators, {self.t1.id})
+
+    def test_platform_staff_see_every_operators_bills(self):
+        resp = self.auth(make_platform_owner()).get("/api/platform/invoices/")
+        operators = {r["tenant"] for r in resp.data["results"]}
+        self.assertEqual(operators, {self.t1.id, self.t2.id})
+
+    def test_my_account_reports_what_is_owed(self):
+        resp = self.auth(self.admin1).get("/api/platform/my-account/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["subscription"]["plan_name"], "Starter")
+        self.assertEqual(Decimal(str(resp.data["amount_due"])), self.plan.price)
+
+    def test_operator_cannot_mark_their_own_bill_paid(self):
+        invoice = TenantInvoice.objects.all_tenants().get(tenant=self.t1)
+        resp = self.auth(self.admin1).post("/api/platform/payments/", {
+            "number": invoice.number, "amount": str(invoice.amount),
+        }, format="json")
+        self.assertEqual(resp.status_code, 403)
+        invoice.refresh_from_db()
+        self.assertEqual(invoice.status, "unpaid")
+
+    def test_platform_staff_may_record_a_payment(self):
+        invoice = TenantInvoice.objects.all_tenants().get(tenant=self.t1)
+        resp = self.auth(make_platform_owner()).post("/api/platform/payments/", {
+            "number": invoice.number, "amount": str(invoice.amount),
+            "method": "mpesa", "reference": "RCPT-P1",
+        }, format="json")
+        self.assertEqual(resp.status_code, 201, resp.data)
+        invoice.refresh_from_db()
+        self.assertEqual(invoice.status, "paid")
+
+    def test_wrong_amount_is_refused(self):
+        invoice = TenantInvoice.objects.all_tenants().get(tenant=self.t1)
+        resp = self.auth(make_platform_owner()).post("/api/platform/payments/", {
+            "number": invoice.number, "amount": "1.00",
+        }, format="json")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_operator_may_read_the_plan_catalogue(self):
+        resp = self.auth(self.admin1).get("/api/platform/plans/")
+        self.assertEqual(resp.status_code, 200)
+
+    def test_operator_may_not_change_the_plan_catalogue(self):
+        resp = self.auth(self.admin1).post("/api/platform/plans/", {
+            "name": "Free forever", "slug": "free", "price": "0.00",
+        }, format="json")
+        self.assertEqual(resp.status_code, 403)
+
+    def test_platform_settings_are_not_tenant_scoped(self):
+        """
+        The platform's own till lives in a separate table, so an operator
+        administering their SystemSettings can never read or overwrite it.
+        """
+        PlatformSetting.objects.create(key="PLATFORM_MPESA_SHORTCODE", value="999999")
+        self.assertEqual(get_platform_setting("PLATFORM_MPESA_SHORTCODE"), "999999")
+        # Nothing of the sort leaks into an operator's own settings view.
+        self.assertIsNone(get_setting("PLATFORM_MPESA_SHORTCODE", tenant=self.t1))

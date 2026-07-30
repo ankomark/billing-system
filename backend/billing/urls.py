@@ -82,6 +82,12 @@ from .views import (
 
     # Manual payment
     ManualPaymentView,
+
+    # Platform billing (charges operators, not subscribers)
+    PlatformPlanViewSet,
+    TenantInvoiceListView,
+    MyPlatformSubscriptionView,
+    RecordTenantPaymentView,
 )
 
 # ─── DRF ViewSet router ───────────────────────────────────────────────────────
@@ -91,6 +97,7 @@ router.register("packages",      PackageViewSet,      basename="package")
 router.register("subscriptions", SubscriptionViewSet, basename="subscription")
 router.register("invoices",      InvoiceViewSet,      basename="invoice")
 router.register("payments",      PaymentViewSet,      basename="payment")
+router.register("platform/plans", PlatformPlanViewSet, basename="platform-plan")
 
 urlpatterns = [
     # ─── Root ────────────────────────────────────────────────────────────────
@@ -197,6 +204,13 @@ urlpatterns = [
 
     # ─── Manual payment ──────────────────────────────────────────────────────
     path("api/payments/manual/", ManualPaymentView.as_view(), name="manual-payment"),
+
+    # ─── Platform billing ────────────────────────────────────────────────────
+    # The platform charging operators. Distinct from /api/invoices/ and
+    # /api/payments/, which are operators charging subscribers.
+    path("api/platform/invoices/",     TenantInvoiceListView.as_view(),      name="platform-invoices"),
+    path("api/platform/my-account/",   MyPlatformSubscriptionView.as_view(), name="platform-my-account"),
+    path("api/platform/payments/",     RecordTenantPaymentView.as_view(),    name="platform-record-payment"),
 
     # ─── DRF ViewSets ────────────────────────────────────────────────────────
     path("api/", include(router.urls)),

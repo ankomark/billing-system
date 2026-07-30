@@ -29,10 +29,13 @@ from billing.tasks.mpesa_tasks import initiate_stk_push_task
 from django.utils import timezone
 from rest_framework import viewsets
 from .models import Customer, Package, Subscription,Invoice, Payment,MpesaTransaction,SystemSetting,RouterFailoverLog, HotspotUsageRecord, AccessAuditLog, Tenant
+from .models import PlatformPlan, TenantSubscription, TenantInvoice, TenantPayment
 from .tenancy import tenant_context
 import logging
 
 logger = logging.getLogger(__name__)
+from .serializers import (PlatformPlanSerializer, TenantSubscriptionSerializer,
+                          TenantInvoiceSerializer, TenantPaymentSerializer,)
 from .serializers import (CustomerSerializer,CustomerDetailSerializer,PackageSerializer,SubscriptionSerializer,InvoiceSerializer,  PaymentSerializer,SystemSettingSerializer,)
 from billing.tasks.notification_tasks import notify_customer_task,send_sms_task, send_whatsapp_task
 from .config import get_setting
@@ -2130,3 +2133,140 @@ class HotspotPaymentStatusView(APIView):
             "voucher_code": voucher.code if voucher else None,
             "expires_at": invoice.subscription.expiry_date,
         })
+
+
+# =====================================================
+# PLATFORM BILLING API
+# =====================================================
+# Charges operators on behalf of the platform. Kept apart from everything
+# above, which charges subscribers on behalf of an operator.
+#
+# Scoping comes free: these models use TenantManager, so an operator sees only
+# their own bills while platform staff (NULL tenant, unscoped) see every one.
+
+class PlatformPlanViewSet(viewsets.ModelViewSet):
+    """The plan catalogue. Only the platform sells these."""
+    serializer_class = PlatformPlanSerializer
+
+    def get_permissions(self):
+        # Operators need to read the catalogue to choose or compare a plan,
+        # but only the platform may change what is on offer.
+        if self.action in ("list", "retrieve"):
+            return [IsAuthenticated()]
+        return [IsPlatformStaff()]
+
+    def get_queryset(self):
+        qs = PlatformPlan.objects.order_by("price")
+        user = self.request.user
+        if not getattr(user, "is_platform_staff", False):
+            qs = qs.filter(is_active=True)
+        return qs
+
+
+class TenantInvoiceListView(APIView):
+    """
+    Platform invoices.
+
+    An operator sees their own; platform staff see everyone's, which is what
+    makes this the collections view for the platform owner.
+    """
+    permission_classes = [IsTenantAdmin]
+
+    def get(self, request):
+        qs = TenantInvoice.objects.select_related("tenant", "subscription")
+
+        status_filter = request.query_params.get("status")
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+        if request.query_params.get("overdue") == "true":
+            qs = qs.filter(status="unpaid", due_date__lt=timezone.now())
+
+        paginator = StandardPagination()
+        page = paginator.paginate_queryset(qs, request)
+        return paginator.get_paginated_response(
+            TenantInvoiceSerializer(page, many=True).data
+        )
+
+
+class MyPlatformSubscriptionView(APIView):
+    """What this operator is on, and what they currently owe."""
+    permission_classes = [IsTenantAdmin]
+
+    def get(self, request):
+        tenant = getattr(request.user, "tenant", None)
+        if tenant is None:
+            return Response(
+                {"detail": "Platform accounts are not billed."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        subscription = (
+            TenantSubscription.objects.select_related("plan")
+            .filter(tenant=tenant)
+            .first()
+        )
+        outstanding = TenantInvoice.objects.filter(tenant=tenant, status="unpaid")
+
+        return Response({
+            "operator": tenant.business_name or tenant.name,
+            "account_status": tenant.status,
+            "subscription": (
+                TenantSubscriptionSerializer(subscription).data
+                if subscription else None
+            ),
+            "outstanding": TenantInvoiceSerializer(outstanding, many=True).data,
+            "amount_due": sum((i.amount for i in outstanding), Decimal("0.00")),
+        })
+
+
+class RecordTenantPaymentView(APIView):
+    """
+    Record an operator's payment to the platform.
+
+    Platform staff only: this is the platform's own ledger, so an operator
+    must never be able to mark their own bill as settled.
+    """
+    permission_classes = [IsPlatformStaff]
+
+    def post(self, request):
+        invoice = (
+            TenantInvoice.objects.all_tenants()
+            .select_related("tenant", "subscription")
+            .filter(number=request.data.get("number"))
+            .first()
+        )
+        if invoice is None:
+            return Response({"detail": "Invoice not found"}, status=404)
+
+        if invoice.status == "paid":
+            return Response({"detail": "Invoice already paid"}, status=400)
+
+        amount = request.data.get("amount")
+        if amount is None or Decimal(str(amount)) != invoice.amount:
+            return Response(
+                {"detail": f"Amount must equal {invoice.amount}"}, status=400
+            )
+
+        method = request.data.get("method", "manual")
+        if method not in dict(TenantPayment.METHODS):
+            return Response({"detail": "Unknown payment method"}, status=400)
+
+        # TenantPayment.save() settles the invoice, rolls the billing period
+        # forward and lifts any restriction.
+        payment = TenantPayment.objects.create(
+            tenant=invoice.tenant,
+            invoice=invoice,
+            amount=amount,
+            method=method,
+            reference=request.data.get("reference", ""),
+        )
+
+        return Response(
+            {
+                "detail": "Payment recorded",
+                "invoice": invoice.number,
+                "operator": str(invoice.tenant),
+                "payment_id": payment.id,
+            },
+            status=status.HTTP_201_CREATED,
+        )

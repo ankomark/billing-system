@@ -308,6 +308,15 @@ CELERY_BEAT_SCHEDULE = {
         "schedule": crontab(minute="*/5"),
         "options": {"expires": 240},
     },
+    # Platform billing — charges operators, not subscribers.
+    "generate-platform-invoices": {
+        "task": "billing.tasks.platform_billing_tasks.generate_tenant_invoices",
+        "schedule": crontab(hour=2, minute=0),
+    },
+    "mark-overdue-operators": {
+        "task": "billing.tasks.platform_billing_tasks.mark_overdue_tenants",
+        "schedule": crontab(hour=3, minute=0),
+    },
     "auto-failover": {
         "task": "billing.tasks.auto_failover.run_auto_failover_task",
         "schedule": crontab(minute="*/3"),

@@ -1052,3 +1052,198 @@ class UsageRecord(TenantScopedModel):
 
     def __str__(self):
         return f"{self.customer.full_name} - {self.date}"
+
+
+# =====================================================
+# PLATFORM BILLING
+# =====================================================
+# The second billing layer, and the one place where confusing the two would be
+# expensive. Everything above bills a *subscriber* on behalf of an operator,
+# and settles into that operator's till. Everything below bills an *operator*
+# on behalf of the platform, and settles into the platform's own till.
+#
+# The names are deliberately unlike Invoice/Payment, and platform invoice
+# numbers use a PINV- prefix against the subscriber INV-, so the two are never
+# mistaken for each other in a database, a log line, or an M-Pesa statement.
+
+class PlatformSetting(models.Model):
+    """
+    Platform-wide configuration — notably the platform's own M-Pesa till.
+
+    Deliberately NOT tenant-scoped, unlike SystemSetting: these are the
+    platform owner's credentials, used to collect from operators. Keeping them
+    in a separate table means an operator administering their own settings can
+    never read or overwrite them.
+    """
+    key = models.CharField(max_length=200, unique=True)
+    value = models.TextField(blank=True)
+
+    def __str__(self):
+        return self.key
+
+
+class PlatformPlan(models.Model):
+    """
+    What the platform charges an operator. A global catalogue, not per-operator.
+    """
+    name = models.CharField(max_length=80)
+    slug = models.SlugField(max_length=60, unique=True)
+
+    price = models.DecimalField(
+        max_digits=10, decimal_places=2,
+        help_text="Charged to the operator each billing period",
+    )
+    billing_period_days = models.PositiveIntegerField(default=30)
+
+    # 0 means unlimited. Enforcement of these is phase 6 — recorded here so a
+    # plan can be defined now and enforced when suspension lands.
+    max_customers = models.PositiveIntegerField(default=0)
+    max_routers = models.PositiveIntegerField(default=0)
+
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["price"]
+
+    def __str__(self):
+        return f"{self.name} ({self.price})"
+
+
+class TenantSubscription(TenantScopedModel):
+    """One operator's current plan with the platform."""
+
+    STATUS_CHOICES = (
+        ("trialing", "Trialing"),
+        ("active", "Active"),
+        ("past_due", "Past due"),
+        ("cancelled", "Cancelled"),
+    )
+
+    plan = models.ForeignKey(PlatformPlan, on_delete=models.PROTECT)
+    status = models.CharField(max_length=12, choices=STATUS_CHOICES, default="trialing")
+
+    current_period_start = models.DateTimeField(default=timezone.now)
+    current_period_end = models.DateTimeField()
+    trial_ends_at = models.DateTimeField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            # One plan per operator at a time. Changing plan updates this row.
+            models.UniqueConstraint(fields=["tenant"], name="one_platform_plan_per_tenant"),
+        ]
+
+    def save(self, *args, **kwargs):
+        if not self.current_period_end:
+            self.current_period_end = self.current_period_start + timezone.timedelta(
+                days=self.plan.billing_period_days
+            )
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.tenant} on {self.plan.name}"
+
+
+class TenantInvoice(TenantScopedModel):
+    """What an operator owes the platform for one billing period."""
+
+    STATUS_CHOICES = (
+        ("unpaid", "Unpaid"),
+        ("paid", "Paid"),
+        ("void", "Void"),
+    )
+
+    subscription = models.ForeignKey(
+        TenantSubscription, on_delete=models.PROTECT, related_name="invoices"
+    )
+    # PINV- prefix, globally unique — same reasoning as subscriber invoice
+    # numbers: the platform M-Pesa callback carries no tenant context and
+    # resolves the operator from this value alone.
+    number = models.CharField(max_length=50, unique=True)
+
+    period_start = models.DateTimeField()
+    period_end = models.DateTimeField()
+
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default="unpaid")
+
+    due_date = models.DateTimeField()
+    issued_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-issued_at"]
+        constraints = [
+            # One invoice per operator per period — the generator is idempotent
+            # and safe to re-run after a partial failure.
+            models.UniqueConstraint(
+                fields=["tenant", "period_start"],
+                name="one_platform_invoice_per_tenant_period",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["tenant", "status"], name="tinvoice_tenant_status_idx"),
+            models.Index(fields=["status", "due_date"], name="tinvoice_status_due_idx"),
+        ]
+
+    @property
+    def is_overdue(self):
+        return self.status == "unpaid" and self.due_date < timezone.now()
+
+    def __str__(self):
+        return self.number
+
+
+class TenantPayment(TenantScopedModel):
+    """An operator paying the platform. Settles into the platform's till."""
+
+    METHODS = (
+        ("mpesa", "M-Pesa"),
+        ("bank", "Bank"),
+        ("manual", "Manual"),
+    )
+
+    invoice = models.ForeignKey(
+        TenantInvoice, on_delete=models.PROTECT, related_name="payments"
+    )
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    method = models.CharField(max_length=10, choices=METHODS)
+    reference = models.CharField(max_length=100, blank=True)
+    paid_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-paid_at"]
+
+    def save(self, *args, **kwargs):
+        creating = self.pk is None
+        super().save(*args, **kwargs)
+
+        if not creating:
+            return
+
+        # Settle the invoice and roll the billing period forward.
+        with transaction.atomic():
+            invoice = self.invoice
+            invoice.status = "paid"
+            invoice.save(update_fields=["status"])
+
+            subscription = invoice.subscription
+            subscription.status = "active"
+            subscription.current_period_start = invoice.period_end
+            subscription.current_period_end = invoice.period_end + timezone.timedelta(
+                days=subscription.plan.billing_period_days
+            )
+            subscription.save(update_fields=[
+                "status", "current_period_start", "current_period_end",
+            ])
+
+            # Restriction is lifted here rather than waiting for a sweep, so an
+            # operator who pays is not left locked out.
+            tenant = invoice.tenant
+            if tenant.status in ("past_due", "restricted"):
+                tenant.status = "active"
+                tenant.save(update_fields=["status"])
+
+    def __str__(self):
+        return f"{self.tenant} paid {self.amount}"

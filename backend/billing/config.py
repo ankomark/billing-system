@@ -97,3 +97,54 @@ def clear_settings_cache(key: str | None = None, tenant=None) -> None:
     logger.debug(
         f"[config] Settings cache cleared for tenant={tenant_id}: {key or 'ALL'}"
     )
+
+
+# =====================================================
+# PLATFORM-LEVEL SETTINGS
+# =====================================================
+# The platform's own credentials — the till that collects from operators.
+# Deliberately a separate store and a separate cache namespace from
+# get_setting(), so an operator administering their own settings can never
+# read or overwrite the platform's.
+
+PLATFORM_SETTING_KEYS = [
+    "PLATFORM_MPESA_CONSUMER_KEY",
+    "PLATFORM_MPESA_CONSUMER_SECRET",
+    "PLATFORM_MPESA_SHORTCODE",
+    "PLATFORM_MPESA_PASSKEY",
+    "PLATFORM_MPESA_CALLBACK_URL",
+    "PLATFORM_MPESA_ENV",
+]
+
+
+def _platform_cache_key(key: str) -> str:
+    return f"platform_setting:{key}"
+
+
+def get_platform_setting(key: str, default: str | None = None) -> str | None:
+    """Read a PlatformSetting, falling back to an environment variable."""
+    from django.core.cache import cache
+
+    cache_key = _platform_cache_key(key)
+    cached = cache.get(cache_key, _MISSING)
+    if cached is not _MISSING:
+        return cached
+
+    from .models import PlatformSetting
+
+    obj = PlatformSetting.objects.filter(key=key).only("value").first()
+    value = obj.value if obj is not None else os.getenv(key)
+    result = value if value is not None else default
+
+    cache.set(cache_key, result, _SETTING_CACHE_TTL)
+    return result
+
+
+def clear_platform_settings_cache(key: str | None = None) -> None:
+    from django.core.cache import cache
+
+    if key:
+        cache.delete(_platform_cache_key(key))
+    else:
+        cache.delete_many([_platform_cache_key(k) for k in PLATFORM_SETTING_KEYS])
+    logger.debug(f"[config] Platform settings cache cleared: {key or 'ALL'}")

@@ -2,6 +2,7 @@ from rest_framework import serializers
 from .models import (
     Customer, Package, Subscription, Invoice, Payment,
     MpesaTransaction, User, SystemSetting, Voucher, RouterDevice,
+    PlatformPlan, TenantSubscription, TenantInvoice, TenantPayment,
 )
 
 
@@ -256,3 +257,50 @@ class RouterSerializer(serializers.ModelSerializer):
         extra_kwargs = {
             "password": {"write_only": True},
         }
+
+
+# =====================================================
+# PLATFORM BILLING
+# =====================================================
+
+class PlatformPlanSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PlatformPlan
+        fields = (
+            "id", "name", "slug", "price", "billing_period_days",
+            "max_customers", "max_routers", "is_active",
+        )
+
+
+class TenantSubscriptionSerializer(serializers.ModelSerializer):
+    plan_name = serializers.CharField(source="plan.name", read_only=True)
+    plan_price = serializers.DecimalField(
+        source="plan.price", max_digits=10, decimal_places=2, read_only=True)
+
+    class Meta:
+        model = TenantSubscription
+        fields = (
+            "id", "tenant", "plan", "plan_name", "plan_price", "status",
+            "current_period_start", "current_period_end", "trial_ends_at",
+        )
+        read_only_fields = ("status", "current_period_start", "current_period_end")
+
+
+class TenantInvoiceSerializer(serializers.ModelSerializer):
+    operator = serializers.CharField(source="tenant.business_name", read_only=True)
+    is_overdue = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = TenantInvoice
+        fields = (
+            "id", "number", "tenant", "operator", "amount", "status",
+            "period_start", "period_end", "due_date", "issued_at", "is_overdue",
+        )
+        read_only_fields = fields
+
+
+class TenantPaymentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TenantPayment
+        fields = ("id", "tenant", "invoice", "amount", "method", "reference", "paid_at")
+        read_only_fields = ("tenant", "paid_at")
