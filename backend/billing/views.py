@@ -425,16 +425,58 @@ class HotspotVoucherValidateView(APIView):
 
         customer = subscription.customer
 
-        # 🔐 Prevent MAC rebinding
+        # 🔐 Prevent this customer moving their voucher to a different device
         if customer.hotspot_username and customer.hotspot_username != mac_address:
             return Response(
                 {"detail": "Voucher already bound to another device"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        customer.hotspot_username = mac_address
-        customer.status = "active"
-        customer.save(update_fields=["hotspot_username", "status"])
+        # 🔐 Prevent this device being claimed while another customer still holds it.
+        # The check above only guarded the customer's side, so nothing stopped two
+        # customers ending up on the same MAC. Once that happened, the public
+        # status/reconnect endpoints resolved the subscriber with .first() and
+        # returned an arbitrary one of them.
+        with transaction.atomic():
+            previous = (
+                Customer.objects
+                .select_for_update()
+                .filter(hotspot_username=mac_address)
+                .exclude(pk=customer.pk)
+                .first()
+            )
+
+            if previous is not None:
+                still_paying = previous.subscriptions.filter(
+                    status="active",
+                    expiry_date__gt=timezone.now(),
+                ).exists()
+
+                if still_paying:
+                    # Releasing it here would cut off someone with time left on a
+                    # package they paid for. An admin can clear the binding on the
+                    # customer record if the device genuinely changed hands.
+                    return Response(
+                        {"detail": "This device is registered to another active account."},
+                        status=status.HTTP_409_CONFLICT,
+                    )
+
+                # Stale binding — the previous holder has no live subscription, so
+                # the device has moved on. Release it and record why.
+                previous.hotspot_username = ""
+                previous.save(update_fields=["hotspot_username"])
+                AccessAuditLog.objects.create(
+                    customer=previous,
+                    action="deactivate",
+                    reason=(
+                        f"Hotspot device {mac_address} released to customer "
+                        f"{customer.id} ({customer.full_name}) on voucher validation"
+                    ),
+                )
+
+            customer.hotspot_username = mac_address
+            customer.status = "active"
+            customer.save(update_fields=["hotspot_username", "status"])
 
         enable_customer_access(customer)
 

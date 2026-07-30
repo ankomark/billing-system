@@ -114,6 +114,21 @@ class Customer(models.Model):
             models.Index(fields=["pppoe_username"],   name="customer_pppoe_username_idx"),
             models.Index(fields=["connection_type"],  name="customer_connection_type_idx"),
         ]
+        constraints = [
+            # A device MAC identifies exactly one customer. Without this, the
+            # public hotspot endpoints resolve a subscriber with
+            # .filter(hotspot_username=mac).first() and get whichever row the
+            # database happens to return — disclosing one customer's status to
+            # another and granting access against the wrong subscription.
+            #
+            # Partial: hotspot_username is blank for every PPPoE customer, and
+            # empty strings do collide in a plain unique index (unlike NULL).
+            models.UniqueConstraint(
+                fields=["hotspot_username"],
+                condition=~models.Q(hotspot_username=""),
+                name="customer_hotspot_username_uniq",
+            ),
+        ]
 
     def clean(self):
         # Enforce data integrity: only one identifier should be set
