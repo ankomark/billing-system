@@ -199,6 +199,7 @@ code is easy, the policy is not.
 Operator list with health, MRR, per-operator subscriber counts and revenue,
 overdue platform invoices, router status rollup.
 
+
 Plus **impersonation** — "view as this operator" — which is invaluable for
 support and must be audit-logged on every use.
 

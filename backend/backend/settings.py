@@ -225,7 +225,11 @@ CORS_ALLOW_CREDENTIALS = True
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
-        "rest_framework_simplejwt.authentication.JWTAuthentication",
+        # Rejects a token whose operator claim no longer matches the account.
+        # Without it, a demoted platform account keeps platform-wide visibility
+        # until its token expires, because scoping reads the claim while
+        # permissions read the database.
+        "billing.authentication.TenantAwareJWTAuthentication",
     ),
     "DEFAULT_PERMISSION_CLASSES": (
         "rest_framework.permissions.IsAuthenticated",

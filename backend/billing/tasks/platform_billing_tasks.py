@@ -257,5 +257,23 @@ def restrict_expired_grace_tenants(self):
             restricted += 1
             logger.warning("[platform-billing] %s restricted", tenant)
 
+            # Tell them. Being locked out with no message is how a billing
+            # dispute turns into a support emergency — and they need to know
+            # their customers are fine, which is not obvious from the outside.
+            if tenant.contact_phone:
+                try:
+                    from billing.notifications import notify_customer
+                    notify_customer(
+                        tenant.contact_phone,
+                        "Your dashboard has been locked because a platform "
+                        "invoice is unpaid. Your customers are NOT affected — "
+                        "they keep their internet and can still renew. "
+                        "Settle the invoice to restore access.",
+                    )
+                except Exception:
+                    logger.exception(
+                        "[platform-billing] Could not notify %s of restriction", tenant
+                    )
+
     logger.info("[platform-billing] Restricted %s operator(s)", restricted)
     return restricted

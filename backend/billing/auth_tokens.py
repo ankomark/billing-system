@@ -16,7 +16,11 @@ disagree with the database still resolves permissions from the database.
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework_simplejwt.views import TokenObtainPairView
 
-TENANT_CLAIM = "tenant_id"
+# The authentication class lives in billing/authentication.py — importing
+# simplejwt.views here pulls in DRF's schema module, which resolves
+# DEFAULT_AUTHENTICATION_CLASSES at import time and would cycle back here.
+from .authentication import TENANT_CLAIM  # noqa: F401  (re-exported)
+
 ROLE_CLAIM = "role"
 
 

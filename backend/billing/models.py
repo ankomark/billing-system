@@ -86,6 +86,49 @@ class Tenant(models.Model):
         """
         return not self.is_restricted
 
+    def plan_limit_exceeded(self, resource):
+        """
+        Whether adding one more of `resource` would exceed the operator's plan.
+
+        Returns a message to show, or None when there is room. Only ever blocks
+        *growth*: an operator over their limit keeps every subscriber they
+        already have, because downgrading a plan must not disconnect people who
+        are already paying.
+
+        Unlimited is 0, and an operator with no subscription is unlimited too —
+        being unbilled should not mean being capped.
+        """
+        subscription = (
+            self.__class__.objects.filter(pk=self.pk)
+            .values_list("pk", flat=True)
+            .first()
+            and TenantSubscription.objects.all_tenants()
+            .select_related("plan")
+            .filter(tenant_id=self.pk)
+            .first()
+        )
+        if subscription is None:
+            return None
+
+        plan = subscription.plan
+        if resource == "customers":
+            cap = plan.max_customers
+            used = Customer.objects.all_tenants().filter(tenant_id=self.pk).count()
+            label = "customers"
+        elif resource == "routers":
+            cap = plan.max_routers
+            used = RouterDevice.objects.all_tenants().filter(tenant_id=self.pk).count()
+            label = "routers"
+        else:
+            return None
+
+        if cap and used >= cap:
+            return (
+                f"Your {plan.name} plan allows {cap} {label} and you have {used}. "
+                "Upgrade your plan to add more."
+            )
+        return None
+
     def save(self, *args, **kwargs):
         if not self.public_token:
             self.public_token = secrets.token_urlsafe(24)[:32]

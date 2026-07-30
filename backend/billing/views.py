@@ -107,6 +107,17 @@ class CustomerViewSet(viewsets.ModelViewSet):
             return CustomerDetailSerializer
         return CustomerSerializer
 
+    def create(self, request, *args, **kwargs):
+        # Plan caps limit growth only. An operator already over their cap
+        # keeps every subscriber they have — downgrading a plan must never
+        # disconnect people who are already paying.
+        tenant = getattr(request.user, "tenant", None)
+        if tenant is not None:
+            blocked = tenant.plan_limit_exceeded("customers")
+            if blocked:
+                return Response({"detail": blocked}, status=status.HTTP_402_PAYMENT_REQUIRED)
+        return super().create(request, *args, **kwargs)
+
     def get_queryset(self):
         qs = (
             Customer.objects
@@ -1332,6 +1343,12 @@ class AdminRouterListView(APIView):
         return Response(data)
 
     def post(self, request):
+        tenant = getattr(request.user, "tenant", None)
+        if tenant is not None:
+            blocked = tenant.plan_limit_exceeded("routers")
+            if blocked:
+                return Response({"detail": blocked}, status=status.HTTP_402_PAYMENT_REQUIRED)
+
         from .serializers import RouterSerializer
         serializer = RouterSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -2068,6 +2085,19 @@ class HotspotPurchaseView(APIView):
                 {"detail": "This provider is not accepting new customers right now."},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
+
+        # Only blocks a genuinely new subscriber — a returning customer with
+        # this phone number already counts against the cap and can still buy.
+        if not Customer.objects.all_tenants().filter(
+            tenant=tenant, phone=_normalise_msisdn(request.data.get("phone"))
+        ).exists():
+            blocked = tenant.plan_limit_exceeded("customers")
+            if blocked:
+                logger.warning("[hotspot] %s at plan limit, purchase refused", tenant)
+                return Response(
+                    {"detail": "This provider is not accepting new customers right now."},
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
 
         missing = missing_mpesa_keys(tenant=tenant)
         if missing:

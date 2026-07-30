@@ -2614,3 +2614,172 @@ class ManualStatusControlTests(PlatformBillingMixin, TestCase):
             format="json")
         self.t1.refresh_from_db()
         self.assertEqual(self.auth(self.admin1).get("/api/customers/").status_code, 200)
+
+
+# ===========================================================
+# 16. Findings from auditing phases 4-6
+# ===========================================================
+
+class StaleTokenClaimTests(TwoOperatorMixin, TestCase):
+    """
+    Scoping reads the token claim; permissions read the account. When someone's
+    tenant or role changes those disagree until the old token expires, and the
+    dangerous direction is real: a demoted platform account carries a null
+    tenant claim, which means unscoped.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+
+    def test_demoted_platform_account_loses_platform_wide_visibility(self):
+        user = User.objects.create_user(
+            username="ex_platform", password="pw",
+            role=User.PLATFORM_OWNER, tenant=None, is_staff=True)
+        token = TenantTokenObtainPairSerializer.get_token(user).access_token
+
+        # Demoted to a single operator; the old token still says "platform".
+        user.role = User.TENANT_ADMIN
+        user.tenant = self.t1
+        user.save()
+
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        resp = client.get("/api/customers/")
+
+        # Fail closed: one forced sign-in beats a window of stale platform-wide
+        # visibility for an account whose access was just revoked.
+        self.assertEqual(resp.status_code, 401)
+
+    def test_operator_moved_between_businesses_must_sign_in_again(self):
+        token = TenantTokenObtainPairSerializer.get_token(self.admin1).access_token
+        self.admin1.tenant = self.t2
+        self.admin1.save()
+
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        self.assertEqual(client.get("/api/customers/").status_code, 401)
+
+    def test_an_unchanged_account_is_unaffected(self):
+        self.assertEqual(self.auth(self.admin1).get("/api/customers/").status_code, 200)
+
+    def test_refreshed_token_still_carries_the_operator(self):
+        """Otherwise every refresh would silently drop scoping."""
+        refresh = TenantTokenObtainPairSerializer.get_token(self.admin1)
+        resp = APIClient().post(
+            "/api/auth/refresh/", {"refresh": str(refresh)}, format="json")
+        self.assertEqual(resp.status_code, 200)
+
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {resp.data['access']}")
+        listing = client.get("/api/customers/")
+        self.assertEqual(listing.status_code, 200)
+        self.assertEqual(
+            [r["full_name"] for r in listing.data["results"]], ["t1-customer"])
+
+
+class PlanLimitTests(PlatformBillingMixin, TestCase):
+    """
+    Plan caps were stored since phase 5 but never consulted, so a limit meant
+    nothing. They restrict growth only.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_billing()
+        self.plan.max_customers = 1   # t1 already has one customer
+        self.plan.max_routers = 1     # and one router
+        self.plan.save()
+
+    def test_adding_a_customer_beyond_the_cap_is_refused(self):
+        resp = self.auth(self.admin1).post("/api/customers/", {
+            "full_name": "Over cap", "phone": "254799555666",
+            "connection_type": "pppoe",
+        }, format="json")
+        self.assertEqual(resp.status_code, 402)
+        self.assertIn("Upgrade", resp.data["detail"])
+
+    def test_adding_a_router_beyond_the_cap_is_refused(self):
+        resp = self.auth(self.admin1).post("/api/admin/routers/", {
+            "name": "Extra", "ip_address": "10.9.9.9",
+            "username": "a", "password": "p",
+        }, format="json")
+        self.assertEqual(resp.status_code, 402)
+
+    def test_room_under_the_cap_still_allows_growth(self):
+        self.plan.max_customers = 10
+        self.plan.save()
+        resp = self.auth(self.admin1).post("/api/customers/", {
+            "full_name": "Within cap", "phone": "254799555777",
+            "connection_type": "pppoe",
+        }, format="json")
+        self.assertEqual(resp.status_code, 201, resp.data)
+
+    def test_zero_means_unlimited(self):
+        self.plan.max_customers = 0
+        self.plan.save()
+        resp = self.auth(self.admin1).post("/api/customers/", {
+            "full_name": "Unlimited", "phone": "254799555888",
+            "connection_type": "pppoe",
+        }, format="json")
+        self.assertEqual(resp.status_code, 201, resp.data)
+
+    def test_being_over_the_cap_never_disconnects_anyone(self):
+        """
+        Downgrading a plan must not cut off subscribers who are already paying.
+        Existing records stay readable and usable; only growth stops.
+        """
+        self.plan.max_customers = 0
+        self.plan.save()
+        with tenant_context(self.t1):
+            for i in range(3):
+                Customer.objects.create(
+                    tenant=self.t1, full_name=f"Existing {i}",
+                    phone=f"25479966600{i}", connection_type="pppoe")
+
+        self.plan.max_customers = 1  # now well below the actual count
+        self.plan.save()
+
+        resp = self.auth(self.admin1).get("/api/customers/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertGreaterEqual(len(resp.data["results"]), 4)
+
+    def test_an_operator_with_no_plan_is_not_capped(self):
+        """Being unbilled should not mean being limited."""
+        TenantSubscription.objects.all_tenants().filter(tenant=self.t1).delete()
+        resp = self.auth(self.admin1).post("/api/customers/", {
+            "full_name": "No plan", "phone": "254799555999",
+            "connection_type": "pppoe",
+        }, format="json")
+        self.assertEqual(resp.status_code, 201, resp.data)
+
+
+class RestrictionNoticeTests(PlatformBillingMixin, TestCase):
+    """Being locked out with no message turns a billing dispute into a crisis."""
+
+    def setUp(self):
+        cache.clear()
+        self.build_billing()
+        generate_tenant_invoices()
+        self.t1.contact_phone = "254700000000"
+        self.t1.save()
+
+    @patch("billing.notifications.notify_customer")
+    def test_operator_is_told_when_restricted(self, mock_notify):
+        TenantInvoice.objects.all_tenants().update(
+            due_date=timezone.now() - timezone.timedelta(days=Tenant.GRACE_DAYS + 1))
+        restrict_expired_grace_tenants()
+
+        self.assertTrue(mock_notify.called, "restriction sent no notice")
+        message = mock_notify.call_args[0][1]
+        self.assertIn("locked", message.lower())
+
+    @patch("billing.notifications.notify_customer")
+    def test_the_notice_says_customers_are_unaffected(self, mock_notify):
+        """The single most important thing for them to know."""
+        TenantInvoice.objects.all_tenants().update(
+            due_date=timezone.now() - timezone.timedelta(days=Tenant.GRACE_DAYS + 1))
+        restrict_expired_grace_tenants()
+
+        message = mock_notify.call_args[0][1]
+        self.assertIn("NOT affected", message)
