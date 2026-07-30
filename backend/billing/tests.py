@@ -17,6 +17,7 @@ from unittest.mock import patch
 from cryptography.fernet import Fernet
 
 from django.core.cache import cache
+from django.db.utils import IntegrityError
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
@@ -25,6 +26,7 @@ from rest_framework.test import APIClient
 from billing.models import (
     User, Customer, Package, Subscription,
     Invoice, Payment, Voucher, MpesaTransaction, RouterDevice,
+    AccessAuditLog,
 )
 from billing.fields import ENCRYPTED_PREFIX
 
@@ -817,3 +819,180 @@ class CustomerDetailSerializerTests(TestCase):
         self.customer.refresh_from_db()
         self.assertEqual(self.customer.full_name, "Renamed")
         self.assertEqual(self.customer.pppoe_password, "originalpass")
+
+
+# ===========================================================
+# 9. Hotspot MAC Collision
+# ===========================================================
+
+class HotspotMacCollisionTests(TestCase):
+    """
+    A device MAC must identify exactly one customer.
+
+    Previously nothing enforced that: the voucher endpoint only checked whether
+    the *customer* was bound to a different MAC, never whether the *MAC* was
+    held by a different customer. Two customers could share one MAC, after
+    which /api/hotspot/status/ resolved the subscriber with .first() and
+    returned an arbitrary one of them.
+    """
+
+    MAC = "AA:BB:CC:DD:EE:01"
+    VALIDATE = "/api/hotspot/validate/"
+    STATUS   = "/api/hotspot/status/"
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        self.router  = make_router(name="Hotspot Router", ip="10.10.0.1")
+        self.package = make_hotspot_package()
+
+    def _make_holder(self, suffix, phone, days, status="active"):
+        """Customer holding a voucher, with a subscription expiring in `days`."""
+        customer = make_hotspot_customer(self.router, phone=phone, username_suffix=suffix)
+        sub = Subscription.objects.create(
+            customer=customer, package=self.package, status=status,
+            expiry_date=timezone.now() + timezone.timedelta(days=days),
+        )
+        voucher = Voucher.objects.create(
+            code=f"WIFI-{suffix.upper()}", subscription=sub,
+            expires_at=timezone.now() + timezone.timedelta(days=max(days, 1)),
+        )
+        return customer, sub, voucher
+
+    # ---- the constraint itself -------------------------------------------
+
+    def test_two_customers_cannot_share_a_mac(self):
+        a, _, _ = self._make_holder("a1", "254700000001", 5)
+        b, _, _ = self._make_holder("b1", "254700000002", 5)
+
+        a.hotspot_username = self.MAC
+        a.save(update_fields=["hotspot_username"])
+
+        b.hotspot_username = self.MAC
+        with self.assertRaises(IntegrityError):
+            b.save(update_fields=["hotspot_username"])
+
+    def test_many_customers_may_have_blank_hotspot_username(self):
+        """The constraint is partial — every PPPoE customer has a blank value."""
+        for i in range(3):
+            Customer.objects.create(
+                full_name=f"PPPoE {i}", phone=f"25471100000{i}",
+                connection_type="pppoe", router=self.router,
+            )
+        self.assertEqual(Customer.objects.filter(hotspot_username="").count(), 3)
+
+    # ---- the write path ---------------------------------------------------
+
+    @patch("billing.views.enable_customer_access")
+    def test_device_held_by_an_active_customer_is_refused(self, _):
+        holder, _, _ = self._make_holder("h1", "254700000011", 10)
+        holder.hotspot_username = self.MAC
+        holder.save(update_fields=["hotspot_username"])
+
+        _, _, voucher = self._make_holder("c1", "254700000012", 10)
+
+        resp = self.client.post(
+            self.VALIDATE, {"code": voucher.code, "mac_address": self.MAC}, format="json",
+        )
+        self.assertEqual(resp.status_code, 409)
+
+        holder.refresh_from_db()
+        self.assertEqual(holder.hotspot_username, self.MAC, "active holder must keep the device")
+
+    @patch("billing.views.enable_customer_access")
+    def test_device_held_by_an_expired_customer_is_released(self, _):
+        stale, sub, _ = self._make_holder("s1", "254700000021", 5)
+        stale.hotspot_username = self.MAC
+        stale.save(update_fields=["hotspot_username"])
+        # push the holder's subscription into the past
+        Subscription.objects.filter(pk=sub.pk).update(
+            status="expired", expiry_date=timezone.now() - timezone.timedelta(days=1),
+        )
+
+        claimant, _, voucher = self._make_holder("n1", "254700000022", 10)
+
+        resp = self.client.post(
+            self.VALIDATE, {"code": voucher.code, "mac_address": self.MAC}, format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+
+        stale.refresh_from_db()
+        claimant.refresh_from_db()
+        self.assertEqual(stale.hotspot_username, "", "stale binding must be released")
+        self.assertEqual(claimant.hotspot_username, self.MAC)
+
+    @patch("billing.views.enable_customer_access")
+    def test_releasing_a_stale_binding_is_audited(self, _):
+        stale, sub, _ = self._make_holder("s2", "254700000031", 5)
+        stale.hotspot_username = self.MAC
+        stale.save(update_fields=["hotspot_username"])
+        Subscription.objects.filter(pk=sub.pk).update(
+            status="expired", expiry_date=timezone.now() - timezone.timedelta(days=1),
+        )
+        _, _, voucher = self._make_holder("n2", "254700000032", 10)
+
+        self.client.post(
+            self.VALIDATE, {"code": voucher.code, "mac_address": self.MAC}, format="json",
+        )
+
+        log = AccessAuditLog.objects.filter(customer=stale).first()
+        self.assertIsNotNone(log, "releasing a device must leave an audit trail")
+        self.assertIn(self.MAC, log.reason)
+
+    @patch("billing.views.enable_customer_access")
+    def test_same_customer_revalidating_same_mac_still_works(self, _):
+        customer, _, voucher = self._make_holder("r1", "254700000041", 10)
+        for _i in range(2):
+            resp = self.client.post(
+                self.VALIDATE, {"code": voucher.code, "mac_address": self.MAC}, format="json",
+            )
+            self.assertEqual(resp.status_code, 200)
+        customer.refresh_from_db()
+        self.assertEqual(customer.hotspot_username, self.MAC)
+
+    # ---- the admin API path -----------------------------------------------
+
+    def test_admin_assigning_a_taken_mac_gets_400_not_500(self):
+        """
+        Customer.save() runs full_clean(), and since Django 4.1 that validates
+        constraints too — raising django ValidationError, which DRF does not
+        translate. Without serializer-level validation the admin would get a
+        500 for what is ordinary bad input.
+        """
+        holder, _, _ = self._make_holder("adm1", "254700000061", 10)
+        holder.hotspot_username = self.MAC
+        holder.save(update_fields=["hotspot_username"])
+
+        other = make_hotspot_customer(self.router, phone="254700000062", username_suffix="adm2")
+
+        admin_client = APIClient()
+        admin_client.force_authenticate(user=make_admin("mac_admin"))
+        resp = admin_client.patch(
+            f"/api/customers/{other.id}/",
+            {"hotspot_username": self.MAC},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("hotspot_username", resp.data)
+
+    # ---- the read path ----------------------------------------------------
+
+    @patch("billing.views.enable_customer_access")
+    def test_status_lookup_is_unambiguous(self, _):
+        """
+        The original defect: with two customers on one MAC, this endpoint
+        returned whichever row the database produced first.
+        """
+        claimant, _, voucher = self._make_holder("q1", "254700000051", 10)
+        self.client.post(
+            self.VALIDATE, {"code": voucher.code, "mac_address": self.MAC}, format="json",
+        )
+        Invoice.objects.filter(customer=claimant).update(payment_status="paid")
+
+        self.assertEqual(
+            Customer.objects.filter(hotspot_username=self.MAC).count(), 1,
+            "exactly one customer may hold a MAC",
+        )
+        resp = self.client.get(self.STATUS, {"mac": self.MAC})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["status"], "active")
