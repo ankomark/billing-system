@@ -25,7 +25,9 @@ class Command(BaseCommand):
             failed = 0
 
             for c in customers:
-                ok, msg = migrate_customer_router(c, from_router_id=router.id)
+                # migrate_customer_router(customer, reason=...) — there is no
+                # from_router_id parameter; it reads customer.router itself.
+                ok, msg = migrate_customer_router(c, reason="auto_failover")
                 if ok:
                     migrated += 1
                 else:

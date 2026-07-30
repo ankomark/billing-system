@@ -36,6 +36,8 @@ class Command(BaseCommand):
 
         self.stdout.write(
             self.style.SUCCESS(
-                f"✅ Subscription expiry check completed — {expired_count} expired"
+                # Plain ASCII: a Windows cp1252 console cannot encode emoji and
+                # the command died with UnicodeEncodeError before printing.
+                f"Subscription expiry check completed - {expired_count} expired"
             )
         )

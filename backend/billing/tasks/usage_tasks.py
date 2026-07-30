@@ -1,13 +1,19 @@
 import logging
 from celery import shared_task
+from django.db.models import Sum
 from django.utils import timezone
 
 from billing.models import (
     Customer,
+    HotspotUsageRecord,
     PPPoEUsageState,
     PPPoEUsageRecord,
 )
-from billing.router_service import get_pppoe_live_usage_any_router
+from billing.notifications import notify_customer
+from billing.router_service import (
+    disable_customer_access,
+    get_pppoe_live_usage_any_router,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -87,3 +93,71 @@ def collect_pppoe_usage_snapshots(self):
 
     logger.info(f"[usage] PPPoE snapshots collected: {processed}")
     return processed
+
+
+@shared_task(
+    bind=True,
+    autoretry_for=(Exception,),
+    retry_backoff=60,
+    retry_kwargs={"max_retries": 3},
+    retry_jitter=True,
+)
+def enforce_usage_caps(self):
+    """
+    Disable access for customers who have exceeded their monthly data cap.
+
+    Ported from the former billing/tasks.py, which was unreachable: the
+    billing/tasks package shadowed that module, so nothing could import it.
+    Deliberately NOT in CELERY_BEAT_SCHEDULE — enabling automatic cut-off is a
+    policy decision. Add a beat entry to switch it on.
+    """
+    month_start = timezone.now().replace(
+        day=1, hour=0, minute=0, second=0, microsecond=0
+    )
+    capped = 0
+
+    customers = (
+        Customer.objects
+        .select_related("router")
+        .filter(status="active")
+    )
+
+    for customer in customers:
+        subscription = customer.subscriptions.filter(status="active").first()
+        if not subscription:
+            continue
+
+        cap_gb = customer.custom_data_cap_gb or subscription.package.monthly_data_cap_gb
+        if not cap_gb:
+            continue  # 0 / None = unlimited
+
+        if customer.connection_type == "pppoe":
+            model = PPPoEUsageRecord
+        else:
+            model = HotspotUsageRecord
+
+        total = model.objects.filter(
+            customer=customer,
+            period_start__gte=month_start,
+        ).aggregate(
+            used=Sum("download_bytes") + Sum("upload_bytes")
+        )["used"] or 0
+
+        used_gb = total / (1024 ** 3)
+        if used_gb < cap_gb:
+            continue
+
+        disable_customer_access(customer)
+        capped += 1
+
+        try:
+            notify_customer(
+                customer.phone,
+                f"Data limit reached ({cap_gb}GB). Please renew or upgrade.",
+            )
+        except Exception:
+            # Notification failure must not undo the enforcement action
+            logger.exception(f"[usage-caps] Notify failed for customer {customer.id}")
+
+    logger.info(f"[usage-caps] Capped {capped} customers over their limit")
+    return capped

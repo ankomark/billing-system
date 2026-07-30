@@ -34,6 +34,54 @@ class CustomerSerializer(serializers.ModelSerializer):
         return super().update(instance, validated_data)
 
 
+class CustomerSubscriptionSerializer(serializers.ModelSerializer):
+    """Compact subscription row for the customer detail page."""
+    package_name = serializers.CharField(source="package.name", read_only=True)
+
+    class Meta:
+        model = Subscription
+        fields = ("id", "package", "package_name", "status", "start_date", "expiry_date")
+
+
+class CustomerVoucherSerializer(serializers.ModelSerializer):
+    """Compact voucher row for the customer detail page."""
+
+    class Meta:
+        model = Voucher
+        fields = ("code", "is_active", "expires_at", "created_at")
+
+
+class CustomerDetailSerializer(CustomerSerializer):
+    """
+    Retrieve-only serializer. The admin CustomerDetail page reads router_name,
+    subscriptions and vouchers, none of which the plain CustomerSerializer
+    returns — those panels rendered permanently empty.
+
+    Kept separate from CustomerSerializer so the paginated list endpoint does
+    not pay for the nested joins on every row.
+    """
+    router_name   = serializers.SerializerMethodField()
+    subscriptions = CustomerSubscriptionSerializer(many=True, read_only=True)
+    vouchers      = serializers.SerializerMethodField()
+
+    class Meta(CustomerSerializer.Meta):
+        fields = CustomerSerializer.Meta.fields + [
+            "router_name",
+            "subscriptions",
+            "vouchers",
+        ]
+
+    def get_router_name(self, obj):
+        return obj.router.name if obj.router_id else None
+
+    def get_vouchers(self, obj):
+        # Vouchers hang off Subscription, not Customer — flatten them here.
+        # Relies on the view prefetching subscriptions__vouchers.
+        vouchers = [v for sub in obj.subscriptions.all() for v in sub.vouchers.all()]
+        vouchers.sort(key=lambda v: v.created_at, reverse=True)
+        return CustomerVoucherSerializer(vouchers, many=True).data
+
+
 class PackageSerializer(serializers.ModelSerializer):
     class Meta:
         model = Package

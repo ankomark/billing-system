@@ -19,7 +19,7 @@ from billing.notifications import send_sms, send_whatsapp
 from billing.serializers import BroadcastSerializer
 from billing.mpesa_client import get_mpesa_access_token
 from rest_framework.permissions import IsAdminUser
-from django.db.models import Sum
+from django.db.models import Prefetch, Sum
 from django.db.models.functions import TruncDate, TruncMonth
 from .reports import (revenue_summary,revenue_by_method,revenue_by_package,customer_stats,)
 from .dashboards import (unpaid_invoices,pending_invoices,failed_mpesa_transactions,)
@@ -31,7 +31,7 @@ from billing.tasks.mpesa_tasks import initiate_stk_push_task
 from django.utils import timezone
 from rest_framework import viewsets
 from .models import Customer, Package, Subscription,Invoice, Payment,MpesaTransaction,SystemSetting,RouterFailoverLog, HotspotUsageRecord, AccessAuditLog
-from .serializers import (CustomerSerializer,PackageSerializer,SubscriptionSerializer,InvoiceSerializer,  PaymentSerializer,SystemSettingSerializer,)
+from .serializers import (CustomerSerializer,CustomerDetailSerializer,PackageSerializer,SubscriptionSerializer,InvoiceSerializer,  PaymentSerializer,SystemSettingSerializer,)
 from billing.tasks.notification_tasks import notify_customer_task,send_sms_task, send_whatsapp_task
 from .config import get_setting
 from rest_framework.permissions import IsAuthenticated
@@ -91,12 +91,33 @@ class CustomerViewSet(viewsets.ModelViewSet):
     filter_backends = [SearchFilter]
     search_fields = ["full_name", "phone", "pppoe_username"]
 
+    def get_serializer_class(self):
+        # Only the detail page needs subscriptions/vouchers. Writes keep using
+        # CustomerSerializer so its pppoe_password preservation still applies.
+        if self.action == "retrieve":
+            return CustomerDetailSerializer
+        return CustomerSerializer
+
     def get_queryset(self):
         qs = (
             Customer.objects
             .select_related("user", "router")
             .order_by("-created_at")
         )
+
+        if self.action == "retrieve":
+            # Prefetch what CustomerDetailSerializer walks, so rendering the
+            # detail page stays at a fixed number of queries.
+            qs = qs.prefetch_related(
+                Prefetch(
+                    "subscriptions",
+                    queryset=Subscription.objects
+                        .select_related("package")
+                        .order_by("-expiry_date"),
+                ),
+                "subscriptions__vouchers",
+            )
+
         status_filter = self.request.query_params.get("status")
         conn_filter   = self.request.query_params.get("connection_type")
         if status_filter:
@@ -1540,24 +1561,13 @@ class AdminAccessLookupView(APIView):
             {"detail": "No access record found"},
             status=404,
         )
-class AdminDeactivateVoucherView(APIView):
-    permission_classes = [IsAdmin]
+# AdminDeactivateVoucherView was removed: it was never routed in urls.py and is
+# superseded by AdminDeactivateAccessView below, which expires the subscription,
+# deactivates every voucher on it, marks the customer expired AND writes an
+# AccessAuditLog. The removed view accepted a `reason` and discarded it, so
+# wiring it up would have created a revoke path with no audit trail.
 
-    def post(self, request):
-        code = request.data.get("code")
-        reason = request.data.get("reason", "")
 
-        voucher = Voucher.objects.filter(code=code, is_active=True).first()
-        if not voucher:
-            return Response({"detail": "Voucher not found"}, status=404)
-
-        voucher.is_active = False
-        voucher.save(update_fields=["is_active"])
-
-        customer = voucher.subscription.customer
-        disable_customer_task.delay(customer.id)
-
-        return Response({"detail": "Voucher deactivated"})
 class AdminDeactivateAccessView(APIView):
     permission_classes = [IsAdminUser]
 

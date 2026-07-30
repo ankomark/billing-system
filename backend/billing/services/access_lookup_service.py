@@ -51,7 +51,10 @@ def lookup_access_token(code: str):
             "duration": f"{pkg.duration_value} {pkg.duration_unit}",
             "created_at": payment.paid_at,
             "expires_at": sub.expiry_date,
-            "is_active": not payment.is_revoked,
+            # Payment has no is_revoked field — reading it raised AttributeError.
+            # For a receipt-as-token lookup, "active" means the subscription it
+            # paid for has not yet expired.
+            "is_active": bool(sub.expiry_date and sub.expiry_date > timezone.now()),
             "subscription_status": sub.status,
             "mac_address": sub.customer.hotspot_username,
         }

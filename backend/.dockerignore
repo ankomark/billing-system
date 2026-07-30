@@ -1,0 +1,28 @@
+# Secrets — compose injects these at runtime via env_file.
+# Baking them into an image layer would persist them in the image history.
+.env
+.env.*
+*.pem
+*.key
+
+# Local dev database
+*.sqlite3
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Collected static (regenerate in the image or serve from a CDN)
+staticfiles/
+media/
+
+# Tooling / VCS
+.git/
+.gitignore
+.vscode/
+.idea/
+.pytest_cache/
+*.log
