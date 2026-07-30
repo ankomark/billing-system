@@ -33,6 +33,7 @@ from django.utils import timezone
 from rest_framework import viewsets
 from .models import Customer, Package, Subscription,Invoice, Payment,MpesaTransaction,SystemSetting,RouterFailoverLog, HotspotUsageRecord, AccessAuditLog, Tenant
 from .models import PlatformPlan, TenantSubscription, TenantInvoice, TenantPayment
+from .models import ImpersonationLog
 from .tenancy import tenant_context
 import logging
 
@@ -2393,4 +2394,190 @@ class TenantStatusView(APIView):
             "detail": "Status updated" if changed else "Status unchanged",
             "operator": tenant.business_name or tenant.name,
             "status": tenant.status,
+        })
+
+
+# =====================================================
+# MASTER DASHBOARD
+# =====================================================
+# Cross-operator views for the platform owner. Every query here is deliberately
+# unscoped via .all_tenants(), which is why they are platform-staff only.
+#
+# Written as bulk aggregates rather than a loop over operators: at 50 operators
+# a per-operator query per statistic is 200+ round trips for one page.
+
+class PlatformOverviewView(APIView):
+    """Headline numbers across the whole platform."""
+    permission_classes = [IsPlatformStaff]
+
+    def get(self, request):
+        from django.db.models import Count, Sum
+
+        now = timezone.now()
+
+        operators_by_status = dict(
+            Tenant.objects.values_list("status")
+            .annotate(n=Count("id"))
+            .values_list("status", "n")
+        )
+
+        # Monthly recurring revenue: what active plans are worth per period.
+        mrr = (
+            TenantSubscription.objects.all_tenants()
+            .filter(status__in=("active", "trialing"))
+            .aggregate(total=Sum("plan__price"))["total"] or Decimal("0.00")
+        )
+
+        outstanding = TenantInvoice.objects.all_tenants().filter(status="unpaid")
+
+        return Response({
+            "operators": {
+                "total": Tenant.objects.count(),
+                "by_status": operators_by_status,
+                "restricted": Tenant.objects.filter(
+                    status__in=("restricted", "cancelled")).count(),
+            },
+            "platform_revenue": {
+                "mrr": mrr,
+                "outstanding_total": outstanding.aggregate(
+                    t=Sum("amount"))["t"] or Decimal("0.00"),
+                "outstanding_count": outstanding.count(),
+                "overdue_count": outstanding.filter(due_date__lt=now).count(),
+            },
+            "network": {
+                "subscribers": Customer.objects.all_tenants().count(),
+                "active_subscribers": Customer.objects.all_tenants().filter(
+                    status="active").count(),
+                "routers": RouterDevice.objects.all_tenants().count(),
+                "routers_offline": RouterDevice.objects.all_tenants().filter(
+                    is_active=True, is_online=False).count(),
+            },
+        })
+
+
+class PlatformOperatorListView(APIView):
+    """
+    Every operator with the numbers that matter, in a fixed number of queries.
+
+    Counts are gathered as bulk aggregates keyed by tenant and joined in
+    Python, rather than queried per operator.
+    """
+    permission_classes = [IsPlatformStaff]
+
+    def get(self, request):
+        from django.db.models import Count, Sum
+
+        tenants = Tenant.objects.all()
+        status_filter = request.query_params.get("status")
+        if status_filter:
+            tenants = tenants.filter(status=status_filter)
+        tenants = list(tenants)
+        ids = [t.id for t in tenants]
+
+        def tally(model, **filters):
+            return dict(
+                model.objects.all_tenants()
+                .filter(tenant_id__in=ids, **filters)
+                .values("tenant_id")
+                .annotate(n=Count("id"))
+                .values_list("tenant_id", "n")
+            )
+
+        subscribers = tally(Customer)
+        active_subs = tally(Customer, status="active")
+        routers = tally(RouterDevice)
+        offline = tally(RouterDevice, is_active=True, is_online=False)
+
+        owed = dict(
+            TenantInvoice.objects.all_tenants()
+            .filter(tenant_id__in=ids, status="unpaid")
+            .values("tenant_id")
+            .annotate(t=Sum("amount"))
+            .values_list("tenant_id", "t")
+        )
+
+        plans = dict(
+            TenantSubscription.objects.all_tenants()
+            .filter(tenant_id__in=ids)
+            .select_related("plan")
+            .values_list("tenant_id", "plan__name")
+        )
+
+        return Response([
+            {
+                "id": t.id,
+                "name": t.business_name or t.name,
+                "slug": t.slug,
+                "status": t.status,
+                "is_restricted": t.is_restricted,
+                "plan": plans.get(t.id),
+                "subscribers": subscribers.get(t.id, 0),
+                "active_subscribers": active_subs.get(t.id, 0),
+                "routers": routers.get(t.id, 0),
+                "routers_offline": offline.get(t.id, 0),
+                "amount_owed": owed.get(t.id) or Decimal("0.00"),
+                "created_at": t.created_at,
+            }
+            for t in tenants
+        ])
+
+
+class PlatformOperatorDetailView(APIView):
+    """One operator in full, including how often support has viewed them."""
+    permission_classes = [IsPlatformStaff]
+
+    def get(self, request, tenant_id):
+        from django.db.models import Sum
+
+        tenant = Tenant.objects.filter(id=tenant_id).first()
+        if tenant is None:
+            return Response({"detail": "Operator not found"}, status=404)
+
+        subscription = (
+            TenantSubscription.objects.all_tenants()
+            .select_related("plan").filter(tenant=tenant).first()
+        )
+        invoices = TenantInvoice.objects.all_tenants().filter(tenant=tenant)
+
+        # Their subscriber-side revenue — the operator's own business, shown so
+        # the platform can see whether a plan still fits them.
+        subscriber_revenue = (
+            Payment.objects.all_tenants().filter(tenant=tenant)
+            .aggregate(t=Sum("amount"))["t"] or Decimal("0.00")
+        )
+
+        return Response({
+            "id": tenant.id,
+            "name": tenant.business_name or tenant.name,
+            "slug": tenant.slug,
+            "status": tenant.status,
+            "is_restricted": tenant.is_restricted,
+            "contact_email": tenant.contact_email,
+            "contact_phone": tenant.contact_phone,
+            "created_at": tenant.created_at,
+            "payments_configured": not missing_mpesa_keys(tenant=tenant),
+            "plan": TenantSubscriptionSerializer(subscription).data if subscription else None,
+            "billing": {
+                "outstanding": TenantInvoiceSerializer(
+                    invoices.filter(status="unpaid"), many=True).data,
+                "amount_owed": invoices.filter(status="unpaid").aggregate(
+                    t=Sum("amount"))["t"] or Decimal("0.00"),
+                "lifetime_paid": invoices.filter(status="paid").aggregate(
+                    t=Sum("amount"))["t"] or Decimal("0.00"),
+            },
+            "network": {
+                "subscribers": Customer.objects.all_tenants().filter(tenant=tenant).count(),
+                "routers": RouterDevice.objects.all_tenants().filter(tenant=tenant).count(),
+                "subscriber_revenue": subscriber_revenue,
+            },
+            "recent_support_access": [
+                {
+                    "by": log.platform_user.username if log.platform_user else None,
+                    "method": log.method,
+                    "path": log.path,
+                    "reason": log.reason,
+                    "at": log.created_at,
+                }
+                for log in tenant.impersonations.select_related("platform_user")[:20]
+            ],
         })

@@ -171,6 +171,42 @@ class TenantStatusChange(models.Model):
         return f"{self.tenant}: {self.from_status} -> {self.to_status}"
 
 
+class ImpersonationLog(models.Model):
+    """
+    Every request a platform account makes while viewing as an operator.
+
+    Impersonation means platform staff reading — and potentially changing —
+    a real business's customer records, including phone numbers and payment
+    history. That is exactly the access that has to be reconstructable
+    afterwards, so each request is recorded rather than just the act of
+    starting a session.
+
+    One row per request is deliberate. It is more rows than logging only the
+    start, but "who looked at this customer's details, and when" is answerable
+    from it, and at this scale support sessions are rare.
+    """
+    platform_user = models.ForeignKey(
+        "User", on_delete=models.SET_NULL, null=True, related_name="impersonations"
+    )
+    tenant = models.ForeignKey(
+        "Tenant", on_delete=models.CASCADE, related_name="impersonations"
+    )
+    method = models.CharField(max_length=10)
+    path = models.CharField(max_length=255)
+    reason = models.CharField(max_length=255, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["tenant", "-created_at"], name="imp_tenant_time_idx"),
+            models.Index(fields=["platform_user", "-created_at"], name="imp_user_time_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.platform_user} viewed {self.tenant} — {self.method} {self.path}"
+
+
 def set_tenant_status(tenant, new_status, *, reason="", changed_by=None, automatic=False):
     """Change an operator's standing and record why. Returns True if it moved."""
     if tenant.status == new_status:

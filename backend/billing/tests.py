@@ -61,7 +61,7 @@ from billing.models import (
     SystemSetting, PPPoEUsageSnapshot, PPPoEUsageState, PPPoEUsageRecord,
     HotspotUsageState, HotspotUsageRecord, UsageRecord,
     PlatformPlan, PlatformSetting, TenantSubscription, TenantInvoice, TenantPayment,
-    TenantStatusChange, set_tenant_status,
+    TenantStatusChange, ImpersonationLog, set_tenant_status,
 )
 from billing.fields import ENCRYPTED_PREFIX
 
@@ -2783,3 +2783,187 @@ class RestrictionNoticeTests(PlatformBillingMixin, TestCase):
 
         message = mock_notify.call_args[0][1]
         self.assertIn("NOT affected", message)
+
+
+# ===========================================================
+# 17. Phase 7 — master dashboard and impersonation
+# ===========================================================
+
+class MasterDashboardTests(PlatformBillingMixin, TestCase):
+    """Cross-operator views. Unscoped by design, so platform staff only."""
+
+    def setUp(self):
+        cache.clear()
+        self.build_billing()
+        generate_tenant_invoices()
+
+    # ---- access ------------------------------------------------------------
+
+    def test_operator_cannot_see_the_platform_overview(self):
+        self.assertEqual(
+            self.auth(self.admin1).get("/api/platform/overview/").status_code, 403)
+
+    def test_operator_cannot_list_other_operators(self):
+        self.assertEqual(
+            self.auth(self.admin1).get("/api/platform/operators/").status_code, 403)
+
+    # ---- overview ----------------------------------------------------------
+
+    def test_overview_counts_every_operator(self):
+        resp = self.auth(make_platform_owner()).get("/api/platform/overview/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["operators"]["total"], 2)
+
+    def test_overview_reports_mrr_from_active_plans(self):
+        resp = self.auth(make_platform_owner()).get("/api/platform/overview/")
+        self.assertEqual(
+            Decimal(str(resp.data["platform_revenue"]["mrr"])), self.plan.price * 2)
+
+    def test_overview_reports_what_is_outstanding(self):
+        resp = self.auth(make_platform_owner()).get("/api/platform/overview/")
+        revenue = resp.data["platform_revenue"]
+        self.assertEqual(revenue["outstanding_count"], 2)
+        self.assertEqual(
+            Decimal(str(revenue["outstanding_total"])), self.plan.price * 2)
+
+    def test_overview_aggregates_the_whole_network(self):
+        resp = self.auth(make_platform_owner()).get("/api/platform/overview/")
+        network = resp.data["network"]
+        self.assertEqual(network["subscribers"], 2)   # one per operator
+        self.assertEqual(network["routers"], 2)
+
+    # ---- operator list -----------------------------------------------------
+
+    def test_operator_list_carries_per_operator_numbers(self):
+        resp = self.auth(make_platform_owner()).get("/api/platform/operators/")
+        self.assertEqual(resp.status_code, 200)
+        rows = {r["name"]: r for r in resp.data}
+        self.assertEqual(len(rows), 2)
+        row = rows[self.t1.business_name or self.t1.name]
+        self.assertEqual(row["subscribers"], 1)
+        self.assertEqual(row["routers"], 1)
+        self.assertEqual(row["plan"], "Starter")
+        self.assertEqual(Decimal(str(row["amount_owed"])), self.plan.price)
+
+    def test_operator_list_query_count_does_not_grow_with_operators(self):
+        """
+        A per-operator query per statistic is 200+ round trips at 50 operators.
+        """
+        client = self.auth(make_platform_owner())
+        with self.assertNumQueries(8):
+            client.get("/api/platform/operators/")
+
+        for i in range(5):
+            Tenant.objects.create(name=f"Extra {i}", slug=f"extra-{i}")
+
+        with self.assertNumQueries(8):
+            resp = client.get("/api/platform/operators/")
+        self.assertEqual(len(resp.data), 7)
+
+    def test_operator_list_can_be_filtered_by_status(self):
+        set_tenant_status(self.t2, "restricted", reason="unpaid", automatic=True)
+        resp = self.auth(make_platform_owner()).get(
+            "/api/platform/operators/", {"status": "restricted"})
+        self.assertEqual(len(resp.data), 1)
+        self.assertTrue(resp.data[0]["is_restricted"])
+
+    # ---- operator detail ---------------------------------------------------
+
+    def test_detail_shows_billing_and_network(self):
+        resp = self.auth(make_platform_owner()).get(
+            f"/api/platform/operators/{self.t1.id}/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["plan"]["plan_name"], "Starter")
+        self.assertEqual(
+            Decimal(str(resp.data["billing"]["amount_owed"])), self.plan.price)
+        self.assertEqual(resp.data["network"]["subscribers"], 1)
+
+    def test_detail_flags_an_operator_who_cannot_take_payments_yet(self):
+        """The most common reason a new operator is stuck."""
+        resp = self.auth(make_platform_owner()).get(
+            f"/api/platform/operators/{self.t1.id}/")
+        self.assertFalse(resp.data["payments_configured"])
+
+
+class ImpersonationTests(PlatformBillingMixin, TestCase):
+    """
+    Support viewing as an operator.
+
+    It grants no new access — it narrows an account that could already see
+    everything down to one operator. That is what makes it safe to offer, and
+    why every request is recorded.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_billing()
+        self.owner = make_platform_owner()
+
+    def _as_operator(self, tenant, reason="support ticket 123"):
+        client = self.auth(self.owner)
+        client.credentials(
+            HTTP_AUTHORIZATION=client._credentials["HTTP_AUTHORIZATION"],
+            HTTP_X_IMPERSONATE_TENANT=str(tenant.id),
+            HTTP_X_IMPERSONATE_REASON=reason,
+        )
+        return client
+
+    def test_platform_staff_see_only_that_operator_while_impersonating(self):
+        resp = self._as_operator(self.t1).get("/api/customers/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(
+            [r["full_name"] for r in resp.data["results"]], ["t1-customer"])
+
+    def test_switching_operator_switches_what_is_visible(self):
+        resp = self._as_operator(self.t2).get("/api/customers/")
+        self.assertEqual(
+            [r["full_name"] for r in resp.data["results"]], ["t2-customer"])
+
+    def test_without_the_header_they_still_see_everything(self):
+        resp = self.auth(self.owner).get("/api/customers/")
+        names = {r["full_name"] for r in resp.data["results"]}
+        self.assertEqual(names, {"t1-customer", "t2-customer"})
+
+    def test_an_operator_cannot_impersonate_anyone(self):
+        """The header must be inert for a non-platform account."""
+        client = self.auth(self.admin1)
+        client.credentials(
+            HTTP_AUTHORIZATION=client._credentials["HTTP_AUTHORIZATION"],
+            HTTP_X_IMPERSONATE_TENANT=str(self.t2.id),
+        )
+        resp = client.get("/api/customers/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(
+            [r["full_name"] for r in resp.data["results"]], ["t1-customer"],
+            "an operator reached another operator's data via the header",
+        )
+
+    def test_an_unauthenticated_request_cannot_impersonate(self):
+        client = APIClient()
+        client.credentials(HTTP_X_IMPERSONATE_TENANT=str(self.t1.id))
+        self.assertEqual(client.get("/api/customers/").status_code, 401)
+
+    # ---- audit -------------------------------------------------------------
+
+    def test_every_impersonated_request_is_recorded(self):
+        self._as_operator(self.t1).get("/api/customers/")
+
+        log = ImpersonationLog.objects.filter(tenant=self.t1).first()
+        self.assertIsNotNone(log, "impersonation left no audit trail")
+        self.assertEqual(log.platform_user_id, self.owner.id)
+        self.assertEqual(log.method, "GET")
+        self.assertEqual(log.path, "/api/customers/")
+        self.assertEqual(log.reason, "support ticket 123")
+
+    def test_ordinary_platform_requests_are_not_logged(self):
+        self.auth(self.owner).get("/api/customers/")
+        self.assertEqual(ImpersonationLog.objects.count(), 0)
+
+    def test_the_operator_detail_page_shows_support_access(self):
+        self._as_operator(self.t1, reason="checking a payment").get("/api/customers/")
+
+        resp = self.auth(self.owner).get(f"/api/platform/operators/{self.t1.id}/")
+        history = resp.data["recent_support_access"]
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["by"], self.owner.username)
+        self.assertEqual(history[0]["reason"], "checking a payment")
