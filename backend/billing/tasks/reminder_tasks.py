@@ -5,6 +5,7 @@ from datetime import timedelta
 
 from billing.models import Subscription, ExpiryReminderLog
 from billing.tasks.notification_tasks import notify_customer_task
+from billing.tenancy import all_tenants
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +35,8 @@ def send_expiry_reminders(self):
 
     for reminder_type, target_date in rules.items():
         subs = (
-            Subscription.objects
-            .select_related("customer")
+            Subscription.objects.all_tenants()
+            .select_related("customer", "tenant")
             .filter(
                 status="active",
                 expiry_date__date=target_date,
@@ -43,22 +44,30 @@ def send_expiry_reminders(self):
         )
 
         for sub in subs:
-            if ExpiryReminderLog.objects.filter(
+            if ExpiryReminderLog.objects.all_tenants().filter(
                 subscription=sub,
                 reminder_type=reminder_type,
             ).exists():
                 continue
 
+            # Branded per operator. The customer is theirs, not the platform's,
+            # so a reminder signed "Skylink" would confuse every other operator's
+            # subscribers.
+            signature = sub.tenant.business_name or sub.tenant.name
+
             message = (
                 f"Reminder: Your internet package expires on "
                 f"{sub.expiry_date:%d %b %Y %I:%M %p}.\n"
                 "Renew early to avoid interruption.\n"
-                "Skylink ISP"
+                f"{signature}"
             )
 
-            notify_customer_task.delay(sub.customer.phone, message)
+            notify_customer_task.delay(
+                sub.customer.phone, message, tenant_id=sub.tenant_id
+            )
 
             ExpiryReminderLog.objects.create(
+                tenant_id=sub.tenant_id,
                 subscription=sub,
                 reminder_type=reminder_type,
             )

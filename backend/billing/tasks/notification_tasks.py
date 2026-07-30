@@ -2,6 +2,7 @@ import logging
 from celery import shared_task
 
 from billing.notifications import send_sms, send_whatsapp
+from billing.tenancy import tenant_context
 
 logger = logging.getLogger(__name__)
 
@@ -13,8 +14,13 @@ logger = logging.getLogger(__name__)
     retry_kwargs={"max_retries": 5},
     retry_jitter=True,
 )
-def send_sms_task(self, phone: str, message: str) -> bool:
-    result = send_sms(phone, message)
+def send_sms_task(self, phone: str, message: str, tenant_id: int | None = None) -> bool:
+    # The operator travels with the task: send_sms() resolves the Africa's
+    # Talking credentials via get_setting(), and a worker has no request
+    # context to infer the operator from. Without this a message could be sent
+    # — and billed — through another operator's account.
+    with tenant_context(tenant_id):
+        result = send_sms(phone, message)
     if not result:
         raise Exception(f"SMS delivery failed to {phone}")
     logger.info(f"[sms] Sent to {phone}")
@@ -28,8 +34,9 @@ def send_sms_task(self, phone: str, message: str) -> bool:
     retry_kwargs={"max_retries": 5},
     retry_jitter=True,
 )
-def send_whatsapp_task(self, phone: str, message: str) -> bool:
-    result = send_whatsapp(phone, message)
+def send_whatsapp_task(self, phone: str, message: str, tenant_id: int | None = None) -> bool:
+    with tenant_context(tenant_id):
+        result = send_whatsapp(phone, message)
     if not result:
         raise Exception(f"WhatsApp delivery failed to {phone}")
     logger.info(f"[whatsapp] Sent to {phone}")
@@ -37,10 +44,10 @@ def send_whatsapp_task(self, phone: str, message: str) -> bool:
 
 
 @shared_task
-def notify_customer_task(phone: str, message: str) -> None:
+def notify_customer_task(phone: str, message: str, tenant_id: int | None = None) -> None:
     """Fan-out: each channel handles its own retries."""
-    send_sms_task.delay(phone, message)
-    send_whatsapp_task.delay(phone, message)
+    send_sms_task.delay(phone, message, tenant_id=tenant_id)
+    send_whatsapp_task.delay(phone, message, tenant_id=tenant_id)
     logger.info(f"[notify] Queued SMS+WhatsApp for {phone}")
 
 
@@ -56,6 +63,7 @@ def dispatch_broadcast_task(
     channel: str,
     message: str,
     customer_ids: list,
+    tenant_id: int | None = None,
 ) -> dict:
     """
     Fan-out broadcast to a filtered customer set.
@@ -65,7 +73,11 @@ def dispatch_broadcast_task(
     """
     from billing.models import Customer
 
-    qs = Customer.objects.only("id", "phone")
+    # Broadcast belongs to the operator who triggered it. tenant_id is passed
+    # explicitly because a worker has no request context to infer it from.
+    qs = Customer.objects.all_tenants().only("id", "phone", "tenant_id")
+    if tenant_id is not None:
+        qs = qs.filter(tenant_id=tenant_id)
 
     if audience == "active":
         qs = qs.filter(status="active")
@@ -79,9 +91,9 @@ def dispatch_broadcast_task(
     for customer in qs.iterator(chunk_size=200):
         try:
             if channel == "sms":
-                send_sms_task.delay(customer.phone, message)
+                send_sms_task.delay(customer.phone, message, tenant_id=customer.tenant_id)
             else:
-                send_whatsapp_task.delay(customer.phone, message)
+                send_whatsapp_task.delay(customer.phone, message, tenant_id=customer.tenant_id)
             sent += 1
         except Exception as exc:
             failed += 1

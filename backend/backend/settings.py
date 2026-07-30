@@ -83,6 +83,9 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    # Must come after authentication: reads the JWT to decide which operator's
+    # data this request may see. Without it every query runs unscoped.
+    "billing.middleware.TenantMiddleware",
 ]
 
 # =====================================================

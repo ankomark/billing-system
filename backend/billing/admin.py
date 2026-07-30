@@ -1,8 +1,9 @@
 from django.contrib import admin
 from .models import (
     User,
+    Tenant,
     RouterDevice,  # <-- ADD THIS
-    Customer, 
+    Customer,
     Package, 
     Subscription,
     Invoice, 
@@ -15,12 +16,24 @@ from .models import (
 from django.contrib.auth.admin import UserAdmin
 
 
+@admin.register(Tenant)
+class TenantAdmin(admin.ModelAdmin):
+    list_display = ("name", "slug", "status", "business_name", "pppoe_prefix", "created_at")
+    list_filter = ("status",)
+    search_fields = ("name", "slug", "business_name", "contact_phone")
+    prepopulated_fields = {"slug": ("name",)}
+    # Generated on save and used in public callback URLs — displayed, not edited.
+    readonly_fields = ("public_token", "created_at")
+
+
 @admin.register(User)
 class CustomUserAdmin(UserAdmin):
     model = User
-    list_display = ("username", "email", "role", "is_active", "is_staff")
+    list_display = ("username", "email", "role", "tenant", "is_active", "is_staff")
+    list_filter = UserAdmin.list_filter + ("tenant",)
     fieldsets = UserAdmin.fieldsets + (
-        ("Role Info", {"fields": ("role",)}),
+        # A blank tenant means platform staff, who see every operator.
+        ("Role Info", {"fields": ("role", "tenant")}),
     )
 
 

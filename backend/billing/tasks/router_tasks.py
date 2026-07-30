@@ -3,6 +3,7 @@ import logging
 from django.utils import timezone
 
 from billing.models import Customer
+from billing.tenancy import tenant_context
 from billing.router_service import (
     safe_connect_router,
     disconnect_pppoe_session,
@@ -14,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 # =====================================================
-# INTERNAL HELPER
+# INTERNAL HELPERS
 # =====================================================
 
 def _mark_router_online(router):
@@ -28,6 +29,21 @@ def _mark_router_offline(router, error):
     router.is_online = False
     router.last_error = str(error)
     router.save(update_fields=["is_online", "last_error"])
+
+
+def _load_customer(customer_id):
+    """
+    Load by primary key without tenant scoping.
+
+    A worker has no request, so nothing has set the tenant context yet — the
+    row itself is what tells us which operator we are acting for. The caller
+    then enters that operator's context before touching routers or credentials.
+    """
+    return (
+        Customer.objects.all_tenants()
+        .select_related("router", "tenant")
+        .get(id=customer_id)
+    )
 
 
 # =====================================================
@@ -49,7 +65,7 @@ def disconnect_pppoe_task(self, customer_id):
     - Customer self-service
     - Suspension workflows
     """
-    customer = Customer.objects.select_related("router").get(id=customer_id)
+    customer = _load_customer(customer_id)
 
     if customer.connection_type != "pppoe":
         logger.info(f"[disconnect_pppoe_task] Customer {customer_id} not PPPoE")
@@ -61,21 +77,24 @@ def disconnect_pppoe_task(self, customer_id):
 
     router = customer.router
 
-    try:
-        api = safe_connect_router(router)
-        if not api:
-            raise ConnectionError("Router unreachable")
+    with tenant_context(customer.tenant_id):
+        try:
+            api = safe_connect_router(router)
+            if not api:
+                raise ConnectionError("Router unreachable")
 
-        disconnect_pppoe_session(api, customer.pppoe_username)
-        _mark_router_online(router)
+            disconnect_pppoe_session(api, customer.pppoe_username)
+            _mark_router_online(router)
 
-        logger.info(f"[disconnect_pppoe_task] PPPoE disconnected for customer {customer_id}")
-        return True
+            logger.info(
+                f"[disconnect_pppoe_task] PPPoE disconnected for customer {customer_id}"
+            )
+            return True
 
-    except Exception as e:
-        _mark_router_offline(router, e)
-        logger.error(f"[disconnect_pppoe_task] Failed for {customer_id}: {e}")
-        raise
+        except Exception as e:
+            _mark_router_offline(router, e)
+            logger.error(f"[disconnect_pppoe_task] Failed for {customer_id}: {e}")
+            raise
 
 
 # =====================================================
@@ -97,7 +116,7 @@ def enable_customer_task(self, customer_id):
     - Resume
     - Renewal
     """
-    customer = Customer.objects.select_related("router").get(id=customer_id)
+    customer = _load_customer(customer_id)
 
     if not customer.router:
         logger.warning(f"[enable_customer_task] No router for customer {customer_id}")
@@ -105,17 +124,18 @@ def enable_customer_task(self, customer_id):
 
     router = customer.router
 
-    try:
-        enable_customer_access(customer)
-        _mark_router_online(router)
+    with tenant_context(customer.tenant_id):
+        try:
+            enable_customer_access(customer)
+            _mark_router_online(router)
 
-        logger.info(f"[enable_customer_task] Access enabled for customer {customer_id}")
-        return True
+            logger.info(f"[enable_customer_task] Access enabled for customer {customer_id}")
+            return True
 
-    except Exception as e:
-        _mark_router_offline(router, e)
-        logger.error(f"[enable_customer_task] Failed for {customer_id}: {e}")
-        raise
+        except Exception as e:
+            _mark_router_offline(router, e)
+            logger.error(f"[enable_customer_task] Failed for {customer_id}: {e}")
+            raise
 
 
 @shared_task(
@@ -133,7 +153,7 @@ def disable_customer_task(self, customer_id):
     - Expiry
     - Admin action
     """
-    customer = Customer.objects.select_related("router").get(id=customer_id)
+    customer = _load_customer(customer_id)
 
     if not customer.router:
         logger.warning(f"[disable_customer_task] No router for customer {customer_id}")
@@ -141,14 +161,15 @@ def disable_customer_task(self, customer_id):
 
     router = customer.router
 
-    try:
-        disable_customer_access(customer)
-        _mark_router_online(router)
+    with tenant_context(customer.tenant_id):
+        try:
+            disable_customer_access(customer)
+            _mark_router_online(router)
 
-        logger.info(f"[disable_customer_task] Access disabled for customer {customer_id}")
-        return True
+            logger.info(f"[disable_customer_task] Access disabled for customer {customer_id}")
+            return True
 
-    except Exception as e:
-        _mark_router_offline(router, e)
-        logger.error(f"[disable_customer_task] Failed for {customer_id}: {e}")
-        raise
+        except Exception as e:
+            _mark_router_offline(router, e)
+            logger.error(f"[disable_customer_task] Failed for {customer_id}: {e}")
+            raise

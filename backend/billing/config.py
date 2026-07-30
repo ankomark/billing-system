@@ -1,6 +1,8 @@
 import os
 import logging
 
+from .tenancy import get_current_tenant_id
+
 logger = logging.getLogger(__name__)
 
 _SETTING_CACHE_TTL = 60  # seconds — short enough to pick up updates quickly
@@ -22,54 +24,76 @@ ALL_SETTING_KEYS = [
 ]
 
 
-def _cache_key(key: str) -> str:
-    return f"sys_setting:{key}"
+def _resolve_tenant_id(tenant):
+    """Explicit argument wins, then the tenant in context."""
+    if tenant is not None:
+        return getattr(tenant, "pk", tenant)
+    return get_current_tenant_id()
 
 
-def get_setting(key: str, default: str | None = None) -> str | None:
+def _cache_key(tenant_id, key: str) -> str:
     """
-    Read a SystemSetting from DB with Redis-backed caching.
+    The tenant is part of the key.
 
-    Multi-worker safe: all Gunicorn/Celery workers share the same Redis cache,
-    so calling clear_settings_cache() after a settings update invalidates it
-    globally — unlike lru_cache which is process-local.
+    Without it, operator A's MPESA_CONSUMER_SECRET is served from cache to
+    operator B. That is a credential leak rather than a data leak, and Postgres
+    RLS cannot prevent it — on a cache hit the database is never consulted.
+    """
+    return f"sys_setting:{tenant_id if tenant_id is not None else 'none'}:{key}"
 
-    Falls back to environment variable, then to `default`.
+
+def get_setting(key: str, default: str | None = None, tenant=None) -> str | None:
+    """
+    Read a SystemSetting for one operator, with Redis-backed caching.
+
+    Falls back to an environment variable, then to `default`. Environment
+    fallbacks are platform-wide by nature, so they are only consulted when the
+    operator has no value of their own — an operator that has configured a key
+    never picks up another's value or a stale process-level default.
     """
     from django.core.cache import cache
 
-    cache_key = _cache_key(key)
+    tenant_id = _resolve_tenant_id(tenant)
+    cache_key = _cache_key(tenant_id, key)
+
     cached = cache.get(cache_key, _MISSING)
     if cached is not _MISSING:
         return cached
 
-    # Cache miss — hit the DB
     from .models import SystemSetting
-    try:
-        obj = SystemSetting.objects.only("value").get(key=key)
-        value = obj.value
-    except SystemSetting.DoesNotExist:
-        value = os.getenv(key)
+
+    qs = SystemSetting.objects.all_tenants().only("value")
+    if tenant_id is not None:
+        qs = qs.filter(tenant_id=tenant_id)
+
+    # .filter().first() rather than .get(): with several operators holding the
+    # same key, .get() raised MultipleObjectsReturned and returned a 500.
+    obj = qs.filter(key=key).first()
+    value = obj.value if obj is not None else os.getenv(key)
 
     result = value if value is not None else default
 
-    # Store even None so repeated misses don't hammer the DB
+    # Cache misses too, so repeated lookups for an unset key do not hit the DB
     cache.set(cache_key, result, _SETTING_CACHE_TTL)
     return result
 
 
-def clear_settings_cache(key: str | None = None) -> None:
+def clear_settings_cache(key: str | None = None, tenant=None) -> None:
     """
-    Invalidate the settings cache across all workers.
+    Invalidate cached settings for one operator.
 
-    Pass a specific key to clear only that setting, or omit to clear all.
-    Call this after any SystemSetting write so workers pick up the new value
-    within at most `_SETTING_CACHE_TTL` seconds (or immediately if you call this).
+    Pass a key to clear just that one, or omit to clear all of them. Call after
+    any SystemSetting write so workers see the new value immediately rather
+    than within _SETTING_CACHE_TTL.
     """
     from django.core.cache import cache
 
+    tenant_id = _resolve_tenant_id(tenant)
+
     if key:
-        cache.delete(_cache_key(key))
+        cache.delete(_cache_key(tenant_id, key))
     else:
-        cache.delete_many([_cache_key(k) for k in ALL_SETTING_KEYS])
-    logger.debug(f"[config] Settings cache cleared: {key or 'ALL'}")
+        cache.delete_many([_cache_key(tenant_id, k) for k in ALL_SETTING_KEYS])
+    logger.debug(
+        f"[config] Settings cache cleared for tenant={tenant_id}: {key or 'ALL'}"
+    )

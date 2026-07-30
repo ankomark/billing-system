@@ -279,9 +279,29 @@ def safe_connect_router(router):
         return None
 
 
-def pick_working_router(customer=None):
-    from .models import RouterDevice  # local import avoids app-loading issues
-    routers = list(RouterDevice.objects.filter(is_active=True).order_by("priority"))
+def _tenant_routers(tenant_id):
+    """
+    Active routers belonging to one operator, best priority first.
+
+    Always filters explicitly rather than relying on the ambient tenant
+    context: these functions run from Celery tasks and management commands
+    where no middleware has set it, and an unscoped result would provision a
+    subscriber onto another operator's hardware.
+    """
+    from .models import RouterDevice
+
+    qs = RouterDevice.objects.all_tenants().filter(is_active=True)
+    if tenant_id is None:
+        raise ValueError(
+            "Router selection requires a tenant. Pass a customer or tenant_id — "
+            "an unscoped selection can provision onto another operator's router."
+        )
+    return qs.filter(tenant_id=tenant_id).order_by("priority")
+
+
+def pick_working_router(customer=None, tenant_id=None):
+    tenant_id = tenant_id or getattr(customer, "tenant_id", None)
+    routers = list(_tenant_routers(tenant_id))
     # Try assigned router first
     if customer and getattr(customer, "router_id", None):
         assigned = next((r for r in routers if r.id == customer.router_id), None)
@@ -297,11 +317,10 @@ def pick_working_router(customer=None):
             return r, api
 
     return None, None
-def pick_failover_router(exclude_router_id=None, customer=None):
-   
-    from .models import RouterDevice
+def pick_failover_router(exclude_router_id=None, customer=None, tenant_id=None):
 
-    qs = RouterDevice.objects.filter(is_active=True).order_by("priority")
+    tenant_id = tenant_id or getattr(customer, "tenant_id", None)
+    qs = _tenant_routers(tenant_id)
     if exclude_router_id:
         qs = qs.exclude(id=exclude_router_id)
 
@@ -327,11 +346,10 @@ def count_pppoe_sessions(api) -> int:
     active = api.path("ppp", "active")
     return sum(1 for _ in active)
 
-def pick_best_router_for_new_customer(customer=None):
-    
-    from .models import RouterDevice
+def pick_best_router_for_new_customer(customer=None, tenant_id=None):
 
-    routers = list(RouterDevice.objects.filter(is_active=True).order_by("priority"))
+    tenant_id = tenant_id or getattr(customer, "tenant_id", None)
+    routers = list(_tenant_routers(tenant_id))
     candidates = []
 
     for r in routers:
@@ -441,12 +459,13 @@ def get_pppoe_live_usage_any_router(customer):
     # 1) assigned first
     if customer.router_id:
         router = customer.router
-        api = safe_connect_router(router)  
+        api = safe_connect_router(router)
         if api:
             data = get_pppoe_live_usage(router, username)
             if data and data.get("connected"):
                 return router, data
-    routers = RouterDevice.objects.filter(is_active=True).order_by("priority")
+    # Scan only this operator's routers — never another's
+    routers = _tenant_routers(customer.tenant_id)
     for r in routers:
         if customer.router_id and r.id == customer.router_id:
             continue
@@ -485,8 +504,8 @@ def get_hotspot_live_usage_any_router(customer):
         data = get_hotspot_live_usage(r, username)
         if data and data.get("connected"):
             return r, data
-    # fallback scan
-    routers = RouterDevice.objects.filter(is_active=True).order_by("priority")
+    # fallback scan — this operator's routers only
+    routers = _tenant_routers(customer.tenant_id)
     for r in routers:
         data = get_hotspot_live_usage(r, username)
         if data and data.get("connected"):
