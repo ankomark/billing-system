@@ -17,7 +17,22 @@ SECRET_KEY = os.getenv("SECRET_KEY", "django-insecure-change-this-in-production"
 
 DEBUG = os.getenv("DEBUG", "False") == "True"
 
-ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
+ALLOWED_HOSTS = [
+    h.strip() for h in os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
+    if h.strip()
+]
+
+# Loopback is always allowed. The container healthcheck calls
+# http://localhost:8000/health/, so the moment ALLOWED_HOSTS is narrowed to a
+# real domain — which production requires — that request would be answered with
+# 400 DisallowedHost, the healthcheck would fail forever, and an orchestrator
+# would restart-loop a perfectly healthy container.
+#
+# No weakening of Host-header protection: these names only resolve from inside
+# the container itself.
+for _loopback in ("localhost", "127.0.0.1"):
+    if _loopback not in ALLOWED_HOSTS:
+        ALLOWED_HOSTS.append(_loopback)
 
 # =====================================================
 # HTTPS / SECURITY HEADERS  (production only)
@@ -129,6 +144,14 @@ DATABASES = {
         # Keep connections alive per-worker. Use pgBouncer in production for
         # true connection pooling when running 8+ Gunicorn workers.
         "CONN_MAX_AGE": int(os.getenv("CONN_MAX_AGE", "60")),
+        "OPTIONS": {
+            # Fail fast when the database is unreachable. Without this the
+            # driver waits on the OS TCP timeout, so a network partition makes
+            # every worker hang instead of erroring — and the container
+            # healthcheck, which has its own 5s budget, times out and gets the
+            # container restarted while nothing is actually wrong with it.
+            "connect_timeout": int(os.getenv("DB_CONNECT_TIMEOUT", "5")),
+        },
     }
 }
 

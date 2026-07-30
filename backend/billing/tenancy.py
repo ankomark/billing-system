@@ -47,7 +47,7 @@ def _postgres():
 
 def read_db_tenant():
     """Current value of the Postgres setting the RLS policies read."""
-    if not _postgres():
+    if not _postgres() or connection.connection is None:
         return None
     with connection.cursor() as cur:
         cur.execute("SELECT current_setting(%s, true)", [RLS_SETTING])
@@ -70,9 +70,34 @@ def write_db_tenant(tenant_id, *, local=True):
     """
     if not _postgres():
         return
+
+    # Never open a connection merely to set a variable. During a database
+    # outage that would add a failed connect — and a stack trace — to every
+    # single request, including ones that would not otherwise touch the
+    # database at all. When no connection is open yet, the connection_created
+    # receiver below applies the scope the moment one is.
+    if connection.connection is None:
+        return
+
     value = "" if tenant_id is None else str(tenant_id)
     with connection.cursor() as cur:
         cur.execute("SELECT set_config(%s, %s, %s)", [RLS_SETTING, value, local])
+
+
+def apply_scope_to_new_connection(sender, connection, **kwargs):
+    """
+    Stamp the current operator onto a freshly opened connection.
+
+    Wired to Django's connection_created signal. Without it, a request that
+    opens its connection lazily — the common case — would run its first query
+    before any scope was applied, and RLS would let that query see everything.
+    """
+    if connection.vendor != "postgresql":
+        return
+    tenant_id = get_current_tenant_id()
+    value = "" if tenant_id is None else str(tenant_id)
+    with connection.cursor() as cur:
+        cur.execute("SELECT set_config(%s, %s, false)", [RLS_SETTING, value])
 
 
 @contextmanager
