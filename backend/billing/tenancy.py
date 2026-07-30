@@ -38,6 +38,43 @@ def reset_current_tenant_id(token):
     _current_tenant_id.reset(token)
 
 
+RLS_SETTING = "app.current_tenant_id"
+
+
+def _postgres():
+    return connection.vendor == "postgresql"
+
+
+def read_db_tenant():
+    """Current value of the Postgres setting the RLS policies read."""
+    if not _postgres():
+        return None
+    with connection.cursor() as cur:
+        cur.execute("SELECT current_setting(%s, true)", [RLS_SETTING])
+        return cur.fetchone()[0]
+
+
+def write_db_tenant(tenant_id, *, local=True):
+    """
+    Tell Postgres which operator this connection is acting for.
+
+    `local=True` is transaction-scoped and reverts when the transaction ends —
+    right for a task or a nested block. `local=False` is session-scoped and
+    survives across transactions, which is what a web request needs, since a
+    request is not one transaction.
+
+    The session-scoped form is only safe because the middleware writes it at
+    the start of *every* request. With CONN_MAX_AGE the connection is reused,
+    and the hazard is a stale value from the previous request — overwriting it
+    unconditionally before any query runs is what removes that hazard.
+    """
+    if not _postgres():
+        return
+    value = "" if tenant_id is None else str(tenant_id)
+    with connection.cursor() as cur:
+        cur.execute("SELECT set_config(%s, %s, %s)", [RLS_SETTING, value, local])
+
+
 @contextmanager
 def tenant_context(tenant, *, set_db_session=True):
     """
@@ -49,23 +86,23 @@ def tenant_context(tenant, *, set_db_session=True):
         with tenant_context(tenant):
             enable_customer_access(customer)
 
-    `set_db_session` also sets the Postgres session variable that RLS policies
-    read. It uses `set_config(..., true)`, which is transaction-local: with
-    CONN_MAX_AGE > 0 the connection is reused across requests, and a plain SET
-    would leak one operator's context into the next request.
+    Restores the previous database setting on exit, not just the ContextVar.
+    Without that the two layers drift apart: the application would believe it
+    had returned to unscoped while Postgres was still filtering to the operator
+    from the block that just ended, and rows would go quietly missing.
     """
     tenant_id = getattr(tenant, "pk", tenant)
     token = set_current_tenant_id(tenant_id)
+    touch_db = set_db_session and _postgres()
+    previous = read_db_tenant() if touch_db else None
     try:
-        if set_db_session and connection.vendor == "postgresql":
-            with connection.cursor() as cur:
-                cur.execute(
-                    "SELECT set_config('app.current_tenant_id', %s, true)",
-                    [str(tenant_id) if tenant_id is not None else ""],
-                )
+        if touch_db:
+            write_db_tenant(tenant_id)
         yield
     finally:
         reset_current_tenant_id(token)
+        if touch_db:
+            write_db_tenant(previous or None)
 
 
 @contextmanager
@@ -75,12 +112,22 @@ def all_tenants():
 
     Explicit by design — an unscoped read should be visible at the call site,
     not something that happens because a filter was forgotten.
+
+    Clears the database setting too. Clearing only the ContextVar would leave
+    RLS still filtering, so a block that reads as cross-operator would silently
+    return one operator's rows.
     """
     token = set_current_tenant_id(None)
+    touch_db = _postgres()
+    previous = read_db_tenant() if touch_db else None
     try:
+        if touch_db:
+            write_db_tenant(None)
         yield
     finally:
         reset_current_tenant_id(token)
+        if touch_db:
+            write_db_tenant(previous or None)
 
 
 class TenantManager(models.Manager):

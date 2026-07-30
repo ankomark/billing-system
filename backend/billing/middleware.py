@@ -17,7 +17,9 @@ from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 
 from .auth_tokens import ROLE_CLAIM, TENANT_CLAIM
-from .tenancy import reset_current_tenant_id, set_current_tenant_id
+from .tenancy import (
+    reset_current_tenant_id, set_current_tenant_id, write_db_tenant,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +65,20 @@ class TenantMiddleware(MiddlewareMixin):
         if tenant_id is not None:
             request.tenant_id = tenant_id
             request._tenant_token = set_current_tenant_id(tenant_id)
+
+        # Tell Postgres too, or the RLS policies see nothing set and allow
+        # everything — the database backstop would protect background tasks
+        # and no web request at all.
+        #
+        # Session-scoped, because a request is not a single transaction, and
+        # written on EVERY request including the unscoped ones. With
+        # CONN_MAX_AGE the connection is reused, so the hazard is a stale
+        # value from whoever held it last; overwriting unconditionally before
+        # any query runs is what removes it.
+        try:
+            write_db_tenant(tenant_id, local=False)
+        except Exception:
+            logger.exception("[tenancy] Could not apply database tenant scope")
 
     def _impersonation_target(self, request):
         """
@@ -187,3 +203,11 @@ class TenantMiddleware(MiddlewareMixin):
         if token is not None:
             reset_current_tenant_id(token)
             request._tenant_token = None
+
+        # Clear the connection's scope as well. The next request rewrites it
+        # regardless, but leaving it set means anything sharing this
+        # connection outside a request would inherit the last caller's view.
+        try:
+            write_db_tenant(None, local=False)
+        except Exception:
+            logger.exception("[tenancy] Could not clear database tenant scope")

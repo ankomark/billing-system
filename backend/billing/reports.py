@@ -5,7 +5,12 @@ from .models import Payment, Invoice, Subscription
 
 
 def revenue_summary():
-    today = timezone.now().date()
+    # localdate(), not now().date(): the latter is the UTC date, while the
+    # database evaluates paid_at__date in TIME_ZONE (Africa/Nairobi, UTC+3).
+    # Between 21:00 and midnight UTC those are different days, so "today's
+    # revenue" silently reported the wrong figure for three hours daily —
+    # invisible on SQLite, which converts differently.
+    today = timezone.localdate()
     start_month = today.replace(day=1)
     start_year = today.replace(month=1, day=1)
 

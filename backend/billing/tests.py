@@ -52,7 +52,7 @@ from billing.router_service import (
     pick_best_router_for_new_customer,
     pick_working_router,
 )
-from billing.tenancy import TenantManager, tenant_context
+from billing.tenancy import TenantManager, all_tenants, tenant_context
 
 from billing.models import (
     User, Customer, Package, Subscription,
@@ -848,8 +848,12 @@ class CustomerDetailSerializerTests(TestCase):
 
     def test_detail_query_count_does_not_grow_with_subscriptions(self):
         """Prefetching must keep the detail page at a fixed query count."""
-        # 3 = customer (+select_related) + subscriptions prefetch + vouchers prefetch
-        with self.assertNumQueries(3):
+        # 3 = customer (+select_related) + subscriptions prefetch + vouchers
+        # prefetch. On Postgres add 2: the middleware sets the RLS scope on
+        # the connection at the start of the request and clears it at the end.
+        # Fixed overhead — the point of this test is that it does not grow.
+        expected = 3 + (2 if connection.vendor == "postgresql" else 0)
+        with self.assertNumQueries(expected):
             self._detail()
 
         for i in range(4):
@@ -861,8 +865,12 @@ class CustomerDetailSerializerTests(TestCase):
                 expires_at=timezone.now() + timezone.timedelta(days=5),
             )
 
-        # 3 = customer (+select_related) + subscriptions prefetch + vouchers prefetch
-        with self.assertNumQueries(3):
+        # 3 = customer (+select_related) + subscriptions prefetch + vouchers
+        # prefetch. On Postgres add 2: the middleware sets the RLS scope on
+        # the connection at the start of the request and clears it at the end.
+        # Fixed overhead — the point of this test is that it does not grow.
+        expected = 3 + (2 if connection.vendor == "postgresql" else 0)
+        with self.assertNumQueries(expected):
             resp = self._detail()
         self.assertEqual(len(resp.data["subscriptions"]), 5)
         self.assertEqual(len(resp.data["vouchers"]), 5)
@@ -1373,9 +1381,30 @@ class TenantIsolationManagerTests(TwoOperatorMixin, TestCase):
                 self.assertNotIn(self.data["t2"][key].id, ids)
 
     def test_all_tenants_is_the_explicit_opt_out(self):
+        """
+        `.all_tenants()` escapes the manager filter. With no scope in force
+        that is the whole story.
+        """
+        self.assertEqual(Customer.objects.all_tenants().count(), 2)
+
+    def test_all_tenants_does_not_escape_the_database_scope(self):
+        """
+        Inside a tenant context, `.all_tenants()` is still bounded by RLS on
+        Postgres. That is the backstop doing its job, not a defect: code that
+        has declared it is acting for one operator does not get to read across
+        every operator by changing manager.
+
+        Genuine cross-operator reads use the `all_tenants()` *context manager*,
+        which clears both layers.
+        """
         with tenant_context(self.t1):
             self.assertEqual(Customer.objects.count(), 1)
-            self.assertEqual(Customer.objects.all_tenants().count(), 2)
+
+            expected = 2 if connection.vendor != "postgresql" else 1
+            self.assertEqual(Customer.objects.all_tenants().count(), expected)
+
+            with all_tenants():
+                self.assertEqual(Customer.objects.all_tenants().count(), 2)
 
     def test_no_context_means_unscoped(self):
         """Platform staff and cross-operator sweeps rely on this."""
@@ -1504,6 +1533,51 @@ class RowLevelSecurityTests(TwoOperatorMixin, TestCase):
         with tenant_context(self.t1):
             pass
         self.assertEqual(self._raw_count("billing_customer"), 2)
+
+    def test_a_web_request_applies_the_scope_to_postgres(self):
+        """
+        The gap a real Postgres run exposed.
+
+        The middleware used to set only the Python ContextVar, so during an API
+        request app.current_tenant_id was unset, the policy's IS NULL branch
+        matched, and the database allowed everything. RLS protected background
+        tasks and no web request at all — the appearance of a backstop with
+        none of the substance.
+        """
+        self.auth(self.admin1).get("/api/customers/")
+
+        with connection.cursor() as cur:
+            cur.execute("SELECT current_setting('app.current_tenant_id', true)")
+            after = cur.fetchone()[0]
+
+        # Cleared once the request finished, so nothing inherits this
+        # connection's scope.
+        self.assertIn(after, ("", None))
+
+    def test_leaving_a_tenant_block_restores_the_database_scope(self):
+        """
+        Both layers must move together. Restoring only the ContextVar leaves
+        Postgres still filtering to the operator whose block just ended, and
+        rows go quietly missing from what reads as an unscoped query.
+        """
+        with tenant_context(self.t1):
+            self.assertEqual(self._raw_count("billing_customer"), 1)
+
+        self.assertEqual(
+            self._raw_count("billing_customer"), 2,
+            "database scope outlived the tenant_context block",
+        )
+
+    def test_all_tenants_really_is_unscoped_at_the_database(self):
+        with tenant_context(self.t1):
+            self.assertEqual(self._raw_count("billing_customer"), 1)
+            with all_tenants():
+                self.assertEqual(
+                    self._raw_count("billing_customer"), 2,
+                    "all_tenants() was still filtered by RLS",
+                )
+            # ...and the operator scope comes back afterwards.
+            self.assertEqual(self._raw_count("billing_customer"), 1)
 
     def test_policy_covers_every_scoped_table(self):
         with connection.cursor() as cur:
@@ -2850,13 +2924,16 @@ class MasterDashboardTests(PlatformBillingMixin, TestCase):
         A per-operator query per statistic is 200+ round trips at 50 operators.
         """
         client = self.auth(make_platform_owner())
-        with self.assertNumQueries(8):
+        # +2 on Postgres for the per-request RLS scope set and clear.
+        expected = 8 + (2 if connection.vendor == "postgresql" else 0)
+
+        with self.assertNumQueries(expected):
             client.get("/api/platform/operators/")
 
         for i in range(5):
             Tenant.objects.create(name=f"Extra {i}", slug=f"extra-{i}")
 
-        with self.assertNumQueries(8):
+        with self.assertNumQueries(expected):
             resp = client.get("/api/platform/operators/")
         self.assertEqual(len(resp.data), 7)
 
