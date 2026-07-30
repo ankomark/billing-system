@@ -37,7 +37,6 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD curl -fsS http://localhost:8000/health/ || exit 1
 
-# Development default, matching the compose `web` command. For production,
-# uncomment gunicorn in requirements.txt and use:
-#   gunicorn backend.wsgi:application --bind 0.0.0.0:8000 --workers 4
-CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]
+# Default only — compose overrides this per service. The compose `web` command
+# runs collectstatic first so WhiteNoise has files to serve.
+CMD ["gunicorn", "backend.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "4"]

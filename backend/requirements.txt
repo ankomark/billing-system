@@ -35,7 +35,6 @@ cryptography>=41.0        # Fernet field encryption (billing/fields.py)
 # ── Monitoring ───────────────────────────────────────────────────────────────
 sentry-sdk[django]>=2.0
 
-# ── WSGI server ──────────────────────────────────────────────────────────────
-# docker-compose currently runs `manage.py runserver`, which is development
-# only. Uncomment and switch the compose command for a real deployment.
-# gunicorn>=21.2
+# ── Serving ──────────────────────────────────────────────────────────────────
+gunicorn>=21.2            # the `web` service in docker-compose.yml runs this
+whitenoise>=6.6           # serves /static/ (Django admin CSS) without nginx

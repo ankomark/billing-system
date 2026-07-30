@@ -23,7 +23,13 @@ ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
 # HTTPS / SECURITY HEADERS  (production only)
 # =====================================================
 if not DEBUG:
-    SECURE_SSL_REDIRECT = True
+    # Redirecting to HTTPS needs something in front terminating TLS. The compose
+    # stack has no such proxy, so every request to http://localhost:8000 would
+    # 301 to an https:// URL nothing is listening on. Defaults to True (secure);
+    # set SECURE_SSL_REDIRECT=False in .env only when TLS is genuinely absent.
+    # Note SESSION_COOKIE_SECURE below still applies, so Django admin login
+    # requires HTTPS regardless — the JWT API is unaffected.
+    SECURE_SSL_REDIRECT = os.getenv("SECURE_SSL_REDIRECT", "True") == "True"
     SECURE_HSTS_SECONDS = 31536000          # 1 year — tells browsers to always use HTTPS
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
@@ -66,6 +72,10 @@ AUTH_USER_MODEL = "billing.User"
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    # Must sit directly after SecurityMiddleware. Serves STATIC_ROOT under
+    # gunicorn, which (unlike runserver with DEBUG=True) does not serve static
+    # itself — without this the Django admin loads with no CSS.
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -179,6 +189,19 @@ USE_TZ = True
 
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"  # target for `python manage.py collectstatic`
+
+# WhiteNoise compresses static files and adds far-future cache headers.
+# Deliberately the non-manifest backend: CompressedManifestStaticFilesStorage
+# raises at request time for any file missing from the manifest, which turns a
+# forgotten collectstatic into a hard 500 instead of a missing stylesheet.
+STORAGES = {
+    "default": {
+        "BACKEND": "django.core.files.storage.FileSystemStorage",
+    },
+    "staticfiles": {
+        "BACKEND": "whitenoise.storage.CompressedStaticFilesStorage",
+    },
+}
 
 # =====================================================
 # CORS
