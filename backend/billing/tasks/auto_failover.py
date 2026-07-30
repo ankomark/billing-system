@@ -3,6 +3,7 @@ from celery import shared_task
 
 from billing.models import Customer, RouterDevice
 from billing.router_service import migrate_customer_router
+from billing.tenancy import tenant_context
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +21,10 @@ def run_auto_failover_task(self):
     minutes when many customers needed to be moved. Now each customer is
     migrated in parallel by the Celery worker pool.
     """
-    offline_routers = RouterDevice.objects.filter(is_active=True, is_online=False)
+    # Cross-operator sweep by design — every operator's offline routers.
+    offline_routers = RouterDevice.objects.all_tenants().filter(
+        is_active=True, is_online=False
+    )
 
     if not offline_routers.exists():
         return 0
@@ -28,7 +32,7 @@ def run_auto_failover_task(self):
     dispatched = 0
     for router in offline_routers:
         customer_ids = list(
-            Customer.objects
+            Customer.objects.all_tenants()
             .filter(router=router, status="active")
             .values_list("id", flat=True)
         )
@@ -53,12 +57,19 @@ def migrate_single_customer_task(self, customer_id: int):
     Runs in parallel with other customer migrations.
     """
     try:
-        customer = Customer.objects.select_related("router").get(id=customer_id)
+        customer = (
+            Customer.objects.all_tenants()
+            .select_related("router", "tenant")
+            .get(id=customer_id)
+        )
     except Customer.DoesNotExist:
         logger.warning(f"[auto-failover] Customer {customer_id} not found")
         return
 
-    success, message = migrate_customer_router(customer, reason="auto_failover")
+    # Act as the owning operator so router selection and any notification
+    # credentials resolve to theirs.
+    with tenant_context(customer.tenant_id):
+        success, message = migrate_customer_router(customer, reason="auto_failover")
 
     if success:
         logger.info(f"[auto-failover] Customer {customer_id}: {message}")

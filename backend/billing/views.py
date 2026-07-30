@@ -128,9 +128,18 @@ class CustomerViewSet(viewsets.ModelViewSet):
 
 
 class PackageViewSet(viewsets.ModelViewSet):
-    queryset = Package.objects.all()
     serializer_class = PackageSerializer
     permission_classes = [IsAdmin]
+
+    # Must be a method, not a class attribute. A class-level
+    # `queryset = Package.objects.all()` is built once at import time, when no
+    # tenant is in context, so the manager's filter never applies — DRF's
+    # .all() clones that queryset rather than re-consulting the manager, and
+    # every operator would see every other operator's packages.
+    def get_queryset(self):
+        # Ordered explicitly: pagination over an unordered queryset can repeat
+        # or skip rows between pages.
+        return Package.objects.order_by("id")
 
 
 class SubscriptionViewSet(viewsets.ModelViewSet):
@@ -147,9 +156,12 @@ class SubscriptionViewSet(viewsets.ModelViewSet):
 
 
 class InvoiceViewSet(viewsets.ModelViewSet):
-    queryset = Invoice.objects.select_related("customer", "subscription")
     serializer_class = InvoiceSerializer
     permission_classes = [IsAdmin]
+
+    # Method, not a class attribute — see PackageViewSet above.
+    def get_queryset(self):
+        return Invoice.objects.select_related("customer", "subscription")
 
 
 class PaymentViewSet(viewsets.ModelViewSet):
@@ -858,7 +870,12 @@ class AdminBroadcastView(APIView):
         # The old pattern loaded every Customer into the web worker's memory
         # and looped synchronously — at 10k customers this blocked the worker.
         from billing.tasks.notification_tasks import dispatch_broadcast_task
-        task = dispatch_broadcast_task.delay(audience, channel, message, customer_ids)
+        # The worker has no request, so the operator must travel with the task —
+        # otherwise a broadcast would fan out across every operator's customers.
+        task = dispatch_broadcast_task.delay(
+            audience, channel, message, customer_ids,
+            tenant_id=getattr(request.user, "tenant_id", None),
+        )
 
         return Response(
             {

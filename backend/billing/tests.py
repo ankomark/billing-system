@@ -13,20 +13,35 @@ Coverage:
 
 import json
 from decimal import Decimal
+from unittest import skipUnless
 from unittest.mock import patch
 from cryptography.fernet import Fernet
 
+from django.db import connection
+
 from django.core.cache import cache
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db.models import ProtectedError
 from django.db.utils import IntegrityError
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from rest_framework.test import APIClient
+from rest_framework_simplejwt.tokens import RefreshToken
+
+from billing.config import clear_settings_cache, get_setting
+from billing.router_service import (
+    pick_best_router_for_new_customer,
+    pick_working_router,
+)
+from billing.tenancy import TenantManager, tenant_context
 
 from billing.models import (
     User, Customer, Package, Subscription,
     Invoice, Payment, Voucher, MpesaTransaction, RouterDevice,
-    AccessAuditLog,
+    AccessAuditLog, Tenant, RouterFailoverLog, ExpiryReminderLog,
+    SystemSetting, PPPoEUsageSnapshot, PPPoEUsageState, PPPoEUsageRecord,
+    HotspotUsageState, HotspotUsageRecord, UsageRecord,
 )
 from billing.fields import ENCRYPTED_PREFIX
 
@@ -996,3 +1011,451 @@ class HotspotMacCollisionTests(TestCase):
         resp = self.client.get(self.STATUS, {"mac": self.MAC})
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.data["status"], "active")
+
+
+# ===========================================================
+# 10. Phase 1 — Tenancy data model
+# ===========================================================
+
+# Every model carrying a tenant FK. Table-driven on purpose: a model added
+# later without being scoped fails these tests instead of silently shipping.
+SCOPED_MODELS = [
+    RouterDevice, Customer, RouterFailoverLog, Package, Subscription, Invoice,
+    Voucher, Payment, ExpiryReminderLog, AccessAuditLog, SystemSetting,
+    MpesaTransaction, PPPoEUsageSnapshot, PPPoEUsageState, PPPoEUsageRecord,
+    HotspotUsageState, HotspotUsageRecord, UsageRecord,
+]
+
+
+class TenantBackfillTests(TestCase):
+    """Migration 0026 must leave every row claimed by the default tenant."""
+
+    def test_default_tenant_exists_after_migrations(self):
+        tenant = Tenant.objects.get(slug="skylink")
+        self.assertEqual(tenant.status, "active")
+        self.assertEqual(tenant.business_name, "Skylink WiFi")
+        self.assertEqual(tenant.pppoe_prefix, "SKY")
+        self.assertTrue(tenant.public_token)
+
+    def test_every_scoped_model_has_a_tenant_field(self):
+        for model in SCOPED_MODELS:
+            with self.subTest(model=model.__name__):
+                field = model._meta.get_field("tenant")
+                self.assertFalse(field.null, f"{model.__name__}.tenant must be NOT NULL")
+
+    def test_no_unclaimed_rows(self):
+        for model in SCOPED_MODELS:
+            with self.subTest(model=model.__name__):
+                self.assertEqual(model.objects.filter(tenant__isnull=True).count(), 0)
+
+    def test_user_tenant_stays_nullable(self):
+        """NULL on User means platform staff — it is never tightened."""
+        self.assertTrue(User._meta.get_field("tenant").null)
+
+
+class TenantIntegrityTests(TestCase):
+    """Children must never disagree with their parent about the owner."""
+
+    def setUp(self):
+        cache.clear()
+        self.tenant = Tenant.objects.get(slug="skylink")
+        self.router = make_router()
+        self.package = make_package()
+        self.customer = make_pppoe_customer(self.router, phone="254733000001", username_suffix="t1")
+        self.sub = Subscription.objects.create(customer=self.customer, package=self.package)
+
+    def test_child_rows_inherit_the_same_tenant(self):
+        invoice = self.sub.invoice
+        payment = Payment.objects.create(
+            customer=self.customer, subscription=self.sub, amount=self.package.price, method="cash",
+        )
+        for obj in (self.router, self.package, self.customer, self.sub, invoice, payment):
+            with self.subTest(obj=type(obj).__name__):
+                self.assertEqual(obj.tenant_id, self.tenant.id)
+
+    def test_tenant_cannot_be_deleted_while_rows_reference_it(self):
+        """PROTECT — removing an operator must not destroy billing history."""
+        with self.assertRaises(ProtectedError):
+            self.tenant.delete()
+
+
+class DefaultTenantBridgeTests(TestCase):
+    """
+    The phase 1 bridge fills `tenant` while one operator exists, and refuses
+    once it becomes a guess. That refusal is what forces phase 2 to pass the
+    tenant explicitly rather than silently attaching rows to the wrong operator.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.tenant = Tenant.objects.get(slug="skylink")
+
+    def test_tenant_is_supplied_automatically_for_a_single_operator(self):
+        c = Customer.objects.create(
+            full_name="Auto", phone="254733000011", connection_type="pppoe",
+        )
+        self.assertEqual(c.tenant_id, self.tenant.id)
+
+    def test_ambiguous_write_is_refused_once_a_second_operator_exists(self):
+        Tenant.objects.create(name="Acme WiFi", slug="acme")
+        with self.assertRaises(RuntimeError):
+            Customer.objects.create(
+                full_name="Ambiguous", phone="254733000012", connection_type="pppoe",
+            )
+
+    def test_explicit_tenant_still_works_with_several_operators(self):
+        other = Tenant.objects.create(name="Acme WiFi", slug="acme")
+        c = Customer.objects.create(
+            full_name="Explicit", phone="254733000013",
+            connection_type="pppoe", tenant=other,
+        )
+        self.assertEqual(c.tenant_id, other.id)
+
+    def test_tenant_generates_its_own_public_token(self):
+        a = Tenant.objects.create(name="One", slug="one")
+        b = Tenant.objects.create(name="Two", slug="two")
+        self.assertTrue(a.public_token and b.public_token)
+        self.assertNotEqual(a.public_token, b.public_token)
+
+
+class TenantScopedUniquenessTests(TestCase):
+    """
+    Uniqueness that used to be global now lives inside the tenant — that is the
+    whole point: one person may subscribe to two different operators.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.t1 = Tenant.objects.get(slug="skylink")
+        self.t2 = Tenant.objects.create(name="Acme WiFi", slug="acme")
+
+    def test_same_phone_allowed_across_operators(self):
+        phone = "254744000001"
+        Customer.objects.create(full_name="A", phone=phone, connection_type="pppoe", tenant=self.t1)
+        Customer.objects.create(full_name="B", phone=phone, connection_type="pppoe", tenant=self.t2)
+        self.assertEqual(Customer.objects.filter(phone=phone).count(), 2)
+
+    def test_same_phone_rejected_within_one_operator(self):
+        phone = "254744000002"
+        Customer.objects.create(full_name="A", phone=phone, connection_type="pppoe", tenant=self.t1)
+        with self.assertRaises((IntegrityError, DjangoValidationError)):
+            Customer.objects.create(full_name="B", phone=phone, connection_type="pppoe", tenant=self.t1)
+
+    def test_same_hotspot_mac_allowed_across_operators(self):
+        mac = "AA:BB:CC:00:11:22"
+        Customer.objects.create(full_name="A", phone="254744000011",
+                                connection_type="hotspot", hotspot_username=mac, tenant=self.t1)
+        Customer.objects.create(full_name="B", phone="254744000012",
+                                connection_type="hotspot", hotspot_username=mac, tenant=self.t2)
+        self.assertEqual(Customer.objects.filter(hotspot_username=mac).count(), 2)
+
+    def test_same_pppoe_username_rejected_within_one_operator(self):
+        Customer.objects.create(full_name="A", phone="254744000021", connection_type="pppoe",
+                                pppoe_username="SKY-1111-AAA", tenant=self.t1)
+        with self.assertRaises((IntegrityError, DjangoValidationError)):
+            Customer.objects.create(full_name="B", phone="254744000022", connection_type="pppoe",
+                                    pppoe_username="SKY-1111-AAA", tenant=self.t1)
+
+    def test_blank_pppoe_usernames_do_not_collide(self):
+        """The constraint is partial — every hotspot customer has a blank value."""
+        for i in range(3):
+            Customer.objects.create(full_name=f"H{i}", phone=f"25474400003{i}",
+                                    connection_type="hotspot", tenant=self.t1)
+        self.assertEqual(
+            Customer.objects.filter(tenant=self.t1, pppoe_username="").count(), 3
+        )
+
+    def test_same_setting_key_allowed_across_operators(self):
+        """This is what routes each operator's payments to their own till."""
+        SystemSetting.objects.create(tenant=self.t1, key="MPESA_SHORTCODE", value="111111")
+        SystemSetting.objects.create(tenant=self.t2, key="MPESA_SHORTCODE", value="222222")
+        self.assertEqual(
+            {s.value for s in SystemSetting.objects.filter(key="MPESA_SHORTCODE")},
+            {"111111", "222222"},
+        )
+
+    def test_setting_key_rejected_twice_within_one_operator(self):
+        SystemSetting.objects.create(tenant=self.t1, key="AT_API_KEY", value="a")
+        with self.assertRaises((IntegrityError, DjangoValidationError)):
+            SystemSetting.objects.create(tenant=self.t1, key="AT_API_KEY", value="b")
+
+    def test_invoice_number_stays_globally_unique(self):
+        """
+        Deliberately NOT tenant-scoped — the M-Pesa callback carries no tenant
+        context and resolves the operator from this value alone.
+        """
+        self.assertTrue(Invoice._meta.get_field("invoice_number").unique)
+        self.assertTrue(Voucher._meta.get_field("code").unique)
+        self.assertTrue(MpesaTransaction._meta.get_field("mpesa_receipt").unique)
+
+
+# ===========================================================
+# 11. Tenant isolation — the load-bearing tests
+# ===========================================================
+
+class TwoOperatorMixin:
+    """Two operators, each with a full set of records and their own admin."""
+
+    def build_operators(self):
+        self.t1 = Tenant.objects.get(slug="skylink")
+        self.t2 = Tenant.objects.create(name="Acme WiFi", slug="acme")
+
+        # is_staff too: the app mixes two admin checks — a custom role-based
+        # IsAdmin, and DRF's IsAdminUser which tests is_staff. Real operator
+        # admins need to satisfy both.
+        self.admin1 = User.objects.create_user(
+            username="admin_one", password="pw", role="admin",
+            tenant=self.t1, is_staff=True)
+        self.admin2 = User.objects.create_user(
+            username="admin_two", password="pw", role="admin",
+            tenant=self.t2, is_staff=True)
+
+        self.data = {}
+        for tag, tenant in (("t1", self.t1), ("t2", self.t2)):
+            with tenant_context(tenant):
+                router = RouterDevice.objects.create(
+                    name=f"{tag}-router", ip_address="10.0.0.1", username="a",
+                    password="p", tenant=tenant)
+                package = Package.objects.create(
+                    name=f"{tag}-package", download_speed=5, upload_speed=2,
+                    price=Decimal("500.00"), duration_value=30, duration_unit="days",
+                    monthly_data_cap_gb=0, is_hotspot=False, tenant=tenant)
+                customer = Customer.objects.create(
+                    full_name=f"{tag}-customer", phone=f"2547{tag[-1]}0000001",
+                    connection_type="pppoe", router=router, tenant=tenant)
+                sub = Subscription.objects.create(
+                    customer=customer, package=package, tenant=tenant)
+            self.data[tag] = dict(
+                tenant=tenant, router=router, package=package,
+                customer=customer, sub=sub, invoice=sub.invoice,
+            )
+
+    def auth(self, user):
+        """Real JWT, so TenantMiddleware resolves the operator as in production."""
+        client = APIClient()
+        token = str(RefreshToken.for_user(user).access_token)
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        return client
+
+
+class TenantIsolationAPITests(TwoOperatorMixin, TestCase):
+    """One operator must never see another's records through the API."""
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+
+    def test_customer_list_shows_only_own_records(self):
+        client = self.auth(self.admin1)
+        resp = client.get("/api/customers/")
+        self.assertEqual(resp.status_code, 200)
+        names = [r["full_name"] for r in resp.data["results"]]
+        self.assertIn("t1-customer", names)
+        self.assertNotIn("t2-customer", names)
+
+    def test_package_list_shows_only_own_records(self):
+        client = self.auth(self.admin1)
+        resp = client.get("/api/packages/")
+        names = [r["name"] for r in resp.data["results"]]
+        self.assertEqual(names, ["t1-package"])
+
+    def test_each_operator_sees_their_own_side(self):
+        """The mirror case — proves scoping follows the token, not a default."""
+        resp = self.auth(self.admin2).get("/api/customers/")
+        names = [r["full_name"] for r in resp.data["results"]]
+        self.assertEqual(names, ["t2-customer"])
+
+    def test_cannot_retrieve_another_operators_customer(self):
+        other_id = self.data["t2"]["customer"].id
+        resp = self.auth(self.admin1).get(f"/api/customers/{other_id}/")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_cannot_delete_another_operators_customer(self):
+        other_id = self.data["t2"]["customer"].id
+        resp = self.auth(self.admin1).delete(f"/api/customers/{other_id}/")
+        self.assertEqual(resp.status_code, 404)
+        self.assertTrue(Customer.objects.all_tenants().filter(id=other_id).exists())
+
+    def test_router_list_shows_only_own_hardware(self):
+        resp = self.auth(self.admin1).get("/api/admin/routers/")
+        names = [r["name"] for r in resp.data]
+        self.assertEqual(names, ["t1-router"])
+
+    def test_revenue_report_counts_only_own_business(self):
+        for tag in ("t1", "t2"):
+            d = self.data[tag]
+            with tenant_context(d["tenant"]):
+                Payment.objects.create(
+                    customer=d["customer"], subscription=d["sub"],
+                    amount=Decimal("500.00"), method="cash", tenant=d["tenant"])
+        resp = self.auth(self.admin1).get("/api/reports/revenue/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(Decimal(str(resp.data["revenue_summary"]["today"])),
+                         Decimal("500.00"))
+
+
+class TenantIsolationManagerTests(TwoOperatorMixin, TestCase):
+    """Scoping must be structural, not applied model by model."""
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+
+    def test_every_scoped_model_uses_the_filtering_manager(self):
+        for model in SCOPED_MODELS:
+            with self.subTest(model=model.__name__):
+                self.assertIsInstance(
+                    model.objects, TenantManager,
+                    f"{model.__name__}.objects must scope by tenant",
+                )
+
+    def test_queries_are_filtered_inside_a_tenant_context(self):
+        for model, key in ((Customer, "customer"), (Package, "package"),
+                           (RouterDevice, "router"), (Subscription, "sub")):
+            with self.subTest(model=model.__name__):
+                with tenant_context(self.t1):
+                    ids = set(model.objects.values_list("id", flat=True))
+                self.assertIn(self.data["t1"][key].id, ids)
+                self.assertNotIn(self.data["t2"][key].id, ids)
+
+    def test_all_tenants_is_the_explicit_opt_out(self):
+        with tenant_context(self.t1):
+            self.assertEqual(Customer.objects.count(), 1)
+            self.assertEqual(Customer.objects.all_tenants().count(), 2)
+
+    def test_no_context_means_unscoped(self):
+        """Platform staff and cross-operator sweeps rely on this."""
+        self.assertEqual(Customer.objects.count(), 2)
+
+
+class RouterIsolationTests(TwoOperatorMixin, TestCase):
+    """
+    The failure with physical consequences: provisioning a subscriber onto
+    another operator's MikroTik.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+
+    @patch("billing.router_service.safe_connect_router")
+    @patch("billing.router_service.count_pppoe_sessions", return_value=0)
+    def test_selection_never_returns_another_operators_router(self, _c, mock_conn):
+        mock_conn.return_value = object()
+        for tag in ("t1", "t2"):
+            with self.subTest(tag=tag):
+                router, _api = pick_best_router_for_new_customer(
+                    self.data[tag]["customer"])
+                self.assertEqual(router.id, self.data[tag]["router"].id)
+
+    @patch("billing.router_service.safe_connect_router")
+    def test_working_router_selection_is_scoped(self, mock_conn):
+        mock_conn.return_value = object()
+        router, _api = pick_working_router(self.data["t1"]["customer"])
+        self.assertEqual(router.tenant_id, self.t1.id)
+
+    def test_selection_without_a_tenant_is_refused(self):
+        """Refusing beats silently scanning every operator's hardware."""
+        with self.assertRaises(ValueError):
+            pick_best_router_for_new_customer(None)
+
+
+class SettingsIsolationTests(TwoOperatorMixin, TestCase):
+    """
+    Credential isolation. A leak here is worse than a data leak, and RLS cannot
+    catch it because a cache hit never reaches the database.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        SystemSetting.objects.create(
+            tenant=self.t1, key="MPESA_CONSUMER_SECRET", value="secret-one")
+        SystemSetting.objects.create(
+            tenant=self.t2, key="MPESA_CONSUMER_SECRET", value="secret-two")
+
+    def test_each_operator_reads_their_own_credential(self):
+        self.assertEqual(get_setting("MPESA_CONSUMER_SECRET", tenant=self.t1), "secret-one")
+        self.assertEqual(get_setting("MPESA_CONSUMER_SECRET", tenant=self.t2), "secret-two")
+
+    def test_cache_does_not_leak_between_operators(self):
+        """Second read is served from cache — the poisoning path."""
+        get_setting("MPESA_CONSUMER_SECRET", tenant=self.t1)
+        get_setting("MPESA_CONSUMER_SECRET", tenant=self.t2)
+        self.assertEqual(get_setting("MPESA_CONSUMER_SECRET", tenant=self.t1), "secret-one")
+        self.assertEqual(get_setting("MPESA_CONSUMER_SECRET", tenant=self.t2), "secret-two")
+
+    def test_context_selects_the_credential_when_no_argument_given(self):
+        with tenant_context(self.t2):
+            self.assertEqual(get_setting("MPESA_CONSUMER_SECRET"), "secret-two")
+
+    def test_clearing_one_operators_cache_leaves_the_other(self):
+        get_setting("MPESA_CONSUMER_SECRET", tenant=self.t1)
+        get_setting("MPESA_CONSUMER_SECRET", tenant=self.t2)
+        SystemSetting.objects.filter(tenant=self.t1).update(value="rotated")
+        clear_settings_cache(tenant=self.t1)
+        self.assertEqual(get_setting("MPESA_CONSUMER_SECRET", tenant=self.t1), "rotated")
+        self.assertEqual(get_setting("MPESA_CONSUMER_SECRET", tenant=self.t2), "secret-two")
+
+
+@skipUnless(connection.vendor == "postgresql", "RLS requires PostgreSQL")
+class RowLevelSecurityTests(TwoOperatorMixin, TestCase):
+    """
+    Proves the database itself refuses cross-tenant rows.
+
+    Deliberately uses raw SQL, bypassing the ORM entirely. Testing through the
+    ORM would only re-test the application-layer manager — the whole point of
+    RLS is to hold when that layer is wrong or bypassed.
+
+    Skipped on SQLite, which has no RLS. That means it does NOT run in the
+    default local/test setup: it must be exercised against Postgres before RLS
+    can be considered verified.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+
+    def _raw_count(self, table):
+        with connection.cursor() as cur:
+            cur.execute(f"SELECT COUNT(*) FROM {table}")
+            return cur.fetchone()[0]
+
+    def test_force_row_level_security_is_enabled(self):
+        """Without FORCE, the table owner bypasses every policy."""
+        with connection.cursor() as cur:
+            cur.execute(
+                "SELECT relrowsecurity, relforcerowsecurity "
+                "FROM pg_class WHERE relname = 'billing_customer'"
+            )
+            enabled, forced = cur.fetchone()
+        self.assertTrue(enabled, "RLS not enabled on billing_customer")
+        self.assertTrue(forced, "FORCE not set — the owner bypasses the policy")
+
+    def test_raw_sql_cannot_see_another_operators_rows(self):
+        with tenant_context(self.t1):
+            self.assertEqual(self._raw_count("billing_customer"), 1)
+        with tenant_context(self.t2):
+            self.assertEqual(self._raw_count("billing_customer"), 1)
+
+    def test_unscoped_connection_sees_everything(self):
+        """Platform staff and cross-operator sweeps depend on this."""
+        self.assertEqual(self._raw_count("billing_customer"), 2)
+
+    def test_context_does_not_leak_across_transactions(self):
+        """
+        Guards the CONN_MAX_AGE trap: a plain SET would persist on the pooled
+        connection and the next request would inherit the previous operator.
+        """
+        with tenant_context(self.t1):
+            pass
+        self.assertEqual(self._raw_count("billing_customer"), 2)
+
+    def test_policy_covers_every_scoped_table(self):
+        with connection.cursor() as cur:
+            cur.execute(
+                "SELECT tablename FROM pg_policies WHERE policyname = 'tenant_isolation'"
+            )
+            covered = {row[0] for row in cur.fetchall()}
+        expected = {m._meta.db_table for m in SCOPED_MODELS}
+        self.assertEqual(expected - covered, set(), "tables missing an RLS policy")

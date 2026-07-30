@@ -26,6 +26,38 @@ class CustomerSerializer(serializers.ModelSerializer):
             "pppoe_password": {"write_only": True},
         }
 
+    def validate_hotspot_username(self, value):
+        """
+        Surface the device-uniqueness constraint as a 400 rather than a 500.
+
+        DRF derives validators from model UniqueConstraints automatically, but
+        only when every field of the constraint is exposed by the serializer.
+        The constraint is (tenant, hotspot_username) and `tenant` is not a
+        serializer field, so no validator is generated and the ValidationError
+        raised by Customer.save()'s full_clean() would escape as a 500.
+        """
+        mac = (value or "").strip()
+        if not mac:
+            return value
+
+        # Phase 1: the tenant comes from the instance on update, or from the
+        # single-tenant bridge on create. Phase 2 replaces this with the
+        # request-scoped tenant.
+        tenant_id = getattr(self.instance, "tenant_id", None)
+        if tenant_id is None:
+            from .models import default_tenant
+            tenant_id = default_tenant()
+
+        clash = Customer.objects.filter(tenant_id=tenant_id, hotspot_username=mac)
+        if self.instance is not None:
+            clash = clash.exclude(pk=self.instance.pk)
+
+        if clash.exists():
+            raise serializers.ValidationError(
+                "This device is already registered to another customer."
+            )
+        return value
+
     def update(self, instance, validated_data):
         # Omitting or blanking pppoe_password keeps the existing value.
         # Supply a non-blank string to change it.

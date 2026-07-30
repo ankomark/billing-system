@@ -14,6 +14,7 @@ from billing.router_service import (
     disable_customer_access,
     get_pppoe_live_usage_any_router,
 )
+from billing.tenancy import tenant_context
 
 logger = logging.getLogger(__name__)
 
@@ -35,8 +36,8 @@ def collect_pppoe_usage_snapshots(self):
     processed = 0
 
     customers = (
-        Customer.objects
-        .select_related("router")
+        Customer.objects.all_tenants()
+        .select_related("router", "tenant")
         .filter(
             status="active",
             connection_type="pppoe",
@@ -56,7 +57,11 @@ def collect_pppoe_usage_snapshots(self):
         if not usage or not usage.get("connected"):
             continue
 
-        state, _ = PPPoEUsageState.objects.get_or_create(customer=customer)
+        # Ownership stated at the write site: a worker has no tenant context,
+        # so default_tenant() would refuse once several operators exist.
+        state, _ = PPPoEUsageState.objects.get_or_create(
+            customer=customer, defaults={"tenant_id": customer.tenant_id}
+        )
 
         rx = int(usage.get("rx_bytes", 0))
         tx = int(usage.get("tx_bytes", 0))
@@ -76,6 +81,7 @@ def collect_pppoe_usage_snapshots(self):
             continue
 
         PPPoEUsageRecord.objects.create(
+            tenant_id=customer.tenant_id,
             customer=customer,
             router=router,
             period_start=state.last_seen_at or now,
@@ -117,8 +123,8 @@ def enforce_usage_caps(self):
     capped = 0
 
     customers = (
-        Customer.objects
-        .select_related("router")
+        Customer.objects.all_tenants()
+        .select_related("router", "tenant")
         .filter(status="active")
     )
 
@@ -147,17 +153,22 @@ def enforce_usage_caps(self):
         if used_gb < cap_gb:
             continue
 
-        disable_customer_access(customer)
-        capped += 1
+        # Act as the owning operator. notify_customer() resolves SMS and
+        # WhatsApp credentials through get_setting(), which without a tenant in
+        # context would pick an arbitrary operator's — sending this customer's
+        # message through someone else's account.
+        with tenant_context(customer.tenant_id):
+            disable_customer_access(customer)
+            capped += 1
 
-        try:
-            notify_customer(
-                customer.phone,
-                f"Data limit reached ({cap_gb}GB). Please renew or upgrade.",
-            )
-        except Exception:
-            # Notification failure must not undo the enforcement action
-            logger.exception(f"[usage-caps] Notify failed for customer {customer.id}")
+            try:
+                notify_customer(
+                    customer.phone,
+                    f"Data limit reached ({cap_gb}GB). Please renew or upgrade.",
+                )
+            except Exception:
+                # Notification failure must not undo the enforcement action
+                logger.exception(f"[usage-caps] Notify failed for customer {customer.id}")
 
     logger.info(f"[usage-caps] Capped {capped} customers over their limit")
     return capped

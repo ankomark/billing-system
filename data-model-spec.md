@@ -361,7 +361,17 @@ Step 6 must use `CREATE INDEX CONCURRENTLY`; a plain `CREATE INDEX` takes an
 
 ## 9. Acceptance tests
 
-Phase 1 is not done until these pass.
+> **Correction to draft 1.** This section originally said "Phase 1 is not done
+> until these pass" and then listed all seven. That was wrong: tests 1–6 all
+> require query scoping and RLS, which are phase 2. Only test 7 is achievable
+> from the phase 1 data-model work alone. Phases 1 and 2 were therefore
+> delivered together — a tenant column with no scoping is the worst of both
+> worlds, since it looks multi-tenant while isolating nothing.
+>
+> | Test | Gate |
+> |---|---|
+> | 7. Backfill integrity | Phase 1 |
+> | 1–6 | Phase 2 |
 
 1. **Isolation sweep.** For every model in §2.1, create identical rows under two
    tenants, authenticate as tenant A, and assert every list and detail endpoint

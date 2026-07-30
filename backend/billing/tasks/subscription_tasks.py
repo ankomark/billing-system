@@ -5,6 +5,7 @@ from django.db import transaction
 
 from billing.models import Subscription
 from billing.tasks.router_tasks import disable_customer_task
+from billing.tenancy import all_tenants
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +27,8 @@ def enforce_subscription_expiry(self):
     processed = 0
 
     qs = (
-        Subscription.objects
-        .select_related("customer")
+        Subscription.objects.all_tenants()
+        .select_related("customer", "tenant")
         .filter(status="active", expiry_date__lt=now)
     )
 

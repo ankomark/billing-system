@@ -1,6 +1,8 @@
 import logging
 from celery import shared_task
 
+from billing.tenancy import all_tenants
+
 logger = logging.getLogger(__name__)
 
 
@@ -20,7 +22,10 @@ def check_router_health_task(self):
     from billing.models import RouterDevice
     from billing.router_service import safe_connect_router
 
-    routers = RouterDevice.objects.filter(is_active=True)
+    # Health probing is legitimately platform-wide: every operator's
+    # routers must be checked, so this opts out of scoping explicitly.
+    with all_tenants():
+        routers = list(RouterDevice.objects.all_tenants().filter(is_active=True))
     online = offline = 0
 
     for router in routers:

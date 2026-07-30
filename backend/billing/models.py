@@ -9,6 +9,132 @@ import string
 from billing.notifications import notify_customer
 from .utils import generate_invoice_number
 from .fields import EncryptedCharField
+from .tenancy import TenantManager, get_current_tenant_id
+
+
+# =====================================================
+# TENANT
+# =====================================================
+
+class Tenant(models.Model):
+    """
+    One WiFi operator on the platform.
+
+    Tenant is not itself tenant-scoped — it *is* the scope. Every other model
+    in this file (except User, see below) carries a FK to it.
+    """
+
+    STATUS_CHOICES = (
+        ("trial",      "Trial"),
+        ("active",     "Active"),
+        ("past_due",   "Past due"),
+        ("restricted", "Restricted"),
+        ("cancelled",  "Cancelled"),
+    )
+
+    name   = models.CharField(max_length=120)
+    slug   = models.SlugField(max_length=60, unique=True)
+    status = models.CharField(max_length=12, choices=STATUS_CHOICES, default="trial")
+
+    # Public identity used in subscriber notifications. Replaces the hardcoded
+    # "Skylink" strings currently baked into the payment and onboarding paths.
+    business_name = models.CharField(max_length=120, blank=True)
+    support_phone = models.CharField(max_length=20, blank=True)
+    pppoe_prefix  = models.CharField(
+        max_length=10,
+        default="NET",
+        help_text="Prefix for generated PPPoE usernames, e.g. NET-1234-ABC",
+    )
+
+    # Identifies the operator in public URLs that carry no JWT: the M-Pesa
+    # callback and the hotspot captive portal. Unguessable so a portal cannot be
+    # pointed at the wrong operator by editing a URL.
+    public_token = models.CharField(max_length=32, unique=True, db_index=True)
+
+    contact_email = models.EmailField(blank=True)
+    contact_phone = models.CharField(max_length=20, blank=True)
+    created_at    = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["name"]
+
+    def save(self, *args, **kwargs):
+        if not self.public_token:
+            self.public_token = secrets.token_urlsafe(24)[:32]
+        if not self.business_name:
+            self.business_name = self.name
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return self.name
+
+
+def default_tenant():
+    """
+    Owner of a new row when none was passed explicitly.
+
+    Order matters:
+
+    1. The tenant in context — set by middleware on a request, or by
+       `tenant_context(...)` in a task or command. This is the normal path and
+       is why serializers using `fields = "__all__"` keep working without the
+       frontend ever sending a tenant.
+    2. Failing that, the sole tenant, if the platform has exactly one. Keeps
+       management commands and tests working on a single-operator install.
+    3. Otherwise refuse. Guessing here would silently attach a customer,
+       payment or router to the wrong operator.
+    """
+    tenant_id = get_current_tenant_id()
+    if tenant_id is not None:
+        return tenant_id
+
+    count = Tenant.objects.count()
+
+    if count == 1:
+        return Tenant.objects.values_list("pk", flat=True).first()
+
+    if count == 0:
+        raise RuntimeError(
+            "No Tenant exists. Run migrations, or create one before writing "
+            "tenant-scoped rows."
+        )
+
+    raise RuntimeError(
+        f"No tenant in context and {count} tenants exist, so the owner of this "
+        "row is ambiguous. Wrap the write in tenant_context(...) or pass "
+        "tenant=... explicitly."
+    )
+
+
+class TenantScopedModel(models.Model):
+    """
+    Base for every model owned by exactly one operator.
+
+    PROTECT, not CASCADE: removing an operator must never silently destroy
+    billing history. Deactivate the tenant instead; deletion is a separate,
+    deliberate procedure.
+    """
+
+    tenant = models.ForeignKey(
+        Tenant,
+        on_delete=models.PROTECT,
+        related_name="+",
+        default=default_tenant,
+        # blank=True keeps DRF from marking it required on `fields = "__all__"`
+        # serializers; the default supplies it.
+        blank=True,
+    )
+
+    # Filters by the tenant in context automatically. Reaching across operators
+    # requires .all_tenants(), so an unscoped read is visible at the call site
+    # instead of being the accidental default.
+    #
+    # Django's _base_manager stays a plain unfiltered Manager, so following a
+    # FK (invoice.customer) never fails because of scoping — only queries do.
+    objects = TenantManager()
+
+    class Meta:
+        abstract = True
 
 
 # =====================================================
@@ -29,6 +155,21 @@ class User(AbstractUser):
         default="admin",
     )
 
+    # NULL means platform staff, who see every operator. Deliberately stays
+    # nullable — unlike the scoped models it is never tightened.
+    #
+    # The 0026 backfill assigns every *existing* user to tenant #1 rather than
+    # leaving them NULL. That fails closed: an account accidentally left NULL
+    # would gain platform-wide visibility once scoping lands in phase 2.
+    # Designating real platform staff is a phase 4 task.
+    tenant = models.ForeignKey(
+        "Tenant",
+        on_delete=models.PROTECT,
+        related_name="users",
+        null=True,
+        blank=True,
+    )
+
     def __str__(self):
         return f"{self.username} ({self.role})"
 
@@ -37,7 +178,7 @@ class User(AbstractUser):
 # ROUTER
 # =====================================================
 
-class RouterDevice(models.Model):
+class RouterDevice(TenantScopedModel):
     name = models.CharField(max_length=100)
     ip_address = models.GenericIPAddressField()
     username = models.CharField(max_length=100)
@@ -62,7 +203,7 @@ class RouterDevice(models.Model):
 # CUSTOMER
 # =====================================================
 
-class Customer(models.Model):
+class Customer(TenantScopedModel):
     CONNECTION_TYPES = (
         ("pppoe", "PPPoE"),
         ("hotspot", "Hotspot"),
@@ -77,7 +218,9 @@ class Customer(models.Model):
     )
 
     full_name = models.CharField(max_length=255)
-    phone = models.CharField(max_length=20, unique=True)
+    # Unique per operator, not globally — the same person may subscribe to two
+    # different operators on the platform. See Meta.constraints.
+    phone = models.CharField(max_length=20)
 
     connection_type = models.CharField(
         max_length=10,
@@ -110,23 +253,38 @@ class Customer(models.Model):
 
     class Meta:
         indexes = [
-            models.Index(fields=["status"],           name="customer_status_idx"),
-            models.Index(fields=["pppoe_username"],   name="customer_pppoe_username_idx"),
-            models.Index(fields=["connection_type"],  name="customer_connection_type_idx"),
+            models.Index(fields=["tenant", "status"],          name="customer_tenant_status_idx"),
+            models.Index(fields=["tenant", "pppoe_username"],  name="customer_tenant_pppoe_idx"),
+            models.Index(fields=["tenant", "connection_type"], name="customer_tenant_conn_idx"),
         ]
         constraints = [
-            # A device MAC identifies exactly one customer. Without this, the
-            # public hotspot endpoints resolve a subscriber with
-            # .filter(hotspot_username=mac).first() and get whichever row the
-            # database happens to return — disclosing one customer's status to
-            # another and granting access against the wrong subscription.
+            # A device MAC identifies exactly one customer *of one operator*.
+            # Without this, the public hotspot endpoints resolve a subscriber
+            # with .filter(hotspot_username=mac).first() and get whichever row
+            # the database happens to return — disclosing one customer's status
+            # to another and granting access against the wrong subscription.
             #
             # Partial: hotspot_username is blank for every PPPoE customer, and
             # empty strings do collide in a plain unique index (unlike NULL).
             models.UniqueConstraint(
-                fields=["hotspot_username"],
+                fields=["tenant", "hotspot_username"],
                 condition=~models.Q(hotspot_username=""),
-                name="customer_hotspot_username_uniq",
+                name="customer_tenant_hotspot_username_uniq",
+            ),
+            # Was globally unique. The same person may be a subscriber of two
+            # different operators, so uniqueness belongs inside the tenant.
+            models.UniqueConstraint(
+                fields=["tenant", "phone"],
+                name="customer_tenant_phone_uniq",
+            ),
+            # New. Uniqueness was previously enforced only by a race-prone
+            # .exists() check in generate_pppoe_credentials(), with no database
+            # constraint at all. PPPoE usernames must be unique on a router, and
+            # routers belong to one operator, so tenant scope is the right level.
+            models.UniqueConstraint(
+                fields=["tenant", "pppoe_username"],
+                condition=~models.Q(pppoe_username=""),
+                name="customer_tenant_pppoe_username_uniq",
             ),
         ]
 
@@ -151,7 +309,7 @@ class Customer(models.Model):
 # ROUTER FAILOVER LOG
 # =====================================================
 
-class RouterFailoverLog(models.Model):
+class RouterFailoverLog(TenantScopedModel):
     customer = models.ForeignKey(
         Customer,
         on_delete=models.CASCADE,
@@ -180,7 +338,7 @@ class RouterFailoverLog(models.Model):
 # PACKAGE
 # =====================================================
 
-class Package(models.Model):
+class Package(TenantScopedModel):
     DURATION_UNITS = [
         ("minutes", "Minutes"),
         ("hours", "Hours"),
@@ -248,7 +406,7 @@ class Package(models.Model):
 # SUBSCRIPTION
 # =====================================================
 
-class Subscription(models.Model):
+class Subscription(TenantScopedModel):
     STATUS_CHOICES = (
         ("active", "Active"),
         ("expired", "Expired"),
@@ -268,9 +426,12 @@ class Subscription(models.Model):
 
     class Meta:
         indexes = [
-            models.Index(fields=["status"],                 name="subscription_status_idx"),
-            models.Index(fields=["expiry_date"],            name="subscription_expiry_date_idx"),
-            models.Index(fields=["status", "expiry_date"],  name="subscription_status_expiry_idx"),
+            models.Index(fields=["tenant", "status"],                  name="sub_tenant_status_idx"),
+            models.Index(fields=["tenant", "expiry_date"],             name="sub_tenant_expiry_idx"),
+            models.Index(fields=["tenant", "status", "expiry_date"],   name="sub_tenant_status_expiry_idx"),
+            # Kept WITHOUT tenant: enforce_subscription_expiry sweeps every
+            # operator, so it needs an index that does not lead with tenant.
+            models.Index(fields=["status", "expiry_date"],              name="subscription_status_expiry_idx"),
         ]
 
     def save(self, *args, **kwargs):
@@ -331,7 +492,7 @@ class Subscription(models.Model):
 # INVOICE
 # =====================================================
 
-class Invoice(models.Model):
+class Invoice(TenantScopedModel):
     PAYMENT_STATUS = (
         ("paid", "Paid"),
         ("unpaid", "Unpaid"),
@@ -353,8 +514,8 @@ class Invoice(models.Model):
 
     class Meta:
         indexes = [
-            models.Index(fields=["payment_status"], name="invoice_payment_status_idx"),
-            models.Index(fields=["created_at"],     name="invoice_created_at_idx"),
+            models.Index(fields=["tenant", "payment_status"], name="invoice_tenant_status_idx"),
+            models.Index(fields=["tenant", "created_at"],     name="invoice_tenant_created_idx"),
         ]
 
     def __str__(self):
@@ -378,7 +539,7 @@ def generate_voucher_code():
 # VOUCHER
 # =====================================================
 
-class Voucher(models.Model):
+class Voucher(TenantScopedModel):
     code = models.CharField(max_length=30, unique=True)
     subscription = models.ForeignKey(
         Subscription, on_delete=models.CASCADE, related_name="vouchers"
@@ -410,7 +571,7 @@ class Voucher(models.Model):
 # PAYMENT
 # =====================================================
 
-class Payment(models.Model):
+class Payment(TenantScopedModel):
     PAYMENT_METHODS = (
         ("cash", "Cash"),
         ("mpesa", "M-Pesa"),
@@ -426,9 +587,9 @@ class Payment(models.Model):
 
     class Meta:
         indexes = [
-            models.Index(fields=["paid_at"],           name="payment_paid_at_idx"),
-            models.Index(fields=["method"],             name="payment_method_idx"),
-            models.Index(fields=["paid_at", "method"], name="payment_paid_at_method_idx"),
+            models.Index(fields=["tenant", "paid_at"],           name="payment_tenant_paid_idx"),
+            models.Index(fields=["tenant", "method"],            name="payment_tenant_method_idx"),
+            models.Index(fields=["tenant", "paid_at", "method"], name="payment_tenant_paid_method_idx"),
         ]
 
     def save(self, *args, **kwargs):
@@ -454,7 +615,10 @@ class Payment(models.Model):
         # blocking I/O would block concurrent payments for other customers.
         assigned_router = None
         if not customer.router:
-            router, _ = pick_best_router_for_new_customer()
+            # Must pass the customer: selection is scoped to their operator's
+            # routers, otherwise a payment could provision them onto another
+            # operator's hardware.
+            router, _ = pick_best_router_for_new_customer(customer)
             assigned_router = router
 
         # DB-only changes inside the transaction (no blocking I/O here)
@@ -532,7 +696,7 @@ class Payment(models.Model):
 # EXPIRY REMINDER LOG
 # =====================================================
 
-class ExpiryReminderLog(models.Model):
+class ExpiryReminderLog(TenantScopedModel):
     REMINDER_TYPES = (
         ("3_days", "3 Days Before"),
         ("1_day", "1 Day Before"),
@@ -555,7 +719,7 @@ class ExpiryReminderLog(models.Model):
 # ACCESS AUDIT LOG
 # =====================================================
 
-class AccessAuditLog(models.Model):
+class AccessAuditLog(TenantScopedModel):
     ACTION_CHOICES = (
         ("deactivate", "Deactivate"),
         ("activate", "Activate"),
@@ -579,7 +743,7 @@ class AccessAuditLog(models.Model):
 # SYSTEM SETTINGS
 # =====================================================
 
-class SystemSetting(models.Model):
+class SystemSetting(TenantScopedModel):
     """
     Generic key/value store for system configuration:
     - MPESA_CONSUMER_KEY
@@ -592,8 +756,19 @@ class SystemSetting(models.Model):
     - WHATSAPP_TOKEN
     - WHATSAPP_PHONE_ID
     """
-    key = models.CharField(max_length=200, unique=True)
+    # Unique per operator, not globally: each operator holds their own M-Pesa
+    # and messaging credentials under the same key names, so their payments
+    # settle to their own till.
+    key = models.CharField(max_length=200)
     value = models.TextField(blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["tenant", "key"],
+                name="systemsetting_tenant_key_uniq",
+            ),
+        ]
 
     def __str__(self):
         return self.key
@@ -603,7 +778,7 @@ class SystemSetting(models.Model):
 # MPESA TRANSACTIONS (RECONCILIATION)
 # =====================================================
 
-class MpesaTransaction(models.Model):
+class MpesaTransaction(TenantScopedModel):
     RESULT_STATUS = (
         ("success", "Success"),
         ("failed", "Failed"),
@@ -641,10 +816,10 @@ class MpesaTransaction(models.Model):
 
     class Meta:
         indexes = [
-            models.Index(fields=["status"],             name="mpesa_status_idx"),
-            models.Index(fields=["processed"],          name="mpesa_processed_idx"),
-            models.Index(fields=["status","processed"], name="mpesa_status_processed_idx"),
-            models.Index(fields=["created_at"],         name="mpesa_created_at_idx"),
+            models.Index(fields=["tenant", "status"],              name="mpesa_tenant_status_idx"),
+            models.Index(fields=["tenant", "processed"],           name="mpesa_tenant_processed_idx"),
+            models.Index(fields=["tenant", "status", "processed"], name="mpesa_tenant_status_proc_idx"),
+            models.Index(fields=["tenant", "created_at"],          name="mpesa_tenant_created_idx"),
         ]
 
     def __str__(self):
@@ -655,7 +830,7 @@ class MpesaTransaction(models.Model):
 # USAGE TRACKING
 # =====================================================
 
-class PPPoEUsageSnapshot(models.Model):
+class PPPoEUsageSnapshot(TenantScopedModel):
     customer = models.ForeignKey(Customer, on_delete=models.CASCADE, related_name="usage_snapshots")
     date = models.DateField()
     rx_bytes = models.BigIntegerField(default=0)
@@ -666,7 +841,7 @@ class PPPoEUsageSnapshot(models.Model):
         unique_together = ("customer", "date")
 
 
-class PPPoEUsageState(models.Model):
+class PPPoEUsageState(TenantScopedModel):
     """
     Stores last seen router counters so we can compute deltas safely.
     """
@@ -679,7 +854,7 @@ class PPPoEUsageState(models.Model):
         return f"UsageState({self.customer_id})"
 
 
-class PPPoEUsageRecord(models.Model):
+class PPPoEUsageRecord(TenantScopedModel):
     """
     Stores usage deltas per interval (e.g., every 5 minutes).
     """
@@ -702,7 +877,7 @@ class PPPoEUsageRecord(models.Model):
         return f"{self.customer_id} {self.period_start:%Y-%m-%d %H:%M}"
 
 
-class HotspotUsageState(models.Model):
+class HotspotUsageState(TenantScopedModel):
     """
     Stores last seen counters per hotspot user
     """
@@ -719,7 +894,7 @@ class HotspotUsageState(models.Model):
         return f"HotspotState({self.customer_id})"
 
 
-class HotspotUsageRecord(models.Model):
+class HotspotUsageRecord(TenantScopedModel):
     """
     Delta-based usage records (safe for reconnects)
     """
@@ -749,7 +924,7 @@ class HotspotUsageRecord(models.Model):
         ]
 
 
-class UsageRecord(models.Model):
+class UsageRecord(TenantScopedModel):
     CONNECTION_TYPES = (
         ("pppoe", "PPPoE"),
         ("hotspot", "Hotspot"),
