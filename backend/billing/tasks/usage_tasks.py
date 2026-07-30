@@ -6,12 +6,14 @@ from django.utils import timezone
 from billing.models import (
     Customer,
     HotspotUsageRecord,
+    HotspotUsageState,
     PPPoEUsageState,
     PPPoEUsageRecord,
 )
 from billing.notifications import notify_customer
 from billing.router_service import (
     disable_customer_access,
+    get_hotspot_live_usage_any_router,
     get_pppoe_live_usage_any_router,
 )
 from billing.tenancy import tenant_context
@@ -98,6 +100,81 @@ def collect_pppoe_usage_snapshots(self):
         processed += 1
 
     logger.info(f"[usage] PPPoE snapshots collected: {processed}")
+    return processed
+
+
+@shared_task(
+    bind=True,
+    autoretry_for=(Exception,),
+    retry_backoff=60,
+    retry_kwargs={"max_retries": 3},
+    retry_jitter=True,
+)
+def collect_hotspot_usage_snapshots(self):
+    """
+    Poll routers and store hotspot usage deltas.
+
+    Mirrors collect_pppoe_usage_snapshots. Ported from the former
+    billing/tasks_usage_hotspot.py, which wrote rows without a tenant and so
+    would have failed once a second operator existed.
+
+    Not in CELERY_BEAT_SCHEDULE — there was no hotspot entry before either, so
+    scheduling it would be a behaviour change rather than a fix. Add one
+    alongside collect-pppoe-usage to switch it on.
+    """
+    now = timezone.now()
+    processed = 0
+
+    customers = (
+        Customer.objects.all_tenants()
+        .select_related("router", "tenant")
+        .filter(status="active", connection_type="hotspot")
+        .exclude(hotspot_username="")
+    )
+
+    for customer in customers:
+        try:
+            router, usage = get_hotspot_live_usage_any_router(customer)
+        except Exception as e:
+            logger.warning(f"[usage] Hotspot router error for customer {customer.id}: {e}")
+            continue
+
+        if not usage or not usage.get("connected"):
+            continue
+
+        state, _ = HotspotUsageState.objects.get_or_create(
+            customer=customer, defaults={"tenant_id": customer.tenant_id}
+        )
+
+        rx = int(usage.get("rx_bytes", 0))
+        tx = int(usage.get("tx_bytes", 0))
+
+        # Router reboot or reconnect resets the counters — re-baseline rather
+        # than recording a negative delta.
+        if rx < state.last_rx_bytes or tx < state.last_tx_bytes:
+            state.last_rx_bytes = rx
+            state.last_tx_bytes = tx
+            state.last_seen_at = now
+            state.save(update_fields=["last_rx_bytes", "last_tx_bytes", "last_seen_at"])
+            continue
+
+        HotspotUsageRecord.objects.create(
+            tenant_id=customer.tenant_id,
+            customer=customer,
+            router=router,
+            period_start=state.last_seen_at or now,
+            period_end=now,
+            download_bytes=rx - state.last_rx_bytes,
+            upload_bytes=tx - state.last_tx_bytes,
+        )
+
+        state.last_rx_bytes = rx
+        state.last_tx_bytes = tx
+        state.last_seen_at = now
+        state.save(update_fields=["last_rx_bytes", "last_tx_bytes", "last_seen_at"])
+        processed += 1
+
+    logger.info(f"[usage] Hotspot snapshots collected: {processed}")
     return processed
 
 

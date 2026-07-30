@@ -1724,3 +1724,105 @@ class PerOperatorBrandingTests(TwoOperatorMixin, TestCase):
             u2, _ = generate_pppoe_credentials(c2)
         self.assertTrue(u1.startswith("SKY-"))
         self.assertTrue(u2.startswith("ACME-"))
+
+
+class PublicEndpointScopingTests(TwoOperatorMixin, TestCase):
+    """
+    Regressions for defects found auditing phases 1–3.
+
+    Public endpoints carry no JWT, so no middleware sets a tenant context and
+    the manager runs unscoped. Anything reading customers there must scope
+    explicitly or it reaches across operators.
+    """
+
+    MAC = "AA:BB:CC:11:22:33"
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        self.client = APIClient()
+
+    def _hotspot_customer(self, tenant, phone, suffix, days=10):
+        with tenant_context(tenant):
+            c = Customer.objects.create(
+                full_name=f"HS {suffix}", phone=phone,
+                connection_type="hotspot", hotspot_username=self.MAC, tenant=tenant)
+            sub = Subscription.objects.create(
+                customer=c, package=self.data["t1"]["package"] if tenant == self.t1
+                else self.data["t2"]["package"],
+                tenant=tenant,
+                expiry_date=timezone.now() + timezone.timedelta(days=days))
+            v = Voucher.objects.create(
+                code=f"WIFI-{suffix}", subscription=sub, tenant=tenant,
+                expires_at=timezone.now() + timezone.timedelta(days=days))
+        return c, sub, v
+
+    @patch("billing.views.enable_customer_access")
+    def test_voucher_validation_ignores_another_operators_device_binding(self, _):
+        """
+        Operator A validating a voucher must not be blocked by — or release —
+        Operator B's customer who happens to share the device MAC.
+        """
+        # B holds the MAC with a live subscription
+        b_customer, _b_sub, _b_v = self._hotspot_customer(
+            self.t2, "254766000002", "B", days=30)
+
+        # A's own subscriber claims the same MAC on their side
+        a_customer, _a_sub, a_voucher = self._hotspot_customer(
+            self.t1, "254766000001", "A", days=30)
+        a_customer.hotspot_username = ""
+        a_customer.save(update_fields=["hotspot_username"])
+
+        resp = self.client.post(
+            "/api/hotspot/validate/",
+            {"code": a_voucher.code, "mac_address": self.MAC},
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, 200, "blocked by another operator's customer")
+        b_customer.refresh_from_db()
+        self.assertEqual(
+            b_customer.hotspot_username, self.MAC,
+            "another operator's device binding was released",
+        )
+        self.assertFalse(
+            AccessAuditLog.objects.all_tenants().filter(customer=b_customer).exists(),
+            "audit log written against another operator's customer",
+        )
+
+    def test_pppoe_renew_derives_the_operators_callback(self):
+        """
+        Regression: initiate_stk_push was called without a tenant, so
+        callback_url_for() had no public_token and raised PaymentsNotConfigured
+        even for a fully configured operator.
+        """
+        for key, value in MPESA_KEYS.items():
+            SystemSetting.objects.create(tenant=self.t2, key=key, value=value)
+
+        user = User.objects.create_user(
+            username="renew_cust", password="pw", role="customer", tenant=self.t2)
+        customer = self.data["t2"]["customer"]
+        customer.user = user
+        customer.save(update_fields=["user"])
+
+        captured = {}
+
+        def fake_post(url, json=None, headers=None, timeout=None):
+            captured["callback"] = json["CallBackURL"]
+            class R:
+                def raise_for_status(self): pass
+                def json(self): return {"ResponseCode": "0"}
+            return R()
+
+        client = self.auth(user)
+        with override_settings(PLATFORM_BASE_URL="https://billing.example.com"), \
+             patch("billing.mpesa_client.get_mpesa_access_token", return_value="tok"), \
+             patch("billing.mpesa_client.requests.post", side_effect=fake_post):
+            resp = client.post(
+                "/api/pppoe/renew/",
+                {"package_id": self.data["t2"]["package"].id, "phone": "254700000000"},
+                format="json",
+            )
+
+        self.assertEqual(resp.status_code, 200, getattr(resp, "data", None))
+        self.assertIn(self.t2.public_token, captured["callback"])

@@ -184,6 +184,11 @@ class SystemSettingSerializer(serializers.Serializer):
     MPESA_CONSUMER_KEY    = serializers.CharField(required=False, allow_blank=True)
     MPESA_CONSUMER_SECRET = serializers.CharField(required=False, allow_blank=True)
     MPESA_SHORTCODE       = serializers.CharField(required=False, allow_blank=True)
+    # Per operator: one may be live on production while another is still
+    # testing on sandbox. Previously only a platform-wide env var.
+    MPESA_ENV             = serializers.ChoiceField(
+        choices=["sandbox", "production"], required=False
+    )
     MPESA_PASSKEY         = serializers.CharField(required=False, allow_blank=True)
     MPESA_CALLBACK_URL    = serializers.CharField(required=False, allow_blank=True)
     AT_USERNAME           = serializers.CharField(required=False, allow_blank=True)

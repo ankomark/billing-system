@@ -31,7 +31,11 @@ from .router_tasks import (
     enable_customer_task,
 )
 from .subscription_tasks import enforce_subscription_expiry
-from .usage_tasks import collect_pppoe_usage_snapshots, enforce_usage_caps
+from .usage_tasks import (
+    collect_hotspot_usage_snapshots,
+    collect_pppoe_usage_snapshots,
+    enforce_usage_caps,
+)
 
 __all__ = [
     "notify_admin_task",
@@ -48,6 +52,7 @@ __all__ = [
     "disconnect_pppoe_task",
     "enable_customer_task",
     "enforce_subscription_expiry",
+    "collect_hotspot_usage_snapshots",
     "collect_pppoe_usage_snapshots",
     "enforce_usage_caps",
     "run_failover_cycle",

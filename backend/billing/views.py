@@ -533,10 +533,15 @@ class HotspotVoucherValidateView(APIView):
         # status/reconnect endpoints resolved the subscriber with .first() and
         # returned an arbitrary one of them.
         with transaction.atomic():
+            # Scoped to this subscriber's operator. This endpoint is public, so
+            # no middleware has set a tenant context and the manager would run
+            # unscoped: one operator's voucher validation could then be refused
+            # because of another operator's unrelated customer, or release that
+            # customer's device binding and audit-log it against them.
             previous = (
-                Customer.objects
+                Customer.objects.all_tenants()
                 .select_for_update()
-                .filter(hotspot_username=mac_address)
+                .filter(tenant_id=customer.tenant_id, hotspot_username=mac_address)
                 .exclude(pk=customer.pk)
                 .first()
             )
@@ -841,11 +846,15 @@ class PPPoERenewView(APIView):
 
         # === 3️⃣ TRIGGER DARAJA STK PUSH ===
         try:
+            # tenant must be explicit: callback_url_for() needs the operator's
+            # public_token to derive their callback, and without it this raised
+            # PaymentsNotConfigured even for a fully configured operator.
             stk_response = initiate_stk_push(
                 phone_number=phone,
                 amount=invoice.total_amount,
                 account_reference=invoice.invoice_number,
                 description="PPPoE Subscription Renewal",
+                tenant=customer.tenant,
             )
         except Exception as e:
             subscription.delete()  # cascade-deletes the invoice, prevents ghost record
@@ -908,6 +917,7 @@ class SystemSettingsView(APIView):
     }
 
     ALL_KEYS = [
+        "MPESA_ENV",
         "MPESA_CONSUMER_KEY",
         "MPESA_CONSUMER_SECRET",
         "MPESA_SHORTCODE",
