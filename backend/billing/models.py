@@ -1,6 +1,6 @@
 from django.db import models, transaction
 from django.utils import timezone
-from django.contrib.auth.models import AbstractUser
+from django.contrib.auth.models import AbstractUser, UserManager
 from django.core.exceptions import ValidationError
 from dateutil.relativedelta import relativedelta
 import secrets
@@ -141,19 +141,97 @@ class TenantScopedModel(models.Model):
 # USER MODEL
 # =====================================================
 
+class BillingUserManager(UserManager):
+    """
+    Makes `manage.py createsuperuser` produce a platform account.
+
+    Without this it would build a user with the default operator role and no
+    tenant, which the user_role_matches_tenant_presence constraint rejects —
+    so creating a superuser would simply fail. A Django superuser is a
+    platform-level account by nature, so that is what it becomes.
+    """
+
+    def create_superuser(self, username, email=None, password=None, **extra_fields):
+        extra_fields.setdefault("role", "platform_owner")
+        extra_fields.setdefault("tenant", None)
+        return super().create_superuser(username, email, password, **extra_fields)
+
+
 class User(AbstractUser):
+    # Platform roles run the platform itself and see every operator.
+    PLATFORM_OWNER = "platform_owner"
+    PLATFORM_STAFF = "platform_staff"
+    # Operator roles run one WiFi business and see only their own.
+    TENANT_ADMIN = "tenant_admin"
+    TENANT_STAFF = "tenant_staff"
+    CUSTOMER = "customer"
+
+    PLATFORM_ROLES = (PLATFORM_OWNER, PLATFORM_STAFF)
+    TENANT_ROLES = (TENANT_ADMIN, TENANT_STAFF, CUSTOMER)
+
     ROLE_CHOICES = (
-        ("superadmin", "Super Admin"),
-        ("admin", "Admin"),
-        ("staff", "Staff"),
-        ("customer", "Customer"),
+        (PLATFORM_OWNER, "Platform Owner"),
+        (PLATFORM_STAFF, "Platform Staff"),
+        (TENANT_ADMIN, "Operator Admin"),
+        (TENANT_STAFF, "Operator Staff"),
+        (CUSTOMER, "Customer"),
     )
 
     role = models.CharField(
         max_length=20,
         choices=ROLE_CHOICES,
-        default="admin",
+        default=TENANT_ADMIN,
     )
+
+    objects = BillingUserManager()
+
+    @property
+    def is_platform_staff(self):
+        """Sees every operator. Queries run unscoped for these accounts."""
+        return self.role in self.PLATFORM_ROLES
+
+    @property
+    def is_tenant_admin(self):
+        return self.role == self.TENANT_ADMIN
+
+    @property
+    def is_tenant_member(self):
+        return self.role in (self.TENANT_ADMIN, self.TENANT_STAFF)
+
+    class Meta(AbstractUser.Meta):
+        constraints = [
+            # A NULL tenant means "platform staff", and platform staff run
+            # unscoped — they see every operator. So an operator account that
+            # somehow ended up with a NULL tenant would silently gain
+            # platform-wide visibility. Enforced in the database rather than
+            # only in application code, because that is a privilege boundary.
+            #
+            # Written as check= for readability; Django 5.1+ serialises it to
+            # condition= in the migration, which is why requirements.txt now
+            # floors Django at 5.1.
+            models.CheckConstraint(
+                check=(
+                    (models.Q(role__in=("platform_owner", "platform_staff"))
+                     & models.Q(tenant__isnull=True))
+                    | (models.Q(role__in=("tenant_admin", "tenant_staff", "customer"))
+                       & models.Q(tenant__isnull=False))
+                ),
+                name="user_role_matches_tenant_presence",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        # Mirrors the constraint above so forms and serializers report this as
+        # a validation error rather than an IntegrityError.
+        if self.role in self.PLATFORM_ROLES and self.tenant_id is not None:
+            raise ValidationError(
+                {"tenant": "Platform accounts must not belong to an operator."}
+            )
+        if self.role in self.TENANT_ROLES and self.tenant_id is None:
+            raise ValidationError(
+                {"tenant": "Operator accounts must belong to an operator."}
+            )
 
     # NULL means platform staff, who see every operator. Deliberately stays
     # nullable — unlike the scoped models it is never tightened.

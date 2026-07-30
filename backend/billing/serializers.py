@@ -198,9 +198,14 @@ class MpesaTransactionDashboardSerializer(serializers.ModelSerializer):
 
 
 class UserProfileSerializer(serializers.ModelSerializer):
+    tenant_name = serializers.CharField(source="tenant.business_name", read_only=True, default=None)
+    is_platform_staff = serializers.BooleanField(read_only=True)
+
     class Meta:
         model = User
-        fields = ("id", "username", "role")
+        # tenant is null for platform staff, which is how the frontend knows
+        # to show the platform dashboard rather than an operator one.
+        fields = ("id", "username", "role", "tenant", "tenant_name", "is_platform_staff")
 
 
 class SystemSettingSerializer(serializers.Serializer):

@@ -29,6 +29,8 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
+from billing.auth_tokens import TenantTokenObtainPairSerializer
+
 from billing.config import clear_settings_cache, get_setting
 from billing.mpesa_client import (
     PaymentsNotConfigured,
@@ -63,8 +65,25 @@ TEST_ENCRYPTION_KEY = Fernet.generate_key().decode()
 # Shared factory helpers
 # ===========================================================
 
-def make_admin(username="admin_user"):
-    return User.objects.create_user(username=username, password="adminpass", role="admin")
+def _default_tenant():
+    """The tenant migration 0026 creates. Every operator account needs one."""
+    return Tenant.objects.get(slug="skylink")
+
+
+def make_admin(username="admin_user", tenant=None):
+    # is_staff too: some endpoints historically used DRF IsAdminUser.
+    return User.objects.create_user(
+        username=username, password="adminpass",
+        role=User.TENANT_ADMIN, tenant=tenant or _default_tenant(), is_staff=True,
+    )
+
+
+def make_platform_owner(username="platform_owner"):
+    """Platform account: NULL tenant, so queries run unscoped."""
+    return User.objects.create_user(
+        username=username, password="ownerpass",
+        role=User.PLATFORM_OWNER, tenant=None, is_staff=True,
+    )
 
 
 def make_router(name="Main Router", ip="192.168.1.1", **kwargs):
@@ -99,22 +118,26 @@ def make_hotspot_package(name="Hotspot 2hr", price="50.00"):
 
 
 def make_pppoe_customer(router, phone="254712345678", username_suffix="01"):
+    tenant = router.tenant if router is not None else _default_tenant()
     user = User.objects.create_user(
-        username=f"pppoe_{username_suffix}", password="pass", role="customer",
+        username=f"pppoe_{username_suffix}", password="pass",
+        role=User.CUSTOMER, tenant=tenant,
     )
     return Customer.objects.create(
         user=user, full_name="PPPoE Test Customer",
-        phone=phone, connection_type="pppoe", router=router,
+        phone=phone, connection_type="pppoe", router=router, tenant=tenant,
     )
 
 
 def make_hotspot_customer(router, phone="254700111222", username_suffix="01"):
+    tenant = router.tenant if router is not None else _default_tenant()
     user = User.objects.create_user(
-        username=f"hs_{username_suffix}", password="pass", role="customer",
+        username=f"hs_{username_suffix}", password="pass",
+        role=User.CUSTOMER, tenant=tenant,
     )
     return Customer.objects.create(
         user=user, full_name="Hotspot Test Customer",
-        phone=phone, connection_type="hotspot", router=router,
+        phone=phone, connection_type="hotspot", router=router, tenant=tenant,
     )
 
 
@@ -583,7 +606,8 @@ class EncryptionFieldTests(TestCase):
         self.assertFalse(raw[len(ENCRYPTED_PREFIX):].startswith(ENCRYPTED_PREFIX))
 
     def test_pppoe_password_encrypted_on_customer(self):
-        user = User.objects.create_user(username="enc_cust", password="pass", role="customer")
+        user = User.objects.create_user(username="enc_cust", password="pass",
+                                        role=User.CUSTOMER, tenant=_default_tenant())
         customer = Customer.objects.create(
             user=user, full_name="Enc Customer", phone="254799990001",
             connection_type="pppoe", router=self.router,
@@ -635,7 +659,8 @@ class CustomerModelTests(TestCase):
 
     def test_hotspot_customer_with_pppoe_username_invalid(self):
         from django.core.exceptions import ValidationError
-        user = User.objects.create_user(username="bad_hs", password="x", role="customer")
+        user = User.objects.create_user(username="bad_hs", password="x",
+                                        role=User.CUSTOMER, tenant=_default_tenant())
         customer = Customer(
             user=user, full_name="Bad", phone="254788801001",
             connection_type="hotspot", pppoe_username="SKY-BAD-001",
@@ -645,7 +670,8 @@ class CustomerModelTests(TestCase):
 
     def test_pppoe_customer_with_hotspot_username_invalid(self):
         from django.core.exceptions import ValidationError
-        user = User.objects.create_user(username="bad_pp", password="x", role="customer")
+        user = User.objects.create_user(username="bad_pp", password="x",
+                                        role=User.CUSTOMER, tenant=_default_tenant())
         customer = Customer(
             user=user, full_name="Bad", phone="254788801002",
             connection_type="pppoe", hotspot_username="AA:BB:CC:DD:EE:FF",
@@ -654,7 +680,8 @@ class CustomerModelTests(TestCase):
             customer.full_clean()
 
     def test_valid_pppoe_customer_passes_validation(self):
-        user = User.objects.create_user(username="good_pp", password="x", role="customer")
+        user = User.objects.create_user(username="good_pp", password="x",
+                                        role=User.CUSTOMER, tenant=_default_tenant())
         customer = Customer(
             user=user, full_name="Good", phone="254788801003",
             connection_type="pppoe",
@@ -662,7 +689,8 @@ class CustomerModelTests(TestCase):
         customer.full_clean()  # must not raise
 
     def test_valid_hotspot_customer_passes_validation(self):
-        user = User.objects.create_user(username="good_hs", password="x", role="customer")
+        user = User.objects.create_user(username="good_hs", password="x",
+                                        role=User.CUSTOMER, tenant=_default_tenant())
         customer = Customer(
             user=user, full_name="Good", phone="254788801004",
             connection_type="hotspot",
@@ -683,7 +711,7 @@ class LoginThrottleTests(TestCase):
         # Reset throttle cache so tests are isolated from each other
         cache.clear()
         self.client = APIClient()
-        User.objects.create_user(username="throttle_user", password="correct!", role="admin")
+        make_admin("throttle_user")
 
     def test_first_five_attempts_are_not_throttled(self):
         for _ in range(5):
@@ -700,7 +728,8 @@ class LoginThrottleTests(TestCase):
     def test_correct_credentials_within_limit_return_tokens(self):
         resp = self.client.post(
             self.URL,
-            {"username": "throttle_user", "password": "correct!"},
+            # make_admin() sets this password
+            {"username": "throttle_user", "password": "adminpass"},
         )
         self.assertEqual(resp.status_code, 200)
         self.assertIn("access", resp.data)
@@ -1213,10 +1242,10 @@ class TwoOperatorMixin:
         # IsAdmin, and DRF's IsAdminUser which tests is_staff. Real operator
         # admins need to satisfy both.
         self.admin1 = User.objects.create_user(
-            username="admin_one", password="pw", role="admin",
+            username="admin_one", password="pw", role=User.TENANT_ADMIN,
             tenant=self.t1, is_staff=True)
         self.admin2 = User.objects.create_user(
-            username="admin_two", password="pw", role="admin",
+            username="admin_two", password="pw", role=User.TENANT_ADMIN,
             tenant=self.t2, is_staff=True)
 
         self.data = {}
@@ -1240,9 +1269,13 @@ class TwoOperatorMixin:
             )
 
     def auth(self, user):
-        """Real JWT, so TenantMiddleware resolves the operator as in production."""
+        """
+        A token built exactly as the login view builds it, so the tenant
+        claim is present and TenantMiddleware behaves as in production.
+        RefreshToken.for_user() would skip the serializer and omit the claim.
+        """
         client = APIClient()
-        token = str(RefreshToken.for_user(user).access_token)
+        token = TenantTokenObtainPairSerializer.get_token(user).access_token
         client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
         return client
 
@@ -1800,7 +1833,7 @@ class PublicEndpointScopingTests(TwoOperatorMixin, TestCase):
             SystemSetting.objects.create(tenant=self.t2, key=key, value=value)
 
         user = User.objects.create_user(
-            username="renew_cust", password="pw", role="customer", tenant=self.t2)
+            username="renew_cust", password="pw", role=User.CUSTOMER, tenant=self.t2)
         customer = self.data["t2"]["customer"]
         customer.user = user
         customer.save(update_fields=["user"])
@@ -1995,3 +2028,162 @@ class PublicHotspotPurchaseTests(TwoOperatorMixin, TestCase):
         poll = self.client.get("/api/hotspot/payment-status/",
                                {"t": self.t2.public_token, "ref": resp.data["reference"]})
         self.assertEqual(poll.data["status"], "not_found")
+
+
+# ===========================================================
+# 13. Phase 4 — roles and permissions
+# ===========================================================
+
+class RoleConstraintTests(TestCase):
+    """
+    A NULL tenant means platform staff, and platform staff run unscoped. The
+    pairing of role and tenant is therefore a privilege boundary, enforced in
+    the database rather than only in application code.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.tenant = Tenant.objects.get(slug="skylink")
+
+    def test_operator_account_cannot_have_a_null_tenant(self):
+        with self.assertRaises((IntegrityError, DjangoValidationError)):
+            User.objects.create_user(
+                username="orphan", password="pw",
+                role=User.TENANT_ADMIN, tenant=None)
+
+    def test_platform_account_cannot_belong_to_an_operator(self):
+        with self.assertRaises((IntegrityError, DjangoValidationError)):
+            User.objects.create_user(
+                username="confused", password="pw",
+                role=User.PLATFORM_OWNER, tenant=self.tenant)
+
+    def test_platform_account_with_no_tenant_is_allowed(self):
+        user = make_platform_owner()
+        self.assertIsNone(user.tenant_id)
+        self.assertTrue(user.is_platform_staff)
+
+    def test_createsuperuser_produces_a_platform_account(self):
+        """Otherwise the constraint would make createsuperuser simply fail."""
+        user = User.objects.create_superuser(username="root", password="pw")
+        self.assertEqual(user.role, User.PLATFORM_OWNER)
+        self.assertIsNone(user.tenant_id)
+
+    def test_old_roles_were_migrated_to_operator_roles(self):
+        """0031 maps fail-closed: nobody is promoted to platform staff."""
+        self.assertEqual(
+            set(User.objects.values_list("role", flat=True)) - set(dict(User.ROLE_CHOICES)),
+            set(),
+        )
+
+
+class PermissionBoundaryTests(TwoOperatorMixin, TestCase):
+    """
+    Replaces DRF's IsAdminUser, which checked only `is_staff` — unrelated to
+    these roles. It let any Django staff account through fourteen admin
+    endpoints and locked out operator admins without the flag.
+    """
+
+    ADMIN_URL = "/api/customers/"
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+
+    def test_operator_admin_may_administer(self):
+        resp = self.auth(self.admin1).get(self.ADMIN_URL)
+        self.assertEqual(resp.status_code, 200)
+
+    def test_customer_may_not_administer(self):
+        customer_user = User.objects.create_user(
+            username="sub", password="pw", role=User.CUSTOMER, tenant=self.t1)
+        resp = self.auth(customer_user).get(self.ADMIN_URL)
+        self.assertEqual(resp.status_code, 403)
+
+    def test_is_staff_alone_does_not_grant_admin(self):
+        """The exact hole IsAdminUser left open."""
+        sneaky = User.objects.create_user(
+            username="sneaky", password="pw",
+            role=User.CUSTOMER, tenant=self.t1, is_staff=True)
+        resp = self.auth(sneaky).get(self.ADMIN_URL)
+        self.assertEqual(resp.status_code, 403)
+
+    def test_operator_admin_without_is_staff_is_still_admitted(self):
+        """The other half: IsAdminUser used to lock these accounts out."""
+        plain = User.objects.create_user(
+            username="plain_admin", password="pw",
+            role=User.TENANT_ADMIN, tenant=self.t1, is_staff=False)
+        resp = self.auth(plain).get(self.ADMIN_URL)
+        self.assertEqual(resp.status_code, 200)
+
+    def test_operator_staff_may_not_reach_admin_only_endpoints(self):
+        staffer = User.objects.create_user(
+            username="clerk", password="pw", role=User.TENANT_STAFF, tenant=self.t1)
+        self.assertEqual(self.auth(staffer).get(self.ADMIN_URL).status_code, 403)
+
+    def test_platform_staff_may_act_for_support(self):
+        owner = make_platform_owner()
+        self.assertEqual(self.auth(owner).get(self.ADMIN_URL).status_code, 200)
+
+    def test_platform_staff_see_every_operator(self):
+        owner = make_platform_owner()
+        resp = self.auth(owner).get(self.ADMIN_URL)
+        names = [r["full_name"] for r in resp.data["results"]]
+        self.assertIn("t1-customer", names)
+        self.assertIn("t2-customer", names)
+
+
+class TokenClaimTests(TwoOperatorMixin, TestCase):
+    """
+    The tenant travels in a signed claim so the middleware can scope a request
+    without a database lookup. Previously it authenticated in middleware and
+    DRF authenticated again in the view: two user queries per request.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+
+    def test_token_carries_operator_and_role(self):
+        token = TenantTokenObtainPairSerializer.get_token(self.admin1).access_token
+        self.assertEqual(token["tenant_id"], self.t1.id)
+        self.assertEqual(token["role"], User.TENANT_ADMIN)
+
+    def test_platform_token_carries_a_null_operator(self):
+        token = TenantTokenObtainPairSerializer.get_token(make_platform_owner()).access_token
+        self.assertIsNone(token["tenant_id"])
+
+    def test_login_response_states_the_operator(self):
+        """Saves the frontend a round-trip just to choose a dashboard."""
+        resp = APIClient().post(
+            "/api/auth/login/",
+            {"username": "admin_one", "password": "pw"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["tenant_id"], self.t1.id)
+        self.assertEqual(resp.data["role"], User.TENANT_ADMIN)
+        self.assertFalse(resp.data["is_platform_staff"])
+
+    def test_scoping_still_holds_for_a_token_without_the_claim(self):
+        """
+        Tokens issued before this change carry no claim. Treating that as
+        unscoped would hand an operator admin platform-wide visibility for the
+        lifetime of their existing token, so the middleware falls back to a
+        lookup instead.
+        """
+        # RefreshToken.for_user() bypasses the serializer, so this token has
+        # no tenant claim — exactly the shape of one issued before this change.
+        token = RefreshToken.for_user(self.admin1).access_token
+
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        resp = client.get("/api/customers/")
+
+        self.assertEqual(resp.status_code, 200)
+        names = [r["full_name"] for r in resp.data["results"]]
+        self.assertEqual(names, ["t1-customer"], "legacy token leaked another operator")
+
+    def test_profile_reports_the_operator(self):
+        resp = self.auth(self.admin1).get("/api/auth/profile/")
+        self.assertEqual(resp.data["tenant"], self.t1.id)
+        self.assertFalse(resp.data["is_platform_staff"])

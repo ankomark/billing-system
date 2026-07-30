@@ -2,9 +2,9 @@ from decimal import Decimal
 from django.http import HttpResponse
 from django.db import transaction
 from celery import chain
-from rest_framework_simplejwt.views import TokenObtainPairView
+from .auth_tokens import TenantTokenObtainPairView
 from rest_framework.filters import SearchFilter
-from .permissions import IsStaffOrAdmin,IsCustomer,IsAdmin
+from .permissions import IsCustomer, IsPlatformStaff, IsTenantAdmin, IsTenantMember
 from .throttles import LoginRateThrottle, HotspotPublicThrottle, MpesaCallbackThrottle, STKPushThrottle
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -18,13 +18,11 @@ from billing.models import Customer,Subscription,PPPoEUsageRecord
 from billing.notifications import send_sms, send_whatsapp
 from billing.serializers import BroadcastSerializer
 from billing.mpesa_client import get_mpesa_access_token, missing_mpesa_keys
-from rest_framework.permissions import IsAdminUser
 from django.db.models import Prefetch, Sum
 from django.db.models.functions import TruncDate, TruncMonth
 from .reports import (revenue_summary,revenue_by_method,revenue_by_package,customer_stats,)
 from .dashboards import (unpaid_invoices,pending_invoices,failed_mpesa_transactions,)
 from .serializers import (InvoiceDashboardSerializer,MpesaTransactionDashboardSerializer,)
-from .permissions import IsAdmin
 from .pagination import StandardPagination
 from billing.models import Voucher
 from billing.tasks.mpesa_tasks import initiate_stk_push_task
@@ -43,7 +41,8 @@ from .serializers import UserProfileSerializer
 from billing.router_service import enable_customer_access
 from billing.tasks.router_tasks import (enable_customer_task,disable_customer_task,disconnect_pppoe_task)
 
-class ThrottledLoginView(TokenObtainPairView):
+class ThrottledLoginView(TenantTokenObtainPairView):
+    """Issues tokens carrying the operator and role claims."""
     throttle_classes = [LoginRateThrottle]
 
 
@@ -91,7 +90,7 @@ class UserProfileView(APIView):
 
 class CustomerViewSet(viewsets.ModelViewSet):
     serializer_class = CustomerSerializer
-    permission_classes = [IsAdmin]
+    permission_classes = [IsTenantAdmin]
     filter_backends = [SearchFilter]
     search_fields = ["full_name", "phone", "pppoe_username"]
 
@@ -133,7 +132,7 @@ class CustomerViewSet(viewsets.ModelViewSet):
 
 class PackageViewSet(viewsets.ModelViewSet):
     serializer_class = PackageSerializer
-    permission_classes = [IsAdmin]
+    permission_classes = [IsTenantAdmin]
 
     # Must be a method, not a class attribute. A class-level
     # `queryset = Package.objects.all()` is built once at import time, when no
@@ -148,7 +147,7 @@ class PackageViewSet(viewsets.ModelViewSet):
 
 class SubscriptionViewSet(viewsets.ModelViewSet):
     serializer_class = SubscriptionSerializer
-    permission_classes = [IsStaffOrAdmin | IsCustomer]
+    permission_classes = [IsTenantMember | IsCustomer]
 
     def get_queryset(self):
         user = self.request.user
@@ -161,7 +160,7 @@ class SubscriptionViewSet(viewsets.ModelViewSet):
 
 class InvoiceViewSet(viewsets.ModelViewSet):
     serializer_class = InvoiceSerializer
-    permission_classes = [IsAdmin]
+    permission_classes = [IsTenantAdmin]
 
     # Method, not a class attribute — see PackageViewSet above.
     def get_queryset(self):
@@ -170,7 +169,7 @@ class InvoiceViewSet(viewsets.ModelViewSet):
 
 class PaymentViewSet(viewsets.ModelViewSet):
     serializer_class = PaymentSerializer
-    permission_classes = [IsStaffOrAdmin | IsCustomer]
+    permission_classes = [IsTenantMember | IsCustomer]
 
     def get_queryset(self):
         user = self.request.user
@@ -407,7 +406,7 @@ class MpesaSTKCallbackView(APIView):
 
 
 class ManualPaymentView(APIView):
-    permission_classes = [IsAdmin]
+    permission_classes = [IsTenantAdmin]
 
     def post(self, request):
         invoice_number = request.data.get("invoice_number")
@@ -455,7 +454,7 @@ class ManualPaymentView(APIView):
 
 
 class RevenueDashboardView(APIView):
-    permission_classes = [IsAdmin]
+    permission_classes = [IsTenantAdmin]
 
     def get(self, request):
         return Response({
@@ -466,7 +465,7 @@ class RevenueDashboardView(APIView):
         })
 
 class UnpaidInvoicesView(APIView):
-    permission_classes = [IsAdmin]
+    permission_classes = [IsTenantAdmin]
 
     def get(self, request):
         qs = unpaid_invoices()
@@ -477,7 +476,7 @@ class UnpaidInvoicesView(APIView):
 
 
 class PendingInvoicesView(APIView):
-    permission_classes = [IsAdmin]
+    permission_classes = [IsTenantAdmin]
 
     def get(self, request):
         qs = pending_invoices()
@@ -488,7 +487,7 @@ class PendingInvoicesView(APIView):
 
 
 class FailedMpesaTransactionsView(APIView):
-    permission_classes = [IsAdmin]
+    permission_classes = [IsTenantAdmin]
 
     def get(self, request):
         qs = failed_mpesa_transactions()
@@ -589,7 +588,7 @@ class HotspotVoucherValidateView(APIView):
         )
 
 class CustomerSuspendResumeView(APIView):
-    permission_classes = [IsAdmin]
+    permission_classes = [IsTenantAdmin]
 
     def post(self, request, customer_id):
         action = request.data.get("action")  # "suspend" | "resume"
@@ -628,7 +627,7 @@ class CustomerSuspendResumeView(APIView):
         )
         
 class ResendVoucherView(APIView):
-    permission_classes = [IsAdmin]
+    permission_classes = [IsTenantAdmin]
 
     def post(self, request, customer_id):
         customer = get_object_or_404(Customer, id=customer_id)
@@ -906,7 +905,7 @@ class PppoeStatusView(APIView):
         })
         
 class SystemSettingsView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsTenantAdmin]
 
     SENSITIVE_KEYS = {
         "MPESA_CONSUMER_KEY",
@@ -986,7 +985,7 @@ class SystemSettingsView(APIView):
 
 class TestMpesaView(APIView):
     """Verifies the credentials of the operator making the request."""
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsTenantAdmin]
 
     def get(self, request):
         tenant = getattr(request.user, "tenant", None)
@@ -1005,7 +1004,7 @@ class _TestMessageView(APIView):
     "2547XXXXXXXX" is not a real number, so the test always reported success
     while the send silently failed.
     """
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsTenantAdmin]
     task = None
     label = ""
 
@@ -1038,7 +1037,7 @@ class TestWhatsappView(_TestMessageView):
     label = "WhatsApp"
     
 class AdminBroadcastView(APIView):
-    permission_classes = [IsAdmin]
+    permission_classes = [IsTenantAdmin]
 
     def post(self, request):
         serializer = BroadcastSerializer(data=request.data)
@@ -1164,7 +1163,7 @@ from billing.router_service import get_all_pppoe_sessions
 from billing.models import RouterDevice, Customer
       
 class AdminPPPoESessionsView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsTenantAdmin]
 
     def get(self, request):
         # Pre-load all PPPoE customers into a dict for O(1) lookup per session.
@@ -1203,7 +1202,7 @@ class AdminPPPoESessionsView(APIView):
         return Response(data)
     
 class AdminDisconnectPPPoEView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsTenantAdmin]
 
     def post(self, request):
         username = request.data.get("username")
@@ -1254,7 +1253,7 @@ class CustomerReconnectPPPoEView(APIView):
         )
         
 class AdminRouterHealthView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsTenantAdmin]
 
     def get(self, request):
         routers = RouterDevice.objects.all().order_by("priority")
@@ -1275,7 +1274,7 @@ class AdminRouterHealthView(APIView):
         return Response(data)
 
 class AdminFailoverLogsView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsTenantAdmin]
 
     def get(self, request):
         logs = (
@@ -1302,7 +1301,7 @@ from billing.router_service import is_router_reachable
 
 
 class AdminRouterListView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsTenantAdmin]
 
     def get(self, request):
         # Use cached is_online from the background health task — do NOT make
@@ -1335,7 +1334,7 @@ class AdminRouterListView(APIView):
 
 
 class AdminRouterDetailView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsTenantAdmin]
 
     def _get(self, pk):
         try:
@@ -1370,7 +1369,7 @@ from billing.router_service import safe_connect_router, provision_customer_on_ro
 
 
 class AdminMigrateCustomerView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsTenantAdmin]
 
     def post(self, request):
         """
@@ -1553,7 +1552,7 @@ class HotspotUsageDailyView(APIView):
         ])
         
 class AdminUsageDailyView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsTenantAdmin]
 
     def get(self, request):
         days = min(max(int(request.query_params.get("days", 7)), 1), 365)
@@ -1600,7 +1599,7 @@ class AdminUsageDailyView(APIView):
         ])
         
 class AdminUsageAlertsView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsTenantAdmin]
 
     def get(self, request):
         from django.db.models import F
@@ -1673,7 +1672,7 @@ class AdminUsageAlertsView(APIView):
         )
 
 class AdminAccessLookupView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsTenantAdmin]
 
     def get(self, request):
         query = request.query_params.get("q")
@@ -1817,7 +1816,7 @@ class AdminAccessLookupView(APIView):
 
 
 class AdminDeactivateAccessView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsTenantAdmin]
 
     def post(self, request):
         subscription_id = request.data.get("subscription_id")
@@ -1877,7 +1876,7 @@ class AdminDeactivateAccessView(APIView):
             status=200,
         )
 class DailyRevenueView(APIView):
-    permission_classes = [IsAdmin]
+    permission_classes = [IsTenantAdmin]
 
     def get(self, request):
         days = min(max(int(request.query_params.get("days", 30)), 1), 90)

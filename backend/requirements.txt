@@ -5,7 +5,9 @@
 #     pip install -r requirements.txt
 
 # ── Framework ────────────────────────────────────────────────────────────────
-Django>=4.2,<6.0
+# 5.1 floor: migration 0031 uses CheckConstraint(condition=...), which Django
+# serialises that way from 5.1 onward and 4.2 cannot load.
+Django>=5.1,<6.0
 djangorestframework>=3.14
 djangorestframework-simplejwt>=5.3
 django-cors-headers>=4.0
