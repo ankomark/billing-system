@@ -124,11 +124,17 @@
 <body>
 
 <!-- ═══════════════════════════════════════════════════════════
-     CONFIGURATION — edit these two values to match your setup
+     CONFIGURATION — edit these three values to match your setup
      ═══════════════════════════════════════════════════════════ -->
 <script>
   var API_BASE       = 'https://your-backend.com/api';   // ← Your backend URL (no trailing slash)
   var PAYMENT_URL    = 'https://your-backend.com/hotspot'; // ← Hotspot payment page
+
+  // ← Your operator token, from Admin → Settings. Identifies which operator
+  //    this portal belongs to. A device MAC is only unique within one operator,
+  //    so without this the backend cannot tell whose subscriber is connecting
+  //    and will refuse rather than guess.
+  var TENANT_TOKEN   = 'YOUR-OPERATOR-TOKEN';
 </script>
 <!-- ═══════════════════════════════════════════════════════════ -->
 
@@ -264,7 +270,9 @@
 
   /* ─── Redirect to payment page (stays in walled garden scope) ─── */
   function goToPayment() {
-    window.location.href = PAYMENT_URL;
+    // Carry the operator through to the payment pages too.
+    window.location.href = PAYMENT_URL + '?t=' + encodeURIComponent(TENANT_TOKEN)
+      + '&mac=' + encodeURIComponent(DEVICE_MAC);
   }
 
   /* ─── Main connect handler ─── */
@@ -313,7 +321,7 @@
     xhr.onerror   = function() { setLoading(false); showError('Network error — check your connection and try again.'); };
     xhr.ontimeout = function() { setLoading(false); showError('Request timed out. Please try again.'); };
 
-    xhr.send(JSON.stringify({ code: code, mac_address: DEVICE_MAC }));
+    xhr.send(JSON.stringify({ code: code, mac_address: DEVICE_MAC, t: TENANT_TOKEN }));
   }
 
   /* ─── Feedback helpers ─── */

@@ -30,6 +30,15 @@ from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from billing.config import clear_settings_cache, get_setting
+from billing.mpesa_client import (
+    PaymentsNotConfigured,
+    callback_url_for,
+    initiate_stk_push,
+    missing_mpesa_keys,
+    payments_configured,
+)
+from billing.services.pppoe_service import generate_pppoe_credentials
+from billing.tasks.mpesa_tasks import initiate_stk_push_task
 from billing.router_service import (
     pick_best_router_for_new_customer,
     pick_working_router,
@@ -1459,3 +1468,259 @@ class RowLevelSecurityTests(TwoOperatorMixin, TestCase):
             covered = {row[0] for row in cur.fetchall()}
         expected = {m._meta.db_table for m in SCOPED_MODELS}
         self.assertEqual(expected - covered, set(), "tables missing an RLS policy")
+
+
+# ===========================================================
+# 12. Phase 3 — per-operator payments, endpoints and branding
+# ===========================================================
+
+MPESA_KEYS = {
+    "MPESA_CONSUMER_KEY": "key",
+    "MPESA_CONSUMER_SECRET": "secret",
+    "MPESA_SHORTCODE": "111111",
+    "MPESA_PASSKEY": "passkey",
+}
+
+
+class PerOperatorMpesaTests(TwoOperatorMixin, TestCase):
+    """Subscriber money must settle into the operator's own till."""
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        for key, value in MPESA_KEYS.items():
+            SystemSetting.objects.create(tenant=self.t1, key=key, value=f"t1-{value}")
+            SystemSetting.objects.create(tenant=self.t2, key=key, value=f"t2-{value}")
+
+    def test_each_operator_has_their_own_shortcode(self):
+        self.assertEqual(get_setting("MPESA_SHORTCODE", tenant=self.t1), "t1-111111")
+        self.assertEqual(get_setting("MPESA_SHORTCODE", tenant=self.t2), "t2-111111")
+
+    def test_configured_when_all_keys_present(self):
+        self.assertTrue(payments_configured(tenant=self.t1))
+        self.assertEqual(missing_mpesa_keys(tenant=self.t1), [])
+
+    def test_missing_keys_are_reported_not_guessed(self):
+        SystemSetting.objects.filter(tenant=self.t2, key="MPESA_PASSKEY").delete()
+        self.assertFalse(payments_configured(tenant=self.t2))
+        self.assertEqual(missing_mpesa_keys(tenant=self.t2), ["MPESA_PASSKEY"])
+
+    def test_stk_push_uses_the_invoices_operator_credentials(self):
+        """The charge must appear on the till of the operator who is owed."""
+        d = self.data["t2"]
+        with tenant_context(d["tenant"]):
+            invoice = d["sub"].invoice
+
+        captured = {}
+
+        def fake_post(url, json=None, headers=None, timeout=None):
+            captured["shortcode"] = json["BusinessShortCode"]
+            captured["callback"] = json["CallBackURL"]
+            class R:
+                status_code = 200
+                def raise_for_status(self): pass
+                def json(self): return {"ResponseCode": "0"}
+            return R()
+
+        # PLATFORM_BASE_URL is needed to derive the per-operator callback;
+        # without it the task correctly refuses before reaching Daraja.
+        with override_settings(PLATFORM_BASE_URL="https://billing.example.com"), \
+             patch("billing.mpesa_client.get_mpesa_access_token", return_value="tok"), \
+             patch("billing.mpesa_client.requests.post", side_effect=fake_post):
+            initiate_stk_push_task(invoice.id, "254700000000")
+
+        self.assertEqual(captured["shortcode"], "t2-111111",
+                         "STK pushed against the wrong operator's shortcode")
+        self.assertIn(self.t2.public_token, captured["callback"],
+                      "callback pointed at the wrong operator")
+
+    def test_callback_url_carries_the_operators_token(self):
+        with override_settings(PLATFORM_BASE_URL="https://billing.example.com"):
+            url = callback_url_for(tenant=self.t2)
+        self.assertIn(self.t2.public_token, url)
+        self.assertNotIn(self.t1.public_token, url)
+
+    def test_explicit_callback_url_overrides_the_derived_one(self):
+        SystemSetting.objects.create(
+            tenant=self.t1, key="MPESA_CALLBACK_URL", value="https://custom/cb/")
+        self.assertEqual(callback_url_for(tenant=self.t1), "https://custom/cb/")
+
+    def test_unconfigured_operator_raises_rather_than_charging(self):
+        SystemSetting.objects.filter(tenant=self.t2).delete()
+        cache.clear()
+        with self.assertRaises(PaymentsNotConfigured):
+            initiate_stk_push("254700000000", 100, "INV-X", tenant=self.t2)
+
+    def test_stk_task_releases_the_invoice_when_unconfigured(self):
+        """
+        Otherwise the invoice sticks at "pending" and the duplicate guard
+        blocks every retry once the operator finishes onboarding.
+        """
+        SystemSetting.objects.filter(tenant=self.t2).delete()
+        cache.clear()
+        d = self.data["t2"]
+        invoice = Invoice.objects.all_tenants().get(subscription=d["sub"])
+
+        result = initiate_stk_push_task(invoice.id, "254700000000")
+
+        self.assertFalse(result["success"])
+        invoice.refresh_from_db()
+        self.assertEqual(invoice.payment_status, "unpaid")
+
+
+@override_settings(MPESA_ALLOW_LOCAL_CALLBACK=True)
+class PerOperatorCallbackTests(TwoOperatorMixin, TestCase):
+    """The callback must credit the operator who is actually owed."""
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        self.client = APIClient()
+
+    def _payload(self, invoice, receipt="RCPT001"):
+        return {
+            "Body": {"stkCallback": {
+                "ResultCode": 0,
+                "ResultDesc": "ok",
+                "CallbackMetadata": {"Item": [
+                    {"Name": "MpesaReceiptNumber", "Value": receipt},
+                    {"Name": "Amount", "Value": float(invoice.total_amount)},
+                    {"Name": "PhoneNumber", "Value": 254700000000},
+                    {"Name": "AccountReference", "Value": invoice.invoice_number},
+                ]},
+            }}
+        }
+
+    @patch("billing.router_service.enable_customer_access")
+    def test_callback_on_an_operators_url_credits_that_operator(self, _):
+        invoice = Invoice.objects.all_tenants().get(subscription=self.data["t2"]["sub"])
+        resp = self.client.post(
+            f"/api/mpesa/callback/{self.t2.public_token}/",
+            self._payload(invoice), format="json")
+        self.assertEqual(resp.status_code, 200)
+
+        tx = MpesaTransaction.objects.all_tenants().get(mpesa_receipt="RCPT001")
+        self.assertEqual(tx.tenant_id, self.t2.id)
+        payment = Payment.objects.all_tenants().get(reference="RCPT001")
+        self.assertEqual(payment.tenant_id, self.t2.id)
+
+    @patch("billing.router_service.enable_customer_access")
+    def test_callback_arriving_on_the_wrong_operators_url_is_refused(self, _):
+        """
+        A misconfigured callback URL must fail loudly, not book one operator's
+        payment against another.
+        """
+        invoice = Invoice.objects.all_tenants().get(subscription=self.data["t2"]["sub"])
+        resp = self.client.post(
+            f"/api/mpesa/callback/{self.t1.public_token}/",
+            self._payload(invoice), format="json")
+        self.assertEqual(resp.status_code, 400)
+        self.assertFalse(Payment.objects.all_tenants().filter(reference="RCPT001").exists())
+
+    def test_unknown_token_is_rejected(self):
+        resp = self.client.post(
+            "/api/mpesa/callback/not-a-real-token/", {}, format="json")
+        self.assertEqual(resp.status_code, 404)
+
+    @patch("billing.router_service.enable_customer_access")
+    def test_legacy_url_still_resolves_via_invoice_number(self, _):
+        """Kept working: changing a live callback URL needs Safaricom approval."""
+        invoice = Invoice.objects.all_tenants().get(subscription=self.data["t1"]["sub"])
+        resp = self.client.post(
+            "/api/mpesa/stk-callback/", self._payload(invoice, "RCPT002"), format="json")
+        self.assertEqual(resp.status_code, 200)
+        tx = MpesaTransaction.objects.all_tenants().get(mpesa_receipt="RCPT002")
+        self.assertEqual(tx.tenant_id, self.t1.id)
+
+
+class HotspotTenantTokenTests(TwoOperatorMixin, TestCase):
+    """
+    Same device MAC, two operators. Without the token the lookup is ambiguous —
+    the defect recorded in data-model-spec.md §6.
+    """
+
+    MAC = "AA:BB:CC:DD:EE:FF"
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        self.client = APIClient()
+        for tag in ("t1", "t2"):
+            d = self.data[tag]
+            c = d["customer"]
+            c.connection_type = "hotspot"
+            c.pppoe_username = ""
+            c.hotspot_username = self.MAC
+            c.save(update_fields=["connection_type", "pppoe_username", "hotspot_username"])
+            Invoice.objects.all_tenants().filter(subscription=d["sub"]).update(
+                payment_status="paid")
+
+    def test_same_mac_can_exist_under_both_operators(self):
+        self.assertEqual(
+            Customer.objects.all_tenants().filter(hotspot_username=self.MAC).count(), 2)
+
+    def test_token_selects_the_right_operators_subscriber(self):
+        for tag in ("t1", "t2"):
+            with self.subTest(tag=tag):
+                token = self.data[tag]["tenant"].public_token
+                resp = self.client.get("/api/hotspot/status/",
+                                       {"mac": self.MAC, "t": token})
+                self.assertEqual(resp.status_code, 200)
+                self.assertEqual(resp.data["status"], "active")
+                self.assertEqual(
+                    resp.data["expires_at"].replace(tzinfo=None).date(),
+                    self.data[tag]["sub"].expiry_date.date(),
+                )
+
+    def test_missing_token_with_several_operators_refuses_to_guess(self):
+        resp = self.client.get("/api/hotspot/status/", {"mac": self.MAC})
+        self.assertEqual(resp.data["status"], "not_found")
+
+    def test_unknown_token_resolves_to_nothing(self):
+        resp = self.client.get("/api/hotspot/status/",
+                               {"mac": self.MAC, "t": "bogus"})
+        self.assertEqual(resp.data["status"], "not_found")
+
+
+class PerOperatorBrandingTests(TwoOperatorMixin, TestCase):
+    """A subscriber belongs to their operator and has never heard of us."""
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        self.t2.business_name = "Acme Broadband"
+        self.t2.support_phone = "0722000000"
+        self.t2.pppoe_prefix = "ACME"
+        self.t2.save()
+
+    @patch("billing.signals.notify_customer")
+    def test_welcome_message_uses_the_operators_name(self, mock_notify):
+        with tenant_context(self.t2):
+            Customer.objects.create(
+                full_name="New Sub", phone="254755000001",
+                connection_type="hotspot", tenant=self.t2)
+        message = mock_notify.call_args[0][1]
+        self.assertIn("Acme Broadband", message)
+        self.assertNotIn("Skylink", message)
+
+    def test_pppoe_username_uses_the_operators_prefix(self):
+        with tenant_context(self.t2):
+            customer = Customer.objects.create(
+                full_name="PPPoE Sub", phone="254755000002",
+                connection_type="pppoe", tenant=self.t2)
+            username, _password = generate_pppoe_credentials(customer)
+        self.assertTrue(username.startswith("ACME-"), username)
+
+    def test_prefixes_do_not_collide_across_operators(self):
+        with tenant_context(self.t1):
+            c1 = Customer.objects.create(
+                full_name="A", phone="254755000011",
+                connection_type="pppoe", tenant=self.t1)
+            u1, _ = generate_pppoe_credentials(c1)
+        with tenant_context(self.t2):
+            c2 = Customer.objects.create(
+                full_name="B", phone="254755000012",
+                connection_type="pppoe", tenant=self.t2)
+            u2, _ = generate_pppoe_credentials(c2)
+        self.assertTrue(u1.startswith("SKY-"))
+        self.assertTrue(u2.startswith("ACME-"))

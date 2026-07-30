@@ -3,6 +3,7 @@ from django.dispatch import receiver
 
 from billing.models import Customer
 from billing.notifications import notify_customer
+from billing.tenancy import tenant_context
 
 
 @receiver(post_save, sender=Customer)
@@ -23,7 +24,8 @@ def send_customer_welcome_message(sender, instance, created, **kwargs):
     if customer.connection_type == "hotspot":
 
         message = (
-            f"Welcome {customer.full_name} 🎉\n\n"
+            f"Welcome {customer.full_name} 🎉\n"
+            f"You are now with {customer.tenant.business_name or customer.tenant.name}.\n\n"
             f"You have been registered for WiFi Hotspot access.\n\n"
             f"📶 To connect:\n"
             f"1. Turn ON WiFi\n"
@@ -33,7 +35,10 @@ def send_customer_welcome_message(sender, instance, created, **kwargs):
             f"Thank you for choosing us!"
         )
 
-        notify_customer(customer.phone, message)
+        # Their messaging credentials, not another operator's — a customer
+        # can be created from a worker or a shell where no context is set.
+        with tenant_context(customer.tenant_id):
+            notify_customer(customer.phone, message)
 
     # --------------------------------------------------
     # PPPoE CUSTOMER
@@ -45,7 +50,8 @@ def send_customer_welcome_message(sender, instance, created, **kwargs):
             return
 
         message = (
-            f"Welcome {customer.full_name} 🎉\n\n"
+            f"Welcome {customer.full_name} 🎉\n"
+            f"You are now with {customer.tenant.business_name or customer.tenant.name}.\n\n"
             f"Your PPPoE internet account is ready.\n\n"
             f"🔐 Login Details:\n"
             f"Username: {customer.pppoe_username}\n"
@@ -55,4 +61,7 @@ def send_customer_welcome_message(sender, instance, created, **kwargs):
             f"Thank you for choosing us!"
         )
 
-        notify_customer(customer.phone, message)
+        # Their messaging credentials, not another operator's — a customer
+        # can be created from a worker or a shell where no context is set.
+        with tenant_context(customer.tenant_id):
+            notify_customer(customer.phone, message)

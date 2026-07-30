@@ -20,18 +20,26 @@ def _random_password(length=10):
 def generate_pppoe_credentials(customer):
     """
     Generates a PPPoE username + password.
-    Ensures the username is unique in the database.
+
+    The prefix comes from the operator, so their subscribers get credentials
+    branded as theirs rather than as another operator's. Uniqueness is checked
+    within that operator only, matching the (tenant, pppoe_username) constraint
+    — PPPoE usernames must be unique on a router, and routers belong to one
+    operator.
     """
+    prefix = (getattr(customer.tenant, "pppoe_prefix", "") or "NET").strip("-")
 
     # Use last 4 digits of phone OR fallback
     base = customer.phone[-4:] if customer.phone else secrets.token_hex(2)
 
     while True:
-        # SKY-1234-XYZ format
+        # PREFIX-1234-XYZ format
         suffix = "".join(secrets.choice(string.ascii_uppercase) for _ in range(3))
-        username = f"SKY-{base}-{suffix}"
+        username = f"{prefix}-{base}-{suffix}"
 
-        if not Customer.objects.filter(pppoe_username=username).exists():
+        if not Customer.objects.all_tenants().filter(
+            tenant_id=customer.tenant_id, pppoe_username=username
+        ).exists():
             break
 
     # Secure random password

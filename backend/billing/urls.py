@@ -108,6 +108,20 @@ urlpatterns = [
 
     # ─── M-Pesa ──────────────────────────────────────────────────────────────
     path("api/mpesa/stk-push/",     MpesaSTKPushView.as_view(),     name="mpesa-stk-push"),
+
+    # Per-operator callback. The token identifies whose Daraja app posted, so
+    # the right credentials are loaded without inferring the operator from the
+    # payload. This is the URL new operators should register with Safaricom.
+    path(
+        "api/mpesa/callback/<str:tenant_token>/",
+        MpesaSTKCallbackView.as_view(),
+        name="mpesa-callback-tenant",
+    ),
+
+    # Legacy shared callback. Kept working because it is already registered
+    # with Safaricom for the original operator — changing a live callback URL
+    # requires their approval. It resolves the operator from the invoice
+    # number, which is globally unique for exactly this reason.
     path("api/mpesa/stk-callback/", MpesaSTKCallbackView.as_view(), name="mpesa-stk-callback"),
 
     # ─── Hotspot (public) ────────────────────────────────────────────────────

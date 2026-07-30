@@ -30,7 +30,11 @@ from billing.models import Voucher
 from billing.tasks.mpesa_tasks import initiate_stk_push_task
 from django.utils import timezone
 from rest_framework import viewsets
-from .models import Customer, Package, Subscription,Invoice, Payment,MpesaTransaction,SystemSetting,RouterFailoverLog, HotspotUsageRecord, AccessAuditLog
+from .models import Customer, Package, Subscription,Invoice, Payment,MpesaTransaction,SystemSetting,RouterFailoverLog, HotspotUsageRecord, AccessAuditLog, Tenant
+from .tenancy import tenant_context
+import logging
+
+logger = logging.getLogger(__name__)
 from .serializers import (CustomerSerializer,CustomerDetailSerializer,PackageSerializer,SubscriptionSerializer,InvoiceSerializer,  PaymentSerializer,SystemSettingSerializer,)
 from billing.tasks.notification_tasks import notify_customer_task,send_sms_task, send_whatsapp_task
 from .config import get_setting
@@ -212,6 +216,20 @@ class MpesaSTKPushView(APIView):
                 status=400,
             )
 
+        # Fail here rather than in the worker. An operator still waiting on
+        # Safaricom would otherwise see the request accepted and the STK prompt
+        # never arrive, with the reason buried in worker logs.
+        from billing.mpesa_client import missing_mpesa_keys
+        missing = missing_mpesa_keys(tenant=invoice.tenant)
+        if missing:
+            return Response(
+                {
+                    "detail": "This provider has not finished setting up M-Pesa payments.",
+                    "missing_settings": missing,
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
         # 🚀 Schedule task ONLY
         initiate_stk_push_task.delay(invoice.id, phone_number)
 
@@ -225,15 +243,35 @@ class MpesaSTKPushView(APIView):
 
 
 class MpesaSTKCallbackView(APIView):
+    """
+    Safaricom posts results here. There is no JWT, so the operator is resolved
+    from the URL token when present, and otherwise from the invoice number —
+    which stays globally unique precisely so this works.
+    """
     permission_classes = [permissions.AllowAny]
     throttle_classes = [MpesaCallbackThrottle]
 
-    def post(self, request):
+    def post(self, request, tenant_token=None):
         if not is_trusted_mpesa_ip(request):
             return Response(
                 {"detail": "Unauthorized callback source"},
                 status=status.HTTP_403_FORBIDDEN,
             )
+
+        # Per-operator URL. Unknown tokens are rejected rather than silently
+        # falling back, so a mistyped callback URL fails loudly at setup time
+        # instead of quietly booking payments against the wrong operator.
+        tenant = None
+        if tenant_token:
+            tenant = Tenant.objects.filter(public_token=tenant_token).first()
+            if tenant is None:
+                logger.warning(
+                    "[mpesa] Callback for unknown tenant token %s", tenant_token
+                )
+                return Response(
+                    {"detail": "Unknown callback endpoint"},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
 
         body = request.data.get("Body", {}).get("stkCallback", {})
         result_code = body.get("ResultCode")
@@ -248,13 +286,56 @@ class MpesaSTKCallbackView(APIView):
         phone = str(data.get("PhoneNumber")) if data.get("PhoneNumber") else None
         reference = data.get("AccountReference")
 
+        # ── Resolve the operator before writing anything ────────────────────
+        # The invoice is authoritative: invoice_number is globally unique for
+        # exactly this reason. The URL token is a cross-check, not the source of
+        # truth, so a callback cannot be booked against the wrong operator by
+        # pointing it at the wrong URL.
+        invoice = None
+        if reference:
+            invoice = (
+                Invoice.objects.all_tenants()
+                .select_related("customer", "subscription", "tenant")
+                .filter(invoice_number=reference)
+                .first()
+            )
+
+        if invoice is not None and tenant is not None and invoice.tenant_id != tenant.id:
+            logger.error(
+                "[mpesa] Callback for invoice %s arrived on operator %s's endpoint "
+                "but the invoice belongs to operator %s — refusing.",
+                reference, tenant.id, invoice.tenant_id,
+            )
+            return Response(
+                {"detail": "Callback does not match this endpoint"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        resolved = tenant or (invoice.tenant if invoice else None)
+        if resolved is None:
+            # A failed STK carries no metadata, so with neither a token nor a
+            # reference there is nothing to attribute it to.
+            only = Tenant.objects.first() if Tenant.objects.count() == 1 else None
+            resolved = only
+        if resolved is None:
+            logger.error(
+                "[mpesa] Cannot attribute callback to an operator "
+                "(no URL token, no resolvable invoice). Payload: %s", request.data,
+            )
+            return Response(
+                {"detail": "Cannot attribute callback"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         # Idempotency — use get_or_create to prevent race conditions where two
         # concurrent Safaricom retry callbacks both pass an .exists() check before
         # either has committed, resulting in duplicate MpesaTransaction rows.
+        # Receipts are globally unique, so the lookup is deliberately unscoped.
         if mpesa_receipt:
-            tx, created = MpesaTransaction.objects.get_or_create(
+            tx, created = MpesaTransaction.objects.all_tenants().get_or_create(
                 mpesa_receipt=mpesa_receipt,
                 defaults={
+                    "tenant": resolved,
                     "amount": amount or 0,
                     "phone_number": phone,
                     "account_reference": reference,
@@ -266,6 +347,7 @@ class MpesaSTKCallbackView(APIView):
                 return Response({"detail": "Duplicate callback ignored"})
         else:
             tx = MpesaTransaction.objects.create(
+                tenant=resolved,
                 amount=amount or 0,
                 phone_number=phone,
                 account_reference=reference,
@@ -286,11 +368,8 @@ class MpesaSTKCallbackView(APIView):
             tx.save()
             return Response(status=400)
 
-        try:
-            invoice = Invoice.objects.select_related("customer", "subscription").get(
-                invoice_number=reference
-            )
-        except Invoice.DoesNotExist:
+        # Already looked up above, before the operator was resolved.
+        if invoice is None:
             tx.status = "failed"
             tx.error_message = "Invoice not found"
             tx.processed = True
@@ -304,21 +383,25 @@ class MpesaSTKCallbackView(APIView):
             tx.save()
             return Response(status=400)
 
-        # 🔐 Atomic creation (Payment.save() handles router + access)
-        with transaction.atomic():
-            payment = Payment.objects.create(
-                customer=invoice.customer,
-                subscription=invoice.subscription,
-                amount=amount,
-                method="mpesa",
-                reference=mpesa_receipt,
-            )
+        # Act as the owning operator: Payment.save() picks a router and sends
+        # the welcome message, both of which must use their hardware and their
+        # messaging credentials.
+        with tenant_context(invoice.tenant_id):
+            with transaction.atomic():
+                payment = Payment.objects.create(
+                    tenant_id=invoice.tenant_id,
+                    customer=invoice.customer,
+                    subscription=invoice.subscription,
+                    amount=amount,
+                    method="mpesa",
+                    reference=mpesa_receipt,
+                )
 
-            tx.invoice = invoice
-            tx.payment = payment
-            tx.processed = True
-            tx.status = "success"
-            tx.save()
+                tx.invoice = invoice
+                tx.payment = payment
+                tx.processed = True
+                tx.status = "success"
+                tx.save()
 
         return Response({"detail": "Payment processed"})
 
@@ -562,16 +645,19 @@ class ResendVoucherView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        # 2️⃣ Build message
+        # 2️⃣ Build message — signed by the operator, not the platform
+        brand = customer.tenant.business_name or customer.tenant.name
         message = (
             "Your WiFi access code is:\n\n"
             f"{voucher.code}\n\n"
             f"Valid until {voucher.expires_at:%Y-%m-%d %H:%M}.\n"
-            "Thank you for choosing Skylink."
+            f"Thank you for choosing {brand}."
         )
 
-        # 3️⃣ Send notification asynchronously
-        notify_customer_task.delay(customer.phone, message)
+        # 3️⃣ Send asynchronously, through this operator's messaging account
+        notify_customer_task.delay(
+            customer.phone, message, tenant_id=customer.tenant_id
+        )
 
         # 4️⃣ Respond immediately (non-blocking)
         return Response(
@@ -580,6 +666,46 @@ class ResendVoucherView(APIView):
         )
 
     
+def _hotspot_customer_for(request, mac, **extra):
+    """
+    Resolve a hotspot subscriber from a device MAC on a public endpoint.
+
+    These endpoints carry no JWT, so the operator comes from the `t` parameter
+    the captive portal appends — each operator deploys their own login page and
+    already configures its API base, so carrying their token costs nothing.
+
+    MAC uniqueness is per operator. Without the token the lookup is ambiguous
+    across operators, which is how one operator's subscriber status leaked to
+    another and access was granted against the wrong subscription.
+
+    Falls back to an unscoped lookup only when the platform has a single
+    operator, so existing portals keep working until they are updated.
+    """
+    # Query string for GET (status), request body for POST (reconnect).
+    token = request.GET.get("t")
+    if not token:
+        data = getattr(request, "data", None)
+        if isinstance(data, dict):
+            token = data.get("t")
+
+    qs = Customer.objects.all_tenants().filter(hotspot_username=mac, **extra)
+
+    if token:
+        tenant = Tenant.objects.filter(public_token=token).first()
+        if tenant is None:
+            return None
+        return qs.filter(tenant=tenant).first()
+
+    if Tenant.objects.count() > 1:
+        logger.warning(
+            "[hotspot] MAC lookup without a tenant token while %s operators "
+            "exist — refusing rather than guessing.", Tenant.objects.count(),
+        )
+        return None
+
+    return qs.first()
+
+
 class HotspotStatusView(APIView):
     permission_classes = [permissions.AllowAny]
     throttle_classes = [HotspotPublicThrottle]
@@ -593,8 +719,10 @@ class HotspotStatusView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Find customer by hotspot MAC binding
-        customer = Customer.objects.filter(hotspot_username=mac).first()
+        # A MAC is only unique within one operator, so the captive portal
+        # supplies ?t=<tenant public_token>. Without it, the same device
+        # registered with two operators would resolve arbitrarily.
+        customer = _hotspot_customer_for(request, mac)
         if not customer:
             return Response({"status": "not_found"})
 
@@ -792,14 +920,32 @@ class SystemSettingsView(APIView):
     ]
 
     def get(self, request):
+        tenant = getattr(request.user, "tenant", None)
+
         data = {}
         for key in self.ALL_KEYS:
-            value = get_setting(key, default="")
+            value = get_setting(key, default="", tenant=tenant)
 
             if key in self.SENSITIVE_KEYS and value not in ("", None):
                 data[key] = "********"
             else:
                 data[key] = value or ""
+
+        # Read-only operator identity. The token is what the MikroTik captive
+        # portal must carry, and the callback URL is what gets registered with
+        # Safaricom — both are needed to finish setup, so surface them here
+        # rather than making an operator ask for them.
+        if tenant is not None:
+            from billing.mpesa_client import callback_url_for, missing_mpesa_keys
+
+            data["TENANT_TOKEN"] = tenant.public_token
+            data["BUSINESS_NAME"] = tenant.business_name or tenant.name
+            data["MPESA_MISSING"] = missing_mpesa_keys(tenant=tenant)
+            try:
+                data["MPESA_CALLBACK_URL_EFFECTIVE"] = callback_url_for(tenant=tenant)
+            except Exception as exc:
+                data["MPESA_CALLBACK_URL_EFFECTIVE"] = ""
+                data["MPESA_CALLBACK_HINT"] = str(exc)
 
         return Response(data)
 
@@ -807,46 +953,79 @@ class SystemSettingsView(APIView):
         serializer = SystemSettingSerializer(data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
 
+        tenant = getattr(request.user, "tenant", None)
+
         for key, value in serializer.validated_data.items():
             if value == "********":
                 continue  # keep old secret
 
+            # Scoped explicitly: these are the operator's own M-Pesa and
+            # messaging credentials, and writing them unscoped would overwrite
+            # another operator's.
             SystemSetting.objects.update_or_create(
+                tenant=tenant,
                 key=key,
                 defaults={"value": value},
             )
 
         # Invalidate Redis cache across all workers so new values apply immediately
         from .config import clear_settings_cache
-        clear_settings_cache()
+        clear_settings_cache(tenant=tenant)
 
         return Response({"detail": "Settings updated successfully"})
 
 class TestMpesaView(APIView):
+    """Verifies the credentials of the operator making the request."""
     permission_classes = [IsAdminUser]
 
     def get(self, request):
+        tenant = getattr(request.user, "tenant", None)
         try:
-            token = get_mpesa_access_token()
+            token = get_mpesa_access_token(tenant=tenant)
             return Response({"success": True, "token": token})
         except Exception as e:
             return Response({"success": False, "error": str(e)}, status=400)
 
 
-class TestSmsView(APIView):
+class _TestMessageView(APIView):
+    """
+    Sends a test message through the requesting operator's own account.
+
+    The recipient is supplied by the caller — the old placeholder
+    "2547XXXXXXXX" is not a real number, so the test always reported success
+    while the send silently failed.
+    """
     permission_classes = [IsAdminUser]
+    task = None
+    label = ""
 
     def get(self, request):
-        send_sms_task.delay("2547XXXXXXXX", "SMS Test OK ✔")
-        return Response({"success": True})
+        tenant = getattr(request.user, "tenant", None)
+        phone = request.query_params.get("phone") or getattr(
+            tenant, "contact_phone", ""
+        )
+        if not phone:
+            return Response(
+                {
+                    "success": False,
+                    "error": "No recipient. Pass ?phone=2547XXXXXXXX, or set a "
+                             "contact phone on your business profile.",
+                },
+                status=400,
+            )
+
+        self.task.delay(phone, f"{self.label} test OK", tenant_id=getattr(tenant, "pk", None))
+        return Response({"success": True, "sent_to": phone})
 
 
-class TestWhatsappView(APIView):
-    permission_classes = [IsAdminUser]
+class TestSmsView(_TestMessageView):
+    task = send_sms_task
+    label = "SMS"
 
-    def get(self, request):
-        send_whatsapp_task.delay("2547XXXXXXXX", "WhatsApp Test OK ✔")
-        return Response({"success": True})
+
+class TestWhatsappView(_TestMessageView):
+    task = send_whatsapp_task
+    label = "WhatsApp"
     
 class AdminBroadcastView(APIView):
     permission_classes = [IsAdmin]
@@ -1720,10 +1899,7 @@ class HotspotReconnectView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        customer = Customer.objects.filter(
-            hotspot_username=mac,
-            status="active",
-        ).first()
+        customer = _hotspot_customer_for(request, mac, status="active")
 
         if not customer:
             return Response(

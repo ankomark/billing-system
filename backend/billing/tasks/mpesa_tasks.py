@@ -3,7 +3,8 @@ from celery import shared_task
 from django.db import transaction
 
 from billing.models import Invoice
-from billing.mpesa_client import initiate_stk_push
+from billing.mpesa_client import PaymentsNotConfigured, initiate_stk_push
+from billing.tenancy import tenant_context
 
 logger = logging.getLogger(__name__)
 
@@ -18,11 +19,22 @@ logger = logging.getLogger(__name__)
 def initiate_stk_push_task(self, invoice_id: int, phone_number: str) -> dict:
     """
     Safely initiate M-Pesa STK push in background.
+
+    The invoice decides which operator this is for. A worker has no request, so
+    without entering that operator's context the Daraja credentials would come
+    from whichever operator get_setting() happened to find — pushing the charge
+    through the wrong till and crediting the wrong business.
     """
 
     with transaction.atomic():
         try:
-            invoice = Invoice.objects.select_for_update().get(id=invoice_id)
+            # Unscoped by pk: no tenant context exists yet, the row supplies it.
+            invoice = (
+                Invoice.objects.all_tenants()
+                .select_for_update()
+                .select_related("tenant")
+                .get(id=invoice_id)
+            )
         except Invoice.DoesNotExist:
             logger.error(f"[stk_task] Invoice {invoice_id} not found")
             return {"success": False, "error": "Invoice not found"}
@@ -36,15 +48,25 @@ def initiate_stk_push_task(self, invoice_id: int, phone_number: str) -> dict:
         invoice.payment_status = "pending"
         invoice.save(update_fields=["payment_status"])
 
-    response = initiate_stk_push(
-        phone_number=phone_number,
-        amount=invoice.total_amount,
-        account_reference=invoice.invoice_number,
-        description="WiFi Subscription Payment",
-    )
+    try:
+        with tenant_context(invoice.tenant_id):
+            response = initiate_stk_push(
+                phone_number=phone_number,
+                amount=invoice.total_amount,
+                account_reference=invoice.invoice_number,
+                description="WiFi Subscription Payment",
+                tenant=invoice.tenant,
+            )
+    except PaymentsNotConfigured as exc:
+        # Release the invoice so the customer can retry once the operator has
+        # finished onboarding with Safaricom. Leaving it "pending" would block
+        # every later attempt via the duplicate guard above.
+        Invoice.objects.all_tenants().filter(id=invoice_id).update(
+            payment_status="unpaid"
+        )
+        logger.error(f"[stk_task] {invoice.invoice_number}: {exc}")
+        # Not retryable — waiting on a human, not a transient failure.
+        return {"success": False, "error": str(exc)}
 
-    logger.info(
-        f"[stk_task] STK sent for invoice {invoice.invoice_number}"
-    )
-
+    logger.info(f"[stk_task] STK sent for invoice {invoice.invoice_number}")
     return response

@@ -473,7 +473,8 @@ class Subscription(TenantScopedModel):
                     notify_customer(
                         self.customer.phone,
                         (
-                            "Your PPPoE account is ready!\n"
+                            f"Your {self.customer.tenant.business_name or self.customer.tenant.name} "
+                            "PPPoE account is ready!\n"
                             f"Username: {self.customer.pppoe_username}\n"
                             f"Password: {self.customer.pppoe_password}\n"
                             f"Package: {self.package.name}\n"
@@ -653,38 +654,56 @@ class Payment(TenantScopedModel):
         connection_type = customer.connection_type
         _voucher_code = voucher_code
 
+        # Branding belongs to the operator, not the platform. This customer is
+        # theirs and has never heard of us, so the message must carry their
+        # business name and their support number.
+        tenant_id = customer.tenant_id
+        brand = customer.tenant.business_name or customer.tenant.name
+        support = customer.tenant.support_phone
+
         def _post_payment_effects():
             # Runs after the DB transaction commits — safe to call external systems
             from billing.models import Customer as _Customer
-            fresh = _Customer.objects.select_related("router").get(id=customer_id)
-            enable_customer_access(fresh)
+            from billing.tenancy import tenant_context
+
+            fresh = (
+                _Customer.objects.all_tenants()
+                .select_related("router")
+                .get(id=customer_id)
+            )
+
+            support_line = f"\nSupport: {support}" if support else ""
 
             if connection_type == "hotspot" and _voucher_code:
                 message = (
-                    "Welcome to Skylink WiFi!\n\n"
+                    f"Welcome to {brand}!\n\n"
                     f"Package: {pkg_name}\n"
                     f"Valid Until: {expiry:%d %b %Y %I:%M %p}\n\n"
                     f"Voucher Code: {_voucher_code}\n\n"
-                    "Just stay connected — auto-login will work.\n"
-                    "Support: 0700 XXX XXX"
+                    "Just stay connected — auto-login will work."
+                    f"{support_line}"
                 )
             elif connection_type == "pppoe":
                 message = (
-                    "Welcome to Skylink Internet!\n\n"
+                    f"Welcome to {brand}!\n\n"
                     "Your PPPoE account is ready:\n"
                     f"Username: {pppoe_username}\n"
                     f"Password: {pppoe_password}\n\n"
                     f"Package: {pkg_name}\n"
                     f"Valid Until: {expiry:%d %b %Y %I:%M %p}\n\n"
-                    "Use these details on your router.\n"
-                    "Support: 0700 XXX XXX"
+                    "Use these details on your router."
+                    f"{support_line}"
                 )
             else:
                 return
-            try:
-                notify_customer(phone, message)
-            except Exception:
-                pass
+
+            # Their routers, their SMS credentials.
+            with tenant_context(tenant_id):
+                enable_customer_access(fresh)
+                try:
+                    notify_customer(phone, message)
+                except Exception:
+                    pass
 
         transaction.on_commit(_post_payment_effects)
 

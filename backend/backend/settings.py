@@ -321,6 +321,11 @@ CELERY_BEAT_SCHEDULE = {
 
 MPESA_ENV = os.getenv("MPESA_ENV", "sandbox")
 
+# Public base URL of this platform, e.g. https://billing.example.com
+# Used to derive each operator's own M-Pesa callback URL, which carries their
+# public token so the callback loads the right operator's credentials.
+PLATFORM_BASE_URL = os.getenv("PLATFORM_BASE_URL", "")
+
 MPESA_TRUSTED_IPS = [
     "196.201.214.200",
     "196.201.214.206",
