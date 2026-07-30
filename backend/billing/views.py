@@ -4,7 +4,10 @@ from django.db import transaction
 from celery import chain
 from .auth_tokens import TenantTokenObtainPairView
 from rest_framework.filters import SearchFilter
-from .permissions import IsCustomer, IsPlatformStaff, IsTenantAdmin, IsTenantMember
+from .permissions import (
+    IsCustomer, IsPlatformStaff, IsTenantAdmin, IsTenantAdminForBilling,
+    IsTenantMember,
+)
 from .throttles import LoginRateThrottle, HotspotPublicThrottle, MpesaCallbackThrottle, STKPushThrottle
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -2056,6 +2059,16 @@ class HotspotPurchaseView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
+        # A restricted operator stops taking on new subscribers. Nobody loses
+        # service here — a prospective customer simply cannot start — which is
+        # the point: the business stops growing without anyone being cut off.
+        # Existing subscribers keep their internet and can still renew.
+        if not tenant.can_take_new_business:
+            return Response(
+                {"detail": "This provider is not accepting new customers right now."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
         missing = missing_mpesa_keys(tenant=tenant)
         if missing:
             return Response(
@@ -2169,8 +2182,11 @@ class TenantInvoiceListView(APIView):
 
     An operator sees their own; platform staff see everyone's, which is what
     makes this the collections view for the platform owner.
+
+    Reachable while restricted — an operator locked out of the page showing
+    what they owe has no route back.
     """
-    permission_classes = [IsTenantAdmin]
+    permission_classes = [IsTenantAdminForBilling]
 
     def get(self, request):
         qs = TenantInvoice.objects.select_related("tenant", "subscription")
@@ -2189,8 +2205,12 @@ class TenantInvoiceListView(APIView):
 
 
 class MyPlatformSubscriptionView(APIView):
-    """What this operator is on, and what they currently owe."""
-    permission_classes = [IsTenantAdmin]
+    """
+    What this operator is on, and what they currently owe.
+
+    Reachable while restricted, for the same reason as the invoice list.
+    """
+    permission_classes = [IsTenantAdminForBilling]
 
     def get(self, request):
         tenant = getattr(request.user, "tenant", None)
@@ -2270,3 +2290,77 @@ class RecordTenantPaymentView(APIView):
             },
             status=status.HTTP_201_CREATED,
         )
+
+
+class TenantStatusView(APIView):
+    """
+    Change an operator's standing by hand.
+
+    Platform staff only, and every change is recorded with who, when and why —
+    restriction is a commercial action against a business, so "you cut us off
+    without warning" needs an answer with dates on it.
+
+    Note what restriction does NOT do: subscribers keep their internet,
+    renewals keep working, and every background task keeps running. Cutting
+    subscribers off is not offered here at all. It would punish people who paid
+    the operator in good faith and are not party to the dispute, and if it is
+    ever genuinely needed it should be a deliberate, separate operation.
+    """
+    permission_classes = [IsPlatformStaff]
+
+    ALLOWED = {"active", "past_due", "restricted", "cancelled"}
+
+    def get(self, request, tenant_id):
+        tenant = Tenant.objects.filter(id=tenant_id).first()
+        if tenant is None:
+            return Response({"detail": "Operator not found"}, status=404)
+
+        history = tenant.status_changes.select_related("changed_by")[:50]
+        return Response({
+            "operator": tenant.business_name or tenant.name,
+            "status": tenant.status,
+            "is_restricted": tenant.is_restricted,
+            "history": [
+                {
+                    "from": h.from_status,
+                    "to": h.to_status,
+                    "reason": h.reason,
+                    "by": h.changed_by.username if h.changed_by else None,
+                    "automatic": h.automatic,
+                    "at": h.created_at,
+                }
+                for h in history
+            ],
+        })
+
+    def post(self, request, tenant_id):
+        tenant = Tenant.objects.filter(id=tenant_id).first()
+        if tenant is None:
+            return Response({"detail": "Operator not found"}, status=404)
+
+        new_status = request.data.get("status")
+        if new_status not in self.ALLOWED:
+            return Response(
+                {"detail": f"status must be one of {sorted(self.ALLOWED)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        reason = (request.data.get("reason") or "").strip()
+        if new_status in ("restricted", "cancelled") and not reason:
+            # Restricting without a stated reason is what makes a dispute
+            # unanswerable months later.
+            return Response(
+                {"detail": "A reason is required when restricting or cancelling."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        from billing.models import set_tenant_status
+        changed = set_tenant_status(
+            tenant, new_status, reason=reason, changed_by=request.user, automatic=False,
+        )
+
+        return Response({
+            "detail": "Status updated" if changed else "Status unchanged",
+            "operator": tenant.business_name or tenant.name,
+            "status": tenant.status,
+        })

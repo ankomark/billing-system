@@ -317,6 +317,16 @@ CELERY_BEAT_SCHEDULE = {
         "task": "billing.tasks.platform_billing_tasks.mark_overdue_tenants",
         "schedule": crontab(hour=3, minute=0),
     },
+    "platform-billing-reminders": {
+        "task": "billing.tasks.platform_billing_tasks.send_platform_billing_reminders",
+        "schedule": crontab(hour=9, minute=0),
+    },
+    # Locks the operator dashboard only. Subscriber service is never cut off
+    # automatically — see Tenant.is_restricted.
+    "restrict-after-grace": {
+        "task": "billing.tasks.platform_billing_tasks.restrict_expired_grace_tenants",
+        "schedule": crontab(hour=4, minute=0),
+    },
     "auto-failover": {
         "task": "billing.tasks.auto_failover.run_auto_failover_task",
         "schedule": crontab(minute="*/3"),

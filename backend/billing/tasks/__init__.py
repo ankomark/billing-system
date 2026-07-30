@@ -20,6 +20,8 @@ from .mpesa_tasks import initiate_stk_push_task
 from .platform_billing_tasks import (
     generate_tenant_invoices,
     mark_overdue_tenants,
+    restrict_expired_grace_tenants,
+    send_platform_billing_reminders,
 )
 from .notification_tasks import (
     dispatch_broadcast_task,
@@ -44,6 +46,8 @@ from .usage_tasks import (
 __all__ = [
     "generate_tenant_invoices",
     "mark_overdue_tenants",
+    "restrict_expired_grace_tenants",
+    "send_platform_billing_reminders",
     "notify_admin_task",
     "migrate_single_customer_task",
     "run_auto_failover_task",

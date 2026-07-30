@@ -58,6 +58,34 @@ class Tenant(models.Model):
     class Meta:
         ordering = ["name"]
 
+    # Days past an invoice due date before an operator is locked out. They are
+    # reminded throughout; restriction is never the first they hear of it.
+    GRACE_DAYS = 14
+
+    @property
+    def is_restricted(self):
+        """
+        Locked out of their own dashboard.
+
+        Deliberately narrow. Their subscribers keep their internet, renewals
+        keep working, and every background task keeps running — those people
+        paid the operator in good faith and are not party to this dispute.
+        What stops is the operator's admin access and their ability to take on
+        *new* subscribers.
+        """
+        return self.status in ("restricted", "cancelled")
+
+    @property
+    def can_take_new_business(self):
+        """
+        Whether walk-up customers may still buy.
+
+        Nobody loses service when this is False — a prospective customer simply
+        cannot start. That is the leverage: the operator's business stops
+        growing without anyone being cut off.
+        """
+        return not self.is_restricted
+
     def save(self, *args, **kwargs):
         if not self.public_token:
             self.public_token = secrets.token_urlsafe(24)[:32]
@@ -67,6 +95,55 @@ class Tenant(models.Model):
 
     def __str__(self):
         return self.name
+
+
+class TenantStatusChange(models.Model):
+    """
+    Audit trail for every change to an operator's standing.
+
+    Restriction is a commercial action against a business, so "you cut us off
+    without warning" needs an answer with dates on it — who changed what, when,
+    and why.
+    """
+    tenant = models.ForeignKey(
+        "Tenant", on_delete=models.CASCADE, related_name="status_changes"
+    )
+    from_status = models.CharField(max_length=12)
+    to_status = models.CharField(max_length=12)
+    reason = models.TextField(blank=True)
+    # Null when the change was automatic rather than a person's decision.
+    changed_by = models.ForeignKey(
+        "User", null=True, blank=True, on_delete=models.SET_NULL
+    )
+    automatic = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["tenant", "-created_at"], name="tstatus_tenant_time_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.tenant}: {self.from_status} -> {self.to_status}"
+
+
+def set_tenant_status(tenant, new_status, *, reason="", changed_by=None, automatic=False):
+    """Change an operator's standing and record why. Returns True if it moved."""
+    if tenant.status == new_status:
+        return False
+
+    TenantStatusChange.objects.create(
+        tenant=tenant,
+        from_status=tenant.status,
+        to_status=new_status,
+        reason=reason,
+        changed_by=changed_by,
+        automatic=automatic,
+    )
+    tenant.status = new_status
+    tenant.save(update_fields=["status"])
+    return True
 
 
 def default_tenant():

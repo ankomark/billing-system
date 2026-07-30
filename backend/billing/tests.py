@@ -44,7 +44,10 @@ from billing.tasks.mpesa_tasks import initiate_stk_push_task
 from billing.tasks.platform_billing_tasks import (
     generate_tenant_invoices,
     mark_overdue_tenants,
+    restrict_expired_grace_tenants,
+    send_platform_billing_reminders,
 )
+from billing.tasks.subscription_tasks import enforce_subscription_expiry
 from billing.router_service import (
     pick_best_router_for_new_customer,
     pick_working_router,
@@ -58,6 +61,7 @@ from billing.models import (
     SystemSetting, PPPoEUsageSnapshot, PPPoEUsageState, PPPoEUsageRecord,
     HotspotUsageState, HotspotUsageRecord, UsageRecord,
     PlatformPlan, PlatformSetting, TenantSubscription, TenantInvoice, TenantPayment,
+    TenantStatusChange, set_tenant_status,
 )
 from billing.fields import ENCRYPTED_PREFIX
 
@@ -2388,3 +2392,225 @@ class PlatformBillingAccessTests(PlatformBillingMixin, TestCase):
         self.assertEqual(get_platform_setting("PLATFORM_MPESA_SHORTCODE"), "999999")
         # Nothing of the sort leaks into an operator's own settings view.
         self.assertIsNone(get_setting("PLATFORM_MPESA_SHORTCODE", tenant=self.t1))
+
+
+# ===========================================================
+# 15. Phase 6 — suspension
+# ===========================================================
+
+class RestrictionScopeTests(PlatformBillingMixin, TestCase):
+    """
+    What restriction does, and — more importantly — what it must not do.
+
+    An operator's subscribers paid *them* in good faith and are not party to a
+    billing dispute with the platform. Restriction therefore stops the
+    operator's dashboard and their ability to take on new business, and
+    nothing else.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_billing()
+        self.client = APIClient()
+
+        with tenant_context(self.t1):
+            Package.objects.create(
+                tenant=self.t1, name="hs", download_speed=5, upload_speed=2,
+                price=Decimal("50.00"), duration_value=2, duration_unit="hours",
+                monthly_data_cap_gb=0, is_hotspot=True)
+        for key, value in MPESA_KEYS.items():
+            SystemSetting.objects.create(tenant=self.t1, key=key, value=value)
+
+    def _restrict(self):
+        set_tenant_status(self.t1, "restricted", reason="unpaid", automatic=True)
+        self.t1.refresh_from_db()
+
+    # ---- what it stops -----------------------------------------------------
+
+    def test_restricted_operator_loses_their_dashboard(self):
+        self._restrict()
+        resp = self.auth(self.admin1).get("/api/customers/")
+        self.assertEqual(resp.status_code, 403)
+
+    def test_restricted_operator_cannot_add_customers(self):
+        self._restrict()
+        resp = self.auth(self.admin1).post("/api/customers/", {
+            "full_name": "New", "phone": "254799111222", "connection_type": "pppoe",
+        }, format="json")
+        self.assertEqual(resp.status_code, 403)
+
+    def test_restricted_operator_stops_taking_walk_up_business(self):
+        """Nobody loses service — a prospective customer simply cannot start."""
+        self._restrict()
+        pkg = Package.objects.all_tenants().get(tenant=self.t1, is_hotspot=True)
+        resp = self.client.post("/api/hotspot/purchase/", {
+            "t": self.t1.public_token, "package_id": pkg.id, "phone": "0712345678",
+        }, format="json")
+        self.assertEqual(resp.status_code, 503)
+
+    # ---- what it must NOT stop --------------------------------------------
+
+    def test_restricted_operator_can_still_see_what_they_owe(self):
+        """Locking someone out of the page where they would pay is self-defeating."""
+        self._restrict()
+        client = self.auth(self.admin1)
+        self.assertEqual(client.get("/api/platform/my-account/").status_code, 200)
+        self.assertEqual(client.get("/api/platform/invoices/").status_code, 200)
+
+    def test_subscribers_of_a_restricted_operator_keep_their_access(self):
+        """The heart of the policy: they paid the operator, not the platform."""
+        with tenant_context(self.t1):
+            customer = Customer.objects.create(
+                tenant=self.t1, full_name="Existing", phone="254799333444",
+                connection_type="hotspot", hotspot_username="AA:BB:CC:DD:EE:01")
+            sub = Subscription.objects.create(
+                tenant=self.t1, customer=customer, package=self.data["t1"]["package"],
+                expiry_date=timezone.now() + timezone.timedelta(days=20))
+            Invoice.objects.all_tenants().filter(subscription=sub).update(
+                payment_status="paid")
+
+        self._restrict()
+
+        resp = self.client.get("/api/hotspot/status/", {
+            "mac": "AA:BB:CC:DD:EE:01", "t": self.t1.public_token})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["status"], "active")
+
+    def test_background_tasks_keep_running_for_a_restricted_operator(self):
+        """Expiry, usage and failover must not stall — subscribers depend on them."""
+        self._restrict()
+        self.assertEqual(enforce_subscription_expiry(), 0)  # runs without error
+
+    def test_platform_staff_can_still_act_on_a_restricted_operator(self):
+        """Support has to be able to help them get un-restricted."""
+        self._restrict()
+        resp = self.auth(make_platform_owner()).get("/api/customers/")
+        self.assertEqual(resp.status_code, 200)
+
+    def test_other_operators_are_unaffected(self):
+        self._restrict()
+        self.assertEqual(self.auth(self.admin2).get("/api/customers/").status_code, 200)
+
+
+class RestrictionEscalationTests(PlatformBillingMixin, TestCase):
+    """Restriction is never the first an operator hears of a problem."""
+
+    def setUp(self):
+        cache.clear()
+        self.build_billing()
+        generate_tenant_invoices()
+
+    def test_nobody_is_restricted_before_grace_expires(self):
+        TenantInvoice.objects.all_tenants().update(
+            due_date=timezone.now() - timezone.timedelta(days=Tenant.GRACE_DAYS - 1))
+        self.assertEqual(restrict_expired_grace_tenants(), 0)
+        self.t1.refresh_from_db()
+        self.assertFalse(self.t1.is_restricted)
+
+    def test_restriction_follows_a_fully_elapsed_grace_period(self):
+        TenantInvoice.objects.all_tenants().update(
+            due_date=timezone.now() - timezone.timedelta(days=Tenant.GRACE_DAYS + 1))
+        self.assertEqual(restrict_expired_grace_tenants(), 2)
+        self.t1.refresh_from_db()
+        self.assertTrue(self.t1.is_restricted)
+
+    def test_restriction_is_recorded_with_a_reason(self):
+        TenantInvoice.objects.all_tenants().update(
+            due_date=timezone.now() - timezone.timedelta(days=Tenant.GRACE_DAYS + 1))
+        restrict_expired_grace_tenants()
+
+        change = TenantStatusChange.objects.filter(tenant=self.t1).first()
+        self.assertIsNotNone(change, "restriction left no audit trail")
+        self.assertEqual(change.to_status, "restricted")
+        self.assertTrue(change.automatic)
+        self.assertIn("past due", change.reason)
+
+    def test_reminders_go_out_before_and_after_the_due_date(self):
+        self.t1.contact_phone = "254700000000"
+        self.t1.save()
+        # Only this operator has a contact number, so only they are reminded.
+        TenantInvoice.objects.all_tenants().exclude(tenant=self.t1).delete()
+
+        for offset in (-3, 3, 7, 14):
+            with self.subTest(days_from_due=offset):
+                TenantInvoice.objects.all_tenants().update(
+                    due_date=timezone.now() - timezone.timedelta(days=offset))
+                self.assertEqual(send_platform_billing_reminders(), 1)
+
+    def test_no_reminder_on_a_day_that_is_not_a_milestone(self):
+        self.t1.contact_phone = "254700000000"
+        self.t1.save()
+        TenantInvoice.objects.all_tenants().update(
+            due_date=timezone.now() - timezone.timedelta(days=5))
+        self.assertEqual(send_platform_billing_reminders(), 0)
+
+    def test_paying_lifts_the_restriction(self):
+        TenantInvoice.objects.all_tenants().update(
+            due_date=timezone.now() - timezone.timedelta(days=Tenant.GRACE_DAYS + 1))
+        restrict_expired_grace_tenants()
+
+        invoice = TenantInvoice.objects.all_tenants().get(tenant=self.t1)
+        TenantPayment.objects.create(
+            tenant=self.t1, invoice=invoice, amount=invoice.amount,
+            method="mpesa", reference="PAID-1")
+
+        self.t1.refresh_from_db()
+        self.assertEqual(self.t1.status, "active")
+        self.assertFalse(self.t1.is_restricted)
+
+
+class ManualStatusControlTests(PlatformBillingMixin, TestCase):
+
+    def setUp(self):
+        cache.clear()
+        self.build_billing()
+
+    def _url(self, tenant):
+        return f"/api/platform/operators/{tenant.id}/status/"
+
+    def test_operator_cannot_change_their_own_standing(self):
+        resp = self.auth(self.admin1).post(
+            self._url(self.t1), {"status": "active"}, format="json")
+        self.assertEqual(resp.status_code, 403)
+
+    def test_platform_staff_may_restrict_with_a_reason(self):
+        resp = self.auth(make_platform_owner()).post(
+            self._url(self.t1),
+            {"status": "restricted", "reason": "Unpaid invoice PINV-1"},
+            format="json")
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.t1.refresh_from_db()
+        self.assertTrue(self.t1.is_restricted)
+
+    def test_restricting_without_a_reason_is_refused(self):
+        """An unexplained restriction is what makes a dispute unanswerable."""
+        resp = self.auth(make_platform_owner()).post(
+            self._url(self.t1), {"status": "restricted"}, format="json")
+        self.assertEqual(resp.status_code, 400)
+        self.t1.refresh_from_db()
+        self.assertFalse(self.t1.is_restricted)
+
+    def test_manual_change_records_who_did_it(self):
+        owner = make_platform_owner()
+        self.auth(owner).post(
+            self._url(self.t1),
+            {"status": "restricted", "reason": "non-payment"}, format="json")
+
+        change = TenantStatusChange.objects.filter(tenant=self.t1).first()
+        self.assertEqual(change.changed_by_id, owner.id)
+        self.assertFalse(change.automatic)
+
+    def test_history_is_readable_by_platform_staff(self):
+        set_tenant_status(self.t1, "restricted", reason="test", automatic=True)
+        resp = self.auth(make_platform_owner()).get(self._url(self.t1))
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.data["is_restricted"])
+        self.assertEqual(len(resp.data["history"]), 1)
+
+    def test_reinstating_restores_access(self):
+        set_tenant_status(self.t1, "restricted", reason="test", automatic=True)
+        self.auth(make_platform_owner()).post(
+            self._url(self.t1), {"status": "active", "reason": "settled"},
+            format="json")
+        self.t1.refresh_from_db()
+        self.assertEqual(self.auth(self.admin1).get("/api/customers/").status_code, 200)

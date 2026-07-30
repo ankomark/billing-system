@@ -88,6 +88,7 @@ from .views import (
     TenantInvoiceListView,
     MyPlatformSubscriptionView,
     RecordTenantPaymentView,
+    TenantStatusView,
 )
 
 # ─── DRF ViewSet router ───────────────────────────────────────────────────────
@@ -211,6 +212,7 @@ urlpatterns = [
     path("api/platform/invoices/",     TenantInvoiceListView.as_view(),      name="platform-invoices"),
     path("api/platform/my-account/",   MyPlatformSubscriptionView.as_view(), name="platform-my-account"),
     path("api/platform/payments/",     RecordTenantPaymentView.as_view(),    name="platform-record-payment"),
+    path("api/platform/operators/<int:tenant_id>/status/", TenantStatusView.as_view(), name="platform-tenant-status"),
 
     # ─── DRF ViewSets ────────────────────────────────────────────────────────
     path("api/", include(router.urls)),
