@@ -19,7 +19,17 @@ services:
 
   web:
     build: .
-    command: python manage.py runserver 0.0.0.0:8000
+    # gunicorn, not `manage.py runserver` — runserver is single-threaded, does
+    # not serve static under DEBUG=False, and is explicitly not for production.
+    # collectstatic runs first so WhiteNoise has something to serve (/admin/).
+    command: >
+      sh -c "python manage.py collectstatic --noinput &&
+             exec gunicorn backend.wsgi:application
+             --bind 0.0.0.0:8000
+             --workers ${GUNICORN_WORKERS:-4}
+             --timeout 60
+             --access-logfile -
+             --error-logfile -"
     env_file:
       - .env
     ports:
@@ -50,11 +60,24 @@ services:
 
   flower:
     build: .
-    command: celery -A backend flower --address=0.0.0.0 --port=5555 --basic_auth=admin:STRONG_PASSWORD
+    # Credentials come from FLOWER_BASIC_AUTH in .env — never hardcode them here,
+    # this file is committed. The `:?` guard makes compose abort with the message
+    # below if the variable is unset or empty; without it an empty --basic_auth
+    # would start Flower with NO authentication at all, silently exposing every
+    # task payload (phone numbers, M-Pesa references) on port 5555.
+    command: >
+      celery -A backend flower
+      --address=0.0.0.0
+      --port=5555
+      --basic_auth=${FLOWER_BASIC_AUTH:?set FLOWER_BASIC_AUTH=user:password in backend/.env}
     env_file:
       - .env
+    # Bound to loopback: Flower has no TLS and only weak basic auth, so it should
+    # not be reachable from outside the host. Reach it via an SSH tunnel:
+    #   ssh -L 5555:localhost:5555 you@server
+    # Change to "5555:5555" only if you front it with a TLS-terminating proxy.
     ports:
-      - "5555:5555"
+      - "127.0.0.1:5555:5555"
     depends_on:
       - redis
       - worker
