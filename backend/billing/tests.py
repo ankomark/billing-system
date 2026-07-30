@@ -699,3 +699,121 @@ class LoginThrottleTests(TestCase):
             client_b.post(self.URL, {"username": "x", "password": "y"}).status_code,
             429,
         )
+
+
+# ===========================================================
+# 8. Customer Detail Serializer
+# ===========================================================
+
+class CustomerDetailSerializerTests(TestCase):
+    """
+    The admin CustomerDetail page reads router_name / subscriptions / vouchers.
+    CustomerSerializer never returned them, so those panels rendered empty.
+    The retrieve action must supply them; list must stay lightweight.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        self.client.force_authenticate(user=make_admin("detail_admin"))
+
+        self.router   = make_router(name="Edge Router 1")
+        self.package  = make_package(name="Home 10Mbps")
+        self.customer = make_pppoe_customer(
+            self.router, phone="254799000111", username_suffix="detail",
+        )
+        self.subscription = Subscription.objects.create(
+            customer=self.customer, package=self.package,
+        )
+        self.voucher = Voucher.objects.create(
+            code="WIFI-DETAIL1",
+            subscription=self.subscription,
+            expires_at=timezone.now() + timezone.timedelta(days=30),
+        )
+
+    def _detail(self, customer=None):
+        return self.client.get(f"/api/customers/{(customer or self.customer).id}/")
+
+    def test_detail_returns_router_name(self):
+        resp = self._detail()
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["router_name"], "Edge Router 1")
+
+    def test_router_name_is_null_when_no_router_assigned(self):
+        orphan = Customer.objects.create(
+            full_name="No Router", phone="254799000222",
+            connection_type="pppoe", router=None,
+        )
+        resp = self._detail(orphan)
+        self.assertEqual(resp.status_code, 200)
+        self.assertIsNone(resp.data["router_name"])
+
+    def test_detail_returns_subscriptions_with_package_name(self):
+        resp = self._detail()
+        subs = resp.data["subscriptions"]
+        self.assertEqual(len(subs), 1)
+        self.assertEqual(subs[0]["id"], self.subscription.id)
+        self.assertEqual(subs[0]["package_name"], "Home 10Mbps")
+        self.assertEqual(subs[0]["status"], "active")
+        self.assertIsNotNone(subs[0]["expiry_date"])
+
+    def test_detail_returns_vouchers_flattened_from_subscriptions(self):
+        resp = self._detail()
+        vouchers = resp.data["vouchers"]
+        self.assertEqual(len(vouchers), 1)
+        self.assertEqual(vouchers[0]["code"], "WIFI-DETAIL1")
+        self.assertTrue(vouchers[0]["is_active"])
+
+    def test_customer_with_no_subscriptions_returns_empty_lists(self):
+        bare = Customer.objects.create(
+            full_name="Bare", phone="254799000333",
+            connection_type="pppoe", router=self.router,
+        )
+        resp = self._detail(bare)
+        self.assertEqual(resp.data["subscriptions"], [])
+        self.assertEqual(resp.data["vouchers"], [])
+
+    def test_list_endpoint_stays_lightweight(self):
+        """List must not carry the nested payload — 25 rows/page."""
+        resp = self.client.get("/api/customers/")
+        self.assertEqual(resp.status_code, 200)
+        row = resp.data["results"][0]
+        self.assertNotIn("subscriptions", row)
+        self.assertNotIn("vouchers", row)
+        self.assertNotIn("router_name", row)
+
+    def test_detail_query_count_does_not_grow_with_subscriptions(self):
+        """Prefetching must keep the detail page at a fixed query count."""
+        # 3 = customer (+select_related) + subscriptions prefetch + vouchers prefetch
+        with self.assertNumQueries(3):
+            self._detail()
+
+        for i in range(4):
+            sub = Subscription.objects.create(
+                customer=self.customer, package=self.package,
+            )
+            Voucher.objects.create(
+                code=f"WIFI-EXTRA{i}", subscription=sub,
+                expires_at=timezone.now() + timezone.timedelta(days=5),
+            )
+
+        # 3 = customer (+select_related) + subscriptions prefetch + vouchers prefetch
+        with self.assertNumQueries(3):
+            resp = self._detail()
+        self.assertEqual(len(resp.data["subscriptions"]), 5)
+        self.assertEqual(len(resp.data["vouchers"]), 5)
+
+    def test_patch_still_preserves_pppoe_password(self):
+        """Write path must keep using CustomerSerializer's password guard."""
+        self.customer.pppoe_password = "originalpass"
+        self.customer.save()
+
+        resp = self.client.patch(
+            f"/api/customers/{self.customer.id}/",
+            {"full_name": "Renamed", "pppoe_password": ""},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.full_name, "Renamed")
+        self.assertEqual(self.customer.pppoe_password, "originalpass")
