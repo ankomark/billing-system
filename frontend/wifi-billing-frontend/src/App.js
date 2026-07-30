@@ -3,6 +3,9 @@ import { Routes, Route, Navigate } from "react-router-dom";
 import ProtectedRoute from "./components/ProtectedRoute";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { Skeleton } from "./components/ui/Skeleton";
+import {
+  CUSTOMER, OPERATOR_ROLES, OPERATOR_ADMIN_ROLES, PLATFORM_ROLES,
+} from "./constants/roles";
 
 // ─── Page-level code splitting ──────────────────────────────────────────────
 const Login            = lazy(() => import("./pages/Login"));
@@ -36,9 +39,20 @@ const HotspotPay       = lazy(() => import("./pages/hotspot/HotspotPay"));
 const HotspotStatus    = lazy(() => import("./pages/hotspot/HotspotStatus"));
 const HotspotSuccess   = lazy(() => import("./pages/hotspot/HotspotSuccess"));
 
+// Platform owner
+const PlatformOverview = lazy(() => import("./pages/platform/PlatformOverview"));
+const Operators        = lazy(() => import("./pages/platform/Operators"));
+const OperatorDetail   = lazy(() => import("./pages/platform/OperatorDetail"));
+const PlatformInvoices = lazy(() => import("./pages/platform/PlatformInvoices"));
+const MyPlatformAccount = lazy(() => import("./pages/admin/MyPlatformAccount"));
+
 // ─── Role sets ──────────────────────────────────────────────────────────────
-const ADMIN_ROLES = ["admin", "staff", "superadmin"];
-const SUPER_ROLES = ["admin", "superadmin"];
+// These come from constants/roles.js rather than being written out here. The
+// backend renamed admin/staff/superadmin to the tenant_* and platform_* roles,
+// and the literals left behind matched nothing — every admin route became
+// unreachable, redirecting to a home that failed the same check.
+const ADMIN_ROLES = OPERATOR_ROLES;
+const SUPER_ROLES = OPERATOR_ADMIN_ROLES;
 
 // Full-page loading fallback
 function PageLoader() {
@@ -63,7 +77,16 @@ function Admin({ children, roles = ADMIN_ROLES }) {
 
 function Customer({ children }) {
   return (
-    <ProtectedRoute allowedRoles={["customer"]}>
+    <ProtectedRoute allowedRoles={[CUSTOMER]}>
+      <ErrorBoundary>{children}</ErrorBoundary>
+    </ProtectedRoute>
+  );
+}
+
+// The platform owner's own dashboard. Operators must never reach it.
+function Platform({ children }) {
+  return (
+    <ProtectedRoute allowedRoles={PLATFORM_ROLES}>
       <ErrorBoundary>{children}</ErrorBoundary>
     </ProtectedRoute>
   );
@@ -110,6 +133,14 @@ export default function App() {
 
         {/* Admin — system */}
         <Route path="/admin/settings"               element={<Admin roles={SUPER_ROLES}><SystemSettings /></Admin>} />
+        {/* Reachable while restricted — it is the page explaining why. */}
+        <Route path="/admin/billing"                element={<Admin roles={SUPER_ROLES}><MyPlatformAccount /></Admin>} />
+
+        {/* Platform owner */}
+        <Route path="/platform"                     element={<Platform><PlatformOverview /></Platform>} />
+        <Route path="/platform/operators"           element={<Platform><Operators /></Platform>} />
+        <Route path="/platform/operators/:id"       element={<Platform><OperatorDetail /></Platform>} />
+        <Route path="/platform/invoices"            element={<Platform><PlatformInvoices /></Platform>} />
 
         {/* Customer portal */}
         <Route path="/customer/pppoe"               element={<Customer><PPPoEPortal /></Customer>} />

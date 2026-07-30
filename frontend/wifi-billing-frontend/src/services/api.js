@@ -6,10 +6,26 @@ const api = axios.create({
   baseURL: BASE_URL,
 });
 
-// Attach JWT to every request
+// Attach JWT to every request, plus the impersonation header when platform
+// staff are viewing as an operator. The header narrows what the request can
+// see; it never widens it, and the backend ignores it for non-platform
+// accounts and records every use.
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem("access_token");
   if (token) config.headers.Authorization = `Bearer ${token}`;
+
+  const raw = localStorage.getItem("impersonate");
+  if (raw) {
+    try {
+      const { id, reason } = JSON.parse(raw);
+      if (id) {
+        config.headers["X-Impersonate-Tenant"] = String(id);
+        if (reason) config.headers["X-Impersonate-Reason"] = reason;
+      }
+    } catch {
+      // Corrupt value — behave as though not impersonating.
+    }
+  }
   return config;
 });
 

@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Users, Package, FileText, AlertCircle,
   Settings, MessageSquare, LogOut, Activity, Router,
   RefreshCw, Search, Wifi, ShieldAlert, HeartPulse, X,
-  UserPlus,
+  UserPlus, CreditCard,
 } from "lucide-react";
 
 export default function AdminSidebar({ open, onClose }) {
@@ -78,6 +78,9 @@ export default function AdminSidebar({ open, onClose }) {
 
           <SectionLabel label="System" />
           <NavItem to="/admin/settings"        icon={Settings}      label="Settings"        onClick={onClose} />
+          {/* What this operator owes the platform. Stays reachable while
+              restricted — it is the page that explains why. */}
+          <NavItem to="/admin/billing"         icon={CreditCard}    label="Subscription"    onClick={onClose} />
         </nav>
 
         {/* Logout */}

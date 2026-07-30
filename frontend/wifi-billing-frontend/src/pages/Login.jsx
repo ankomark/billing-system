@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import AuthLayout from "../layouts/AuthLayout";
 import { login, getUser, isAuthenticated } from "../services/auth";
+import { homeFor } from "../constants/roles";
 import api from "../services/api";
 
 export default function Login() {
@@ -14,8 +15,7 @@ export default function Login() {
   useEffect(() => {
     if (!isAuthenticated()) return;
     const user = getUser();
-    if (user?.role === "customer") navigate("/customer/pppoe", { replace: true });
-    else if (user) navigate("/admin/dashboard", { replace: true });
+    if (user?.role) navigate(homeFor(user.role), { replace: true });
     else localStorage.clear();
   }, [navigate]);
 
@@ -27,13 +27,14 @@ export default function Login() {
       const data = await login(username, password);
       localStorage.setItem("access_token", data.access);
       localStorage.setItem("refresh_token", data.refresh);
+
+      // The login response already carries role and tenant, so the profile
+      // call is only for the extras (username, operator name).
       const profileRes = await api.get("auth/profile/");
-      localStorage.setItem("user", JSON.stringify(profileRes.data));
-      if (profileRes.data.role === "customer") {
-        navigate("/customer/pppoe", { replace: true });
-      } else {
-        navigate("/admin/dashboard", { replace: true });
-      }
+      const user = { ...profileRes.data, role: data.role ?? profileRes.data.role };
+      localStorage.setItem("user", JSON.stringify(user));
+
+      navigate(homeFor(user.role), { replace: true });
     } catch {
       setError("Invalid username or password. Please try again.");
     } finally {

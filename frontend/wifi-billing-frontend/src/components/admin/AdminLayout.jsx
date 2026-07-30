@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Menu, Clock, X } from "lucide-react";
 import AdminSidebar from "./AdminSidebar";
 import { getUser } from "../../services/auth";
+import ImpersonationBanner from "../platform/ImpersonationBanner";
 import useSessionTimeout from "../../hooks/useSessionTimeout";
 
 export default function AdminLayout({ children }) {
@@ -15,6 +16,11 @@ export default function AdminLayout({ children }) {
       <AdminSidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
       <div className="flex-1 flex flex-col min-w-0 lg:ml-0">
+        {/* Loud and always present while platform staff are viewing as this
+            operator — the failure it prevents is changing a real business's
+            records believing they are your own. */}
+        <ImpersonationBanner />
+
         {/* Session timeout warning banner */}
         {showWarning && (
           <div className="bg-amber-50 border-b border-amber-200 px-4 py-2.5 flex items-center justify-between gap-3">
