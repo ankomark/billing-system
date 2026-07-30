@@ -1,103 +1,102 @@
 import { useState } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
-import api from "../../services/api";
+import { purchaseHotspotPackage } from "../../services/hotspot";
 
 export default function HotspotPay() {
   const [params] = useSearchParams();
   const navigate = useNavigate();
 
-  // Values sent from HotspotPackages.jsx
+  // Passed through from HotspotPackages.jsx
   const packageId = params.get("package");
-  const mac       = params.get("mac");
+  const mac = params.get("mac");
+  const tenantToken = params.get("t");
 
   const [phone, setPhone] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  // If customer opens page directly → invalid
   if (!packageId || !mac) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-100">
-        <div className="bg-white p-6 rounded shadow text-center">
-          <h2 className="text-xl font-bold text-red-600">Invalid Request</h2>
-          <p className="text-gray-600">Missing required hotspot parameters.</p>
+      <div className="min-h-screen flex items-center justify-center bg-slate-100 p-6">
+        <div className="bg-white p-6 rounded-xl shadow text-center max-w-sm">
+          <h2 className="text-xl font-bold text-red-600">Invalid request</h2>
+          <p className="text-slate-600 mt-1">
+            Please reconnect through the WiFi login page.
+          </p>
         </div>
       </div>
     );
   }
 
   const handlePay = async () => {
-    if (!phone) {
-      setError("Please enter phone number.");
+    if (!phone.trim()) {
+      setError("Enter the M-Pesa number to pay from.");
       return;
     }
 
     setError("");
     setLoading(true);
-
     try {
-      // STEP 1: Create subscription on backend
-      const subRes = await api.post("subscriptions/", {
-        package: packageId,
-        connection_type: "hotspot",
-        hotspot_username: mac, // Important: bind MAC
+      // One public call creates the customer, subscription and invoice, then
+      // sends the STK prompt. Previously this posted to the admin-only
+      // subscriptions endpoint and always failed with 403.
+      const { reference } = await purchaseHotspotPackage({
+        tenantToken,
+        packageId,
+        phone: phone.trim(),
       });
 
-      const subscriptionId = subRes.data.id;
-
-      // STEP 2: Initiate STK Push
-      await api.post("mpesa/stk-push/", {
-        subscription_id: subscriptionId,
-        phone_number: phone,
-      });
-
-      // STEP 3: Redirect to status page
       navigate(
-        `/hotspot/status?subscription=${subscriptionId}&mac=${mac}`
+        `/hotspot/status?ref=${encodeURIComponent(reference)}` +
+          `&mac=${encodeURIComponent(mac)}` +
+          (tenantToken ? `&t=${encodeURIComponent(tenantToken)}` : "")
       );
     } catch (e) {
-      console.error(e);
-      setError(e.response?.data?.detail || "Payment initiation failed.");
+      setError(
+        e.response?.data?.detail ||
+          "Couldn't start the payment. Please check the number and try again."
+      );
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-100 p-4">
-      <div className="bg-white p-6 rounded shadow w-full max-w-sm">
-        
-        <h2 className="text-lg font-bold mb-4 text-center">
-          Complete Your Payment
+    <div className="min-h-screen flex items-center justify-center bg-slate-100 p-4">
+      <div className="bg-white p-6 rounded-xl shadow w-full max-w-sm">
+        <h2 className="text-lg font-bold text-center text-slate-800">
+          Pay with M-Pesa
         </h2>
-
-        {/* Show Device Identity */}
-        <p className="text-sm text-gray-600 text-center mb-2">
-          Connecting Device: <span className="font-mono">{mac}</span>
-        </p>
+        <p className="text-xs text-slate-400 text-center mt-1 mb-4 font-mono">{mac}</p>
 
         {error && (
-          <div className="bg-red-100 text-red-700 p-2 mb-3 rounded">
+          <div className="bg-red-50 border border-red-200 text-red-700 p-3 rounded-lg mb-3 text-sm">
             {error}
           </div>
         )}
 
-        <label className="text-sm font-medium">M-Pesa Phone Number</label>
+        <label className="text-sm font-medium text-slate-700">M-Pesa number</label>
         <input
           type="tel"
-          placeholder="2547XXXXXXXX"
-          className="w-full border p-3 rounded mb-4 mt-1"
+          inputMode="numeric"
+          placeholder="0712345678"
+          className="w-full border border-slate-300 rounded-lg p-3 mb-4 mt-1 focus:outline-none focus:ring-2 focus:ring-blue-500"
           value={phone}
           onChange={(e) => setPhone(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && handlePay()}
         />
 
         <button
           onClick={handlePay}
           disabled={loading}
-          className="w-full bg-blue-600 text-white py-2 rounded font-semibold disabled:opacity-50"
+          className="w-full bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-lg font-semibold disabled:opacity-50 transition-colors"
         >
-          {loading ? "Sending STK..." : "Pay & Connect"}
+          {loading ? "Sending prompt…" : "Pay & Connect"}
         </button>
+
+        <p className="text-xs text-slate-400 text-center mt-3">
+          You'll get a prompt on your phone to approve the payment.
+        </p>
       </div>
     </div>
   );

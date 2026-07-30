@@ -120,6 +120,29 @@ class PackageSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 
+class PublicPackageSerializer(serializers.ModelSerializer):
+    """
+    What an unauthenticated walk-up customer may see on the captive portal.
+
+    Explicit field list rather than "__all__": this is served to anyone on the
+    hotspot, so it must never start leaking internal columns because a field
+    was added to the model.
+    """
+    duration = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Package
+        fields = (
+            "id", "name", "price",
+            "download_speed", "upload_speed",
+            "duration_value", "duration_unit", "duration",
+            "monthly_data_cap_gb",
+        )
+
+    def get_duration(self, obj):
+        return f"{obj.duration_value} {obj.duration_unit}"
+
+
 class SubscriptionSerializer(serializers.ModelSerializer):
     customer_detail = CustomerSerializer(source="customer", read_only=True)
     package_detail  = PackageSerializer(source="package",  read_only=True)

@@ -17,7 +17,7 @@ from .mpesa_client import initiate_stk_push
 from billing.models import Customer,Subscription,PPPoEUsageRecord
 from billing.notifications import send_sms, send_whatsapp
 from billing.serializers import BroadcastSerializer
-from billing.mpesa_client import get_mpesa_access_token
+from billing.mpesa_client import get_mpesa_access_token, missing_mpesa_keys
 from rest_framework.permissions import IsAdminUser
 from django.db.models import Prefetch, Sum
 from django.db.models.functions import TruncDate, TruncMonth
@@ -1942,4 +1942,192 @@ class HotspotReconnectView(APIView):
         return Response({
             "status": "allowed",
             "expires_at": subscription.expiry_date,
+        })
+
+# =====================================================
+# PUBLIC HOTSPOT PURCHASE FLOW
+# =====================================================
+# A walk-up customer on the captive portal has no account and no JWT. Every
+# step below was previously behind IsAdmin or IsAuthenticated, so the entire
+# self-service purchase path returned 403 and nobody could buy anything.
+#
+# The operator is identified by the `t` token the portal carries. On a
+# single-operator install the token may be omitted, so existing portals keep
+# working until they are updated.
+
+def _public_tenant(request):
+    """Resolve the operator for an unauthenticated portal request."""
+    token = request.GET.get("t")
+    if not token:
+        data = getattr(request, "data", None)
+        if isinstance(data, dict):
+            token = data.get("t")
+
+    if token:
+        return Tenant.objects.filter(public_token=token).first()
+
+    # Single-operator fallback, matching _hotspot_customer_for().
+    if Tenant.objects.count() == 1:
+        return Tenant.objects.first()
+    return None
+
+
+def _normalise_msisdn(phone):
+    """
+    Kenyan mobile number in the 2547XXXXXXXX form Daraja expects.
+    Returns None if it does not look like one.
+    """
+    digits = "".join(ch for ch in str(phone or "") if ch.isdigit())
+    if digits.startswith("0") and len(digits) == 10:
+        digits = "254" + digits[1:]
+    elif digits.startswith("7") and len(digits) == 9:
+        digits = "254" + digits
+    elif digits.startswith("254") and len(digits) == 12:
+        pass
+    else:
+        return None
+    return digits
+
+
+class HotspotPackagesView(APIView):
+    """Packages a walk-up customer can buy from this operator."""
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [HotspotPublicThrottle]
+
+    def get(self, request):
+        tenant = _public_tenant(request)
+        if tenant is None:
+            return Response(
+                {"detail": "Unknown provider. Reconnect through the WiFi login page."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        packages = (
+            Package.objects.all_tenants()
+            .filter(tenant=tenant, is_hotspot=True)
+            .order_by("price")
+        )
+        from .serializers import PublicPackageSerializer
+        return Response({
+            "provider": tenant.business_name or tenant.name,
+            "results": PublicPackageSerializer(packages, many=True).data,
+        })
+
+
+class HotspotPurchaseView(APIView):
+    """
+    Buy a hotspot package without an account.
+
+    Creates (or reuses) the customer by phone number within this operator,
+    creates the subscription and its invoice, then triggers STK push. The
+    device MAC is deliberately NOT bound here: binding happens on voucher
+    validation, after payment, so an unpaid request cannot squat a MAC that
+    belongs to somebody else.
+    """
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [HotspotPublicThrottle]
+
+    def post(self, request):
+        tenant = _public_tenant(request)
+        if tenant is None:
+            return Response(
+                {"detail": "Unknown provider. Reconnect through the WiFi login page."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        phone = _normalise_msisdn(request.data.get("phone"))
+        if not phone:
+            return Response(
+                {"detail": "Enter a valid M-Pesa number, e.g. 0712345678."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        package = (
+            Package.objects.all_tenants()
+            .filter(id=request.data.get("package_id"), tenant=tenant, is_hotspot=True)
+            .first()
+        )
+        if package is None:
+            # Scoped lookup: a package id from another operator must not resolve.
+            return Response(
+                {"detail": "That package is not available."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        missing = missing_mpesa_keys(tenant=tenant)
+        if missing:
+            return Response(
+                {"detail": "This provider cannot accept payments yet."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        with tenant_context(tenant):
+            customer = (
+                Customer.objects.all_tenants()
+                .filter(tenant=tenant, phone=phone)
+                .first()
+            )
+            if customer is None:
+                customer = Customer.objects.create(
+                    tenant=tenant,
+                    full_name=f"Hotspot {phone[-4:]}",
+                    phone=phone,
+                    connection_type="hotspot",
+                )
+
+            subscription = Subscription.objects.create(
+                tenant=tenant, customer=customer, package=package,
+            )
+            invoice = subscription.invoice
+
+        initiate_stk_push_task.delay(invoice.id, phone)
+
+        return Response(
+            {
+                "detail": "Check your phone for the M-Pesa prompt.",
+                "reference": invoice.invoice_number,
+                "amount": str(invoice.total_amount),
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )
+
+
+class HotspotPaymentStatusView(APIView):
+    """
+    Poll a purchase by its reference.
+
+    The voucher code is only returned once the invoice is actually paid, so
+    the reference alone never grants access.
+    """
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [HotspotPublicThrottle]
+
+    def get(self, request):
+        tenant = _public_tenant(request)
+        reference = request.GET.get("ref")
+        if tenant is None or not reference:
+            return Response({"status": "not_found"})
+
+        invoice = (
+            Invoice.objects.all_tenants()
+            .select_related("subscription")
+            .filter(tenant=tenant, invoice_number=reference)
+            .first()
+        )
+        if invoice is None:
+            return Response({"status": "not_found"})
+
+        if invoice.payment_status != "paid":
+            return Response({"status": invoice.payment_status})
+
+        voucher = (
+            Voucher.objects.all_tenants()
+            .filter(subscription=invoice.subscription, is_active=True)
+            .order_by("-created_at")
+            .first()
+        )
+        return Response({
+            "status": "paid",
+            "voucher_code": voucher.code if voucher else None,
+            "expires_at": invoice.subscription.expiry_date,
         })

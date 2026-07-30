@@ -1826,3 +1826,172 @@ class PublicEndpointScopingTests(TwoOperatorMixin, TestCase):
 
         self.assertEqual(resp.status_code, 200, getattr(resp, "data", None))
         self.assertIn(self.t2.public_token, captured["callback"])
+
+
+class PublicHotspotPurchaseTests(TwoOperatorMixin, TestCase):
+    """
+    The walk-up purchase flow. Every step was previously behind IsAdmin or
+    IsAuthenticated, so a customer on the captive portal got 403 and could not
+    buy anything at all.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        self.client = APIClient()
+
+        for tag, tenant in (("t1", self.t1), ("t2", self.t2)):
+            with tenant_context(tenant):
+                Package.objects.create(
+                    tenant=tenant, name=f"{tag}-hotspot-2hr",
+                    download_speed=5, upload_speed=2, price=Decimal("50.00"),
+                    duration_value=2, duration_unit="hours",
+                    monthly_data_cap_gb=0, is_hotspot=True)
+            for key, value in MPESA_KEYS.items():
+                SystemSetting.objects.create(tenant=tenant, key=key, value=f"{tag}-{value}")
+
+    def _package(self, tenant):
+        return Package.objects.all_tenants().get(tenant=tenant, is_hotspot=True)
+
+    # ---- packages ---------------------------------------------------------
+
+    def test_packages_are_readable_without_a_login(self):
+        resp = self.client.get("/api/hotspot/packages/", {"t": self.t1.public_token})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual([p["name"] for p in resp.data["results"]], ["t1-hotspot-2hr"])
+
+    def test_packages_are_scoped_to_the_token(self):
+        resp = self.client.get("/api/hotspot/packages/", {"t": self.t2.public_token})
+        self.assertEqual([p["name"] for p in resp.data["results"]], ["t2-hotspot-2hr"])
+
+    def test_pppoe_packages_are_not_offered_on_the_portal(self):
+        resp = self.client.get("/api/hotspot/packages/", {"t": self.t1.public_token})
+        names = [p["name"] for p in resp.data["results"]]
+        self.assertNotIn("t1-package", names)
+
+    def test_public_package_payload_stays_minimal(self):
+        resp = self.client.get("/api/hotspot/packages/", {"t": self.t1.public_token})
+        self.assertEqual(
+            set(resp.data["results"][0]),
+            {"id", "name", "price", "download_speed", "upload_speed",
+             "duration_value", "duration_unit", "duration", "monthly_data_cap_gb"},
+        )
+
+    def test_unknown_token_is_rejected(self):
+        resp = self.client.get("/api/hotspot/packages/", {"t": "bogus"})
+        self.assertEqual(resp.status_code, 404)
+
+    # ---- purchase ---------------------------------------------------------
+
+    @patch("billing.views.initiate_stk_push_task")
+    def test_purchase_creates_customer_subscription_and_invoice(self, mock_task):
+        resp = self.client.post("/api/hotspot/purchase/", {
+            "t": self.t1.public_token,
+            "package_id": self._package(self.t1).id,
+            "phone": "0712345678",
+        }, format="json")
+
+        self.assertEqual(resp.status_code, 202, resp.data)
+        self.assertIn("reference", resp.data)
+
+        customer = Customer.objects.all_tenants().get(phone="254712345678")
+        self.assertEqual(customer.tenant_id, self.t1.id)
+        self.assertEqual(customer.connection_type, "hotspot")
+        self.assertTrue(mock_task.delay.called, "STK push was never scheduled")
+
+    @patch("billing.views.initiate_stk_push_task")
+    def test_phone_is_normalised_for_daraja(self, _):
+        for entered in ("0712345678", "712345678", "254712345678", "+254 712 345 678"):
+            with self.subTest(entered=entered):
+                Customer.objects.all_tenants().filter(phone="254712345678").delete()
+                resp = self.client.post("/api/hotspot/purchase/", {
+                    "t": self.t1.public_token,
+                    "package_id": self._package(self.t1).id,
+                    "phone": entered,
+                }, format="json")
+                self.assertEqual(resp.status_code, 202)
+                self.assertTrue(
+                    Customer.objects.all_tenants().filter(phone="254712345678").exists())
+
+    def test_rubbish_phone_is_refused(self):
+        resp = self.client.post("/api/hotspot/purchase/", {
+            "t": self.t1.public_token,
+            "package_id": self._package(self.t1).id,
+            "phone": "12345",
+        }, format="json")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_cannot_buy_another_operators_package(self):
+        resp = self.client.post("/api/hotspot/purchase/", {
+            "t": self.t1.public_token,
+            "package_id": self._package(self.t2).id,
+            "phone": "0712345678",
+        }, format="json")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_purchase_refused_while_operator_has_no_mpesa_setup(self):
+        SystemSetting.objects.filter(tenant=self.t2).delete()
+        cache.clear()
+        resp = self.client.post("/api/hotspot/purchase/", {
+            "t": self.t2.public_token,
+            "package_id": self._package(self.t2).id,
+            "phone": "0712345678",
+        }, format="json")
+        self.assertEqual(resp.status_code, 503)
+
+    @patch("billing.views.initiate_stk_push_task")
+    def test_repeat_purchase_reuses_the_same_customer(self, _):
+        pkg = self._package(self.t1).id
+        for _i in range(2):
+            self.client.post("/api/hotspot/purchase/", {
+                "t": self.t1.public_token, "package_id": pkg, "phone": "0712345678",
+            }, format="json")
+        self.assertEqual(
+            Customer.objects.all_tenants().filter(phone="254712345678").count(), 1)
+
+    # ---- payment status ---------------------------------------------------
+
+    @patch("billing.views.initiate_stk_push_task")
+    def test_status_withholds_the_voucher_until_paid(self, _):
+        resp = self.client.post("/api/hotspot/purchase/", {
+            "t": self.t1.public_token,
+            "package_id": self._package(self.t1).id,
+            "phone": "0712345678",
+        }, format="json")
+        poll = self.client.get("/api/hotspot/payment-status/",
+                               {"t": self.t1.public_token, "ref": resp.data["reference"]})
+        self.assertNotEqual(poll.data["status"], "paid")
+        self.assertNotIn("voucher_code", poll.data)
+
+    @patch("billing.views.initiate_stk_push_task")
+    @patch("billing.router_service.enable_customer_access")
+    def test_voucher_is_returned_once_payment_lands(self, _enable, _task):
+        resp = self.client.post("/api/hotspot/purchase/", {
+            "t": self.t1.public_token,
+            "package_id": self._package(self.t1).id,
+            "phone": "0712345678",
+        }, format="json")
+        ref = resp.data["reference"]
+
+        invoice = Invoice.objects.all_tenants().get(invoice_number=ref)
+        with tenant_context(self.t1):
+            Payment.objects.create(
+                tenant=self.t1, customer=invoice.customer,
+                subscription=invoice.subscription,
+                amount=invoice.total_amount, method="mpesa", reference="RCPT-HS")
+
+        poll = self.client.get("/api/hotspot/payment-status/",
+                               {"t": self.t1.public_token, "ref": ref})
+        self.assertEqual(poll.data["status"], "paid")
+        self.assertTrue(poll.data["voucher_code"])
+
+    @patch("billing.views.initiate_stk_push_task")
+    def test_reference_from_another_operator_does_not_resolve(self, _):
+        resp = self.client.post("/api/hotspot/purchase/", {
+            "t": self.t1.public_token,
+            "package_id": self._package(self.t1).id,
+            "phone": "0712345678",
+        }, format="json")
+        poll = self.client.get("/api/hotspot/payment-status/",
+                               {"t": self.t2.public_token, "ref": resp.data["reference"]})
+        self.assertEqual(poll.data["status"], "not_found")

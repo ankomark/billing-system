@@ -1,80 +1,108 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import api from "../../services/api";
+import { fetchHotspotPaymentStatus } from "../../services/hotspot";
+
+const POLL_MS = 3000;
+const GIVE_UP_AFTER_MS = 3 * 60 * 1000; // Safaricom prompts expire well inside this
 
 export default function HotspotStatus() {
   const [searchParams] = useSearchParams();
-  const mac            = searchParams.get("mac");
-  const subscriptionId = searchParams.get("subscription");
+  const mac = searchParams.get("mac");
+  const reference = searchParams.get("ref");
+  const tenantToken = searchParams.get("t");
 
-  const [status, setStatus]     = useState("pending");
-  const [expiresAt, setExpiresAt] = useState(null);
+  const [state, setState] = useState("pending");
+  const [voucher, setVoucher] = useState(null);
+  const startedAt = useRef(Date.now());
 
   useEffect(() => {
-    if (!mac || !subscriptionId) {
-      setStatus("invalid_params");
+    if (!mac || !reference) {
+      setState("invalid");
       return;
     }
 
-    const interval = setInterval(async () => {
-      try {
-        const res  = await api.get(`subscriptions/${subscriptionId}/`);
-        const data = res.data;
+    const timer = setInterval(async () => {
+      if (Date.now() - startedAt.current > GIVE_UP_AFTER_MS) {
+        clearInterval(timer);
+        setState("timeout");
+        return;
+      }
 
-        if (data.invoice?.payment_status === "paid") {
-          setExpiresAt(data.expiry_date);
-          setStatus("active");
-          clearInterval(interval);
-          setTimeout(() => {
-            window.location.href = `/hotspot/success?mac=${mac}&expires=${data.expiry_date}`;
-          }, 2000);
-        } else {
-          setStatus("pending");
+      try {
+        // Polls a public endpoint. This previously fetched the admin-only
+        // subscriptions endpoint, which always returned 403 for a walk-up
+        // customer, so the page never left "waiting".
+        const data = await fetchHotspotPaymentStatus({ tenantToken, reference });
+
+        if (data.status === "paid") {
+          clearInterval(timer);
+          setVoucher(data.voucher_code);
+          setState("paid");
+        } else if (data.status === "not_found") {
+          clearInterval(timer);
+          setState("invalid");
         }
       } catch {
-        setStatus("error");
+        // Transient network blips are expected on a captive portal — keep polling.
       }
-    }, 3000);
+    }, POLL_MS);
 
-    return () => clearInterval(interval);
-  }, [mac, subscriptionId]);
+    return () => clearInterval(timer);
+  }, [mac, reference, tenantToken]);
 
-  const content = {
-    invalid_params: {
-      icon: "⚠️",
-      title: "Invalid Request",
-      titleClass: "text-red-600",
-      body: "Missing MAC or subscription ID. Please reconnect through the hotspot portal.",
-    },
+  const views = {
     pending: {
       icon: "📱",
-      title: "Waiting for Payment…",
-      titleClass: "text-slate-800",
-      body: "Please approve the M-Pesa STK push prompt on your phone.",
-      extra: <p className="text-blue-600 font-semibold animate-pulse mt-3">Checking payment status…</p>,
+      title: "Waiting for payment…",
+      tone: "text-slate-800",
+      body: "Approve the M-Pesa prompt on your phone.",
+      extra: (
+        <p className="text-blue-600 font-semibold animate-pulse mt-3 text-sm">
+          Checking…
+        </p>
+      ),
     },
-    active: {
+    paid: {
       icon: "✅",
-      title: "Payment Confirmed!",
-      titleClass: "text-emerald-600",
-      body: "Your device is being connected. Please wait…",
-      extra: expiresAt && <p className="text-slate-600 mt-2 text-sm">Expires: {new Date(expiresAt).toLocaleString()}</p>,
+      title: "Payment received",
+      tone: "text-emerald-600",
+      body: voucher
+        ? "Enter this code on the WiFi login page to connect:"
+        : "You're all set. Reconnect to the WiFi to get online.",
+      extra: voucher && (
+        <div className="mt-4">
+          <code className="block bg-slate-100 text-slate-800 font-mono text-lg tracking-wider py-3 rounded-lg">
+            {voucher}
+          </code>
+          <p className="text-xs text-slate-500 mt-2">
+            We've also sent this to you by SMS.
+          </p>
+        </div>
+      ),
     },
-    error: {
-      icon: "❌",
-      title: "Connection Error",
-      titleClass: "text-red-600",
-      body: "Cannot reach the server. Please check your connection.",
+    timeout: {
+      icon: "⌛",
+      title: "No payment received",
+      tone: "text-amber-600",
+      body: "The prompt may have expired. You can safely try again — you have not been charged.",
     },
-  }[status] || {};
+    invalid: {
+      icon: "⚠️",
+      title: "Invalid request",
+      tone: "text-red-600",
+      body: "Please reconnect through the WiFi login page and start again.",
+    },
+  };
+
+  const view = views[state] || views.pending;
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-slate-100 p-6">
       <div className="bg-white rounded-2xl shadow-lg p-8 text-center w-full max-w-sm">
-        <div className="text-5xl mb-4">{content.icon}</div>
-        <h2 className={`text-xl font-bold mb-2 ${content.titleClass}`}>{content.title}</h2>
-        <p className="text-slate-600 text-sm">{content.body}</p>
-        {content.extra}
+        <div className="text-5xl mb-4">{view.icon}</div>
+        <h2 className={`text-xl font-bold mb-2 ${view.tone}`}>{view.title}</h2>
+        <p className="text-slate-600 text-sm">{view.body}</p>
+        {view.extra}
       </div>
     </div>
   );

@@ -27,6 +27,9 @@ from .views import (
     MpesaSTKCallbackView,
 
     # Hotspot
+    HotspotPackagesView,
+    HotspotPurchaseView,
+    HotspotPaymentStatusView,
     HotspotVoucherValidateView,
     HotspotStatusView,
     HotspotReconnectView,
@@ -125,6 +128,10 @@ urlpatterns = [
     path("api/mpesa/stk-callback/", MpesaSTKCallbackView.as_view(), name="mpesa-stk-callback"),
 
     # ─── Hotspot (public) ────────────────────────────────────────────────────
+    # Walk-up purchase: no account, no JWT. The operator comes from ?t=.
+    path("api/hotspot/packages/",       HotspotPackagesView.as_view(),      name="hotspot-packages"),
+    path("api/hotspot/purchase/",       HotspotPurchaseView.as_view(),      name="hotspot-purchase"),
+    path("api/hotspot/payment-status/", HotspotPaymentStatusView.as_view(), name="hotspot-payment-status"),
     path("api/hotspot/validate/",  HotspotVoucherValidateView.as_view(), name="hotspot-validate"),
     path("api/hotspot/status/",    HotspotStatusView.as_view(),          name="hotspot-status"),
     path("api/hotspot/reconnect/", HotspotReconnectView.as_view(),       name="hotspot-reconnect"),

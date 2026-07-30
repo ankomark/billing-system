@@ -3,83 +3,115 @@ import { useSearchParams, useNavigate } from "react-router-dom";
 import { fetchHotspotPackages } from "../../services/hotspot";
 
 export default function HotspotPackages() {
-  const [packages, setPackages] = useState([]);
+  const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
 
-  // ✅ MikroTik auto-appended variables
+  // MikroTik appends mac/ip; `t` identifies whose portal this is.
   const mac = searchParams.get("mac");
-  const ip = searchParams.get("ip");
-  const username = searchParams.get("username");
+  const tenantToken = searchParams.get("t");
 
   useEffect(() => {
-    fetchHotspotPackages()
-      .then(setPackages)
+    if (!mac) {
+      setLoading(false);
+      return;
+    }
+    fetchHotspotPackages(tenantToken)
+      .then(setData)
+      .catch((err) => {
+        setError(
+          err.response?.status === 404
+            ? "We couldn't identify your internet provider. Please reconnect through the WiFi login page."
+            : "Couldn't load packages. Please try again."
+        );
+      })
       .finally(() => setLoading(false));
-  }, []);
+  }, [mac, tenantToken]);
 
-  // ❌ If MAC address missing — user bypassed hotspot or captive portal failed
   if (!mac) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-100 p-6">
-        <div className="bg-white p-6 rounded shadow text-center">
-          <h2 className="text-xl font-bold text-red-600 mb-2">
-            Device Not Recognized
-          </h2>
-          <p className="text-gray-600">
-            Please reconnect through the WiFi hotspot login page.
-          </p>
-        </div>
-      </div>
+      <Centered>
+        <h2 className="text-xl font-bold text-red-600 mb-2">Device not recognised</h2>
+        <p className="text-slate-600">Please reconnect through the WiFi login page.</p>
+      </Centered>
     );
   }
 
   if (loading) {
-    return <div className="p-4 text-center">Loading packages...</div>;
+    return <Centered><p className="text-slate-600">Loading packages…</p></Centered>;
   }
 
+  if (error) {
+    return (
+      <Centered>
+        <h2 className="text-xl font-bold text-red-600 mb-2">Something went wrong</h2>
+        <p className="text-slate-600">{error}</p>
+      </Centered>
+    );
+  }
+
+  const packages = data?.results ?? [];
+
   return (
-    <div className="min-h-screen bg-gray-100 p-4">
-      <h1 className="text-xl font-bold text-center mb-4">
-        Select Internet Package
-      </h1>
+    <div className="min-h-screen bg-slate-100 p-4">
+      <div className="max-w-md mx-auto">
+        <h1 className="text-xl font-bold text-center text-slate-800">
+          Choose a package
+        </h1>
+        {data?.provider && (
+          <p className="text-center text-sm text-slate-500 mt-1">{data.provider}</p>
+        )}
+        <p className="text-center text-xs text-slate-400 mt-2 mb-5 font-mono">{mac}</p>
 
-      {/* Show device identity */}
-      <p className="text-center text-sm text-gray-600 mb-4">
-        Device MAC: <span className="font-mono">{mac}</span>
-      </p>
-
-      <div className="grid gap-4">
-        {packages.map((pkg) => (
-          <div
-            key={pkg.id}
-            className="bg-white rounded shadow p-4 cursor-pointer hover:shadow-lg transition"
-            onClick={() =>
-              navigate(
-                `/hotspot/pay?package=${pkg.id}&mac=${mac}&ip=${ip}&username=${username}`
-              )
-            }
-          >
-            <h2 className="font-semibold text-lg">{pkg.name}</h2>
-
-            <p className="text-sm text-gray-600">
-              Speed: {pkg.download_speed}/{pkg.upload_speed} Mbps
-            </p>
-
-            <p className="text-sm text-gray-600">
-              Validity: {pkg.duration_value} {pkg.duration_unit}
-            </p>
-
-            <p className="font-bold text-blue-700 mt-2">
-              KES {pkg.price}
-            </p>
-
-            <button className="mt-3 bg-blue-600 text-white w-full py-2 rounded">
-              Select & Continue
-            </button>
+        {packages.length === 0 ? (
+          <div className="bg-white rounded-xl p-6 text-center text-slate-500 text-sm">
+            No packages are available right now. Please ask at the counter.
           </div>
-        ))}
+        ) : (
+          <div className="space-y-3">
+            {packages.map((pkg) => (
+              <button
+                key={pkg.id}
+                onClick={() =>
+                  navigate(
+                    `/hotspot/pay?package=${pkg.id}&mac=${encodeURIComponent(mac)}` +
+                      (tenantToken ? `&t=${encodeURIComponent(tenantToken)}` : "")
+                  )
+                }
+                className="w-full text-left bg-white rounded-xl p-4 shadow-sm hover:shadow-md transition-shadow"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="font-semibold text-slate-800">{pkg.name}</p>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      {pkg.download_speed}/{pkg.upload_speed} Mbps · {pkg.duration}
+                    </p>
+                    {pkg.monthly_data_cap_gb > 0 && (
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        {pkg.monthly_data_cap_gb} GB included
+                      </p>
+                    )}
+                  </div>
+                  <p className="font-bold text-blue-600 text-lg whitespace-nowrap">
+                    KES {Number(pkg.price).toLocaleString()}
+                  </p>
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Centered({ children }) {
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-slate-100 p-6">
+      <div className="bg-white p-6 rounded-xl shadow text-center max-w-sm">
+        {children}
       </div>
     </div>
   );
