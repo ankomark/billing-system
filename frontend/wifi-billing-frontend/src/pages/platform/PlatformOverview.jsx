@@ -1,14 +1,24 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, ExternalLink, Plus } from "lucide-react";
 import PlatformLayout from "../../components/platform/PlatformLayout";
+import OperatorPickerModal from "../../components/platform/OperatorPickerModal";
 import { SkeletonCard } from "../../components/ui/Skeleton";
 import { fetchPlatformOverview } from "../../services/platform";
+import { getUser } from "../../services/auth";
+import { PLATFORM_OWNER } from "../../constants/roles";
 
 const KES = (v) => `KES ${Number(v || 0).toLocaleString()}`;
 
 export default function PlatformOverview() {
   const navigate = useNavigate();
+  const [picking, setPicking] = useState(false);
+
+  // The backend restricts creating an operator to the platform owner, so
+  // platform_staff would get a 403. Hide the button rather than let them find
+  // out by filling in the whole form first.
+  const isOwner = getUser()?.role === PLATFORM_OWNER;
   const { data, isLoading, isError } = useQuery({
     queryKey: ["platform-overview"],
     queryFn: fetchPlatformOverview,
@@ -29,12 +39,35 @@ export default function PlatformOverview() {
 
   return (
     <PlatformLayout>
+      <OperatorPickerModal open={picking} onClose={() => setPicking(false)} />
+
       <div className="space-y-6 max-w-5xl">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-800">Platform overview</h1>
-          <p className="text-slate-500 text-sm mt-1">
-            Every operator on the platform
-          </p>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h1 className="text-2xl font-bold text-slate-800">Platform overview</h1>
+            <p className="text-slate-500 text-sm mt-1">
+              Every operator on the platform
+            </p>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {isOwner && (
+              <button
+                onClick={() => navigate("/platform/operators/new")}
+                className="inline-flex items-center gap-2 bg-teal-600 hover:bg-teal-700 text-white rounded-lg px-4 py-2 text-sm font-semibold transition-colors"
+              >
+                <Plus size={16} />
+                New operator
+              </button>
+            )}
+            <button
+              onClick={() => setPicking(true)}
+              className="inline-flex items-center gap-2 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 rounded-lg px-4 py-2 text-sm font-semibold transition-colors"
+            >
+              <ExternalLink size={16} />
+              Open operator
+            </button>
+          </div>
         </div>
 
         {isLoading ? (

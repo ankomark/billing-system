@@ -42,6 +42,7 @@ const HotspotSuccess   = lazy(() => import("./pages/hotspot/HotspotSuccess"));
 // Platform owner
 const PlatformOverview = lazy(() => import("./pages/platform/PlatformOverview"));
 const Operators        = lazy(() => import("./pages/platform/Operators"));
+const NewOperator      = lazy(() => import("./pages/platform/NewOperator"));
 const OperatorDetail   = lazy(() => import("./pages/platform/OperatorDetail"));
 const PlatformInvoices = lazy(() => import("./pages/platform/PlatformInvoices"));
 const MyPlatformAccount = lazy(() => import("./pages/admin/MyPlatformAccount"));
@@ -139,6 +140,8 @@ export default function App() {
         {/* Platform owner */}
         <Route path="/platform"                     element={<Platform><PlatformOverview /></Platform>} />
         <Route path="/platform/operators"           element={<Platform><Operators /></Platform>} />
+        {/* Before the :id route, or "new" is parsed as an operator id. */}
+        <Route path="/platform/operators/new"       element={<Platform><NewOperator /></Platform>} />
         <Route path="/platform/operators/:id"       element={<Platform><OperatorDetail /></Platform>} />
         <Route path="/platform/invoices"            element={<Platform><PlatformInvoices /></Platform>} />
 

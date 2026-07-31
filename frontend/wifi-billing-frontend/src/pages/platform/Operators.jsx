@@ -1,11 +1,13 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { Building2 } from "lucide-react";
+import { Building2, Plus } from "lucide-react";
 import PlatformLayout from "../../components/platform/PlatformLayout";
 import { SkeletonTable } from "../../components/ui/Skeleton";
 import EmptyState from "../../components/ui/EmptyState";
 import { fetchOperators } from "../../services/platform";
+import { getUser } from "../../services/auth";
+import { PLATFORM_OWNER } from "../../constants/roles";
 
 const STATUS_STYLES = {
   trial:      "bg-blue-50 text-blue-700 border-blue-200",
@@ -18,6 +20,8 @@ const STATUS_STYLES = {
 export default function Operators() {
   const navigate = useNavigate();
   const [status, setStatus] = useState("");
+  // Creating is owner-only on the backend; see PlatformOverview.
+  const isOwner = getUser()?.role === PLATFORM_OWNER;
 
   const { data: operators = [], isLoading } = useQuery({
     queryKey: ["platform-operators", status],
@@ -47,6 +51,15 @@ export default function Operators() {
             <option value="restricted">Restricted</option>
             <option value="cancelled">Cancelled</option>
           </select>
+          {isOwner && (
+            <button
+              onClick={() => navigate("/platform/operators/new")}
+              className="inline-flex items-center gap-2 bg-teal-600 hover:bg-teal-700 text-white rounded-lg px-4 py-2 text-sm font-semibold transition-colors whitespace-nowrap"
+            >
+              <Plus size={16} />
+              New operator
+            </button>
+          )}
         </div>
 
         <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">

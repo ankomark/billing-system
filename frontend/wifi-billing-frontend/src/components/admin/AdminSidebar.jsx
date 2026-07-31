@@ -1,5 +1,5 @@
 import { NavLink, useNavigate } from "react-router-dom";
-import { logout } from "../../services/auth";
+import { getImpersonation, getUser, logout } from "../../services/auth";
 import {
   LayoutDashboard, Users, Package, FileText, AlertCircle,
   Settings, MessageSquare, LogOut, Activity, Router,
@@ -9,6 +9,12 @@ import {
 
 export default function AdminSidebar({ open, onClose }) {
   const navigate = useNavigate();
+
+  // Impersonation wins: while platform staff are viewing as an operator, the
+  // console should name that operator, not the staff member's own tenant
+  // (which is null for platform accounts anyway).
+  const operatorName =
+    getImpersonation()?.name || getUser()?.tenant_name || "Operator";
 
   const handleLogout = () => {
     logout();
@@ -40,7 +46,13 @@ export default function AdminSidebar({ open, onClose }) {
               <Wifi size={16} className="text-white" />
             </div>
             <div>
-              <p className="text-white font-bold text-sm leading-tight">Skylink Admin</p>
+              {/* Whose console this is. It used to read "Skylink Admin" for
+                  every operator on the platform, which showed one operator's
+                  brand to all the others. It comes from the signed-in tenant
+                  now, or from the operator being impersonated. */}
+              <p className="text-white font-bold text-sm leading-tight">
+                {operatorName}
+              </p>
               <p className="text-slate-500 text-xs">Management Portal</p>
             </div>
           </div>

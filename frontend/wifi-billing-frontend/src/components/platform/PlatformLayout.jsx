@@ -3,6 +3,7 @@ import {
   Building2, LayoutDashboard, LogOut, Receipt, ShieldCheck,
 } from "lucide-react";
 import { getUser, logout } from "../../services/auth";
+import { PLATFORM_NAME, PLATFORM_TAGLINE } from "../../constants/brand";
 import ImpersonationBanner from "./ImpersonationBanner";
 
 /**
@@ -30,8 +31,8 @@ export default function PlatformLayout({ children }) {
               <ShieldCheck size={16} className="text-white" />
             </div>
             <div>
-              <p className="text-white font-bold text-sm leading-tight">Platform</p>
-              <p className="text-slate-500 text-xs">Operator management</p>
+              <p className="text-white font-bold text-sm leading-tight">{PLATFORM_NAME}</p>
+              <p className="text-slate-500 text-xs">{PLATFORM_TAGLINE}</p>
             </div>
           </div>
         </div>

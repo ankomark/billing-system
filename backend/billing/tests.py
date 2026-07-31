@@ -3044,3 +3044,143 @@ class ImpersonationTests(PlatformBillingMixin, TestCase):
         self.assertEqual(len(history), 1)
         self.assertEqual(history[0]["by"], self.owner.username)
         self.assertEqual(history[0]["reason"], "checking a payment")
+
+
+class OperatorOnboardingTests(PlatformBillingMixin, TestCase):
+    """
+    POST /api/platform/operators/ — creating a tenant and its first admin.
+
+    The endpoint mints a working login, and nothing here deletes one, so the
+    access rules matter as much as the happy path.
+    """
+
+    URL = "/api/platform/operators/"
+
+    def setUp(self):
+        cache.clear()
+        self.build_billing()
+        self.owner = make_platform_owner()
+
+    def payload(self, **overrides):
+        data = {
+            "name": "Coastal Fibre Ltd",
+            "admin_username": "coastadmin",
+            "admin_password": "a-good-password",
+        }
+        data.update(overrides)
+        return data
+
+    # ---- access ------------------------------------------------------------
+
+    def test_operator_admin_cannot_create_an_operator(self):
+        resp = self.auth(self.admin1).post(self.URL, self.payload(), format="json")
+        self.assertEqual(resp.status_code, 403)
+        self.assertFalse(Tenant.objects.filter(slug="coastal-fibre-ltd").exists())
+
+    def test_platform_staff_can_read_but_not_create(self):
+        """
+        The split that makes get_permissions() worth having: staff run support,
+        the owner onboards businesses.
+        """
+        staff = User.objects.create_user(
+            username="pstaff", password="x", role=User.PLATFORM_STAFF, tenant=None)
+        self.assertEqual(self.auth(staff).get(self.URL).status_code, 200)
+        self.assertEqual(
+            self.auth(staff).post(self.URL, self.payload(), format="json").status_code,
+            403,
+        )
+
+    def test_anonymous_is_rejected(self):
+        self.assertIn(APIClient().post(self.URL, self.payload(), format="json").status_code,
+                      (401, 403))
+
+    # ---- creation ----------------------------------------------------------
+
+    def test_owner_creates_tenant_and_its_admin_together(self):
+        resp = self.auth(self.owner).post(self.URL, self.payload(), format="json")
+        self.assertEqual(resp.status_code, 201, resp.data)
+
+        tenant = Tenant.objects.get(slug="coastal-fibre-ltd")
+        self.assertEqual(tenant.status, "trial")
+        # business_name falls back to the operator name so subscriber-facing
+        # messages are never blank.
+        self.assertEqual(tenant.business_name, "Coastal Fibre Ltd")
+
+        admin = User.objects.get(username="coastadmin")
+        self.assertEqual(admin.role, User.TENANT_ADMIN)
+        self.assertEqual(admin.tenant, tenant)
+        self.assertTrue(admin.check_password("a-good-password"))
+
+    def test_slug_is_derived_from_the_name(self):
+        self.auth(self.owner).post(self.URL, self.payload(), format="json")
+        self.assertTrue(Tenant.objects.filter(slug="coastal-fibre-ltd").exists())
+
+    def test_a_repeated_name_gets_its_own_slug(self):
+        self.auth(self.owner).post(self.URL, self.payload(), format="json")
+        resp = self.auth(self.owner).post(
+            self.URL, self.payload(admin_username="coastadmin2"), format="json")
+        self.assertEqual(resp.status_code, 201, resp.data)
+        self.assertEqual(resp.data["slug"], "coastal-fibre-ltd-2")
+
+    def test_plan_is_optional_and_starts_a_trialing_subscription(self):
+        resp = self.auth(self.owner).post(
+            self.URL, self.payload(plan="starter"), format="json")
+        self.assertEqual(resp.status_code, 201, resp.data)
+        tenant = Tenant.objects.get(slug="coastal-fibre-ltd")
+        sub = TenantSubscription.objects.all_tenants().get(tenant=tenant)
+        self.assertEqual(sub.plan, self.plan)
+        self.assertEqual(sub.status, "trialing")
+
+    def test_without_a_plan_no_subscription_is_created(self):
+        self.auth(self.owner).post(self.URL, self.payload(), format="json")
+        tenant = Tenant.objects.get(slug="coastal-fibre-ltd")
+        self.assertFalse(
+            TenantSubscription.objects.all_tenants().filter(tenant=tenant).exists())
+
+    # ---- rejection ---------------------------------------------------------
+
+    def test_duplicate_username_is_a_field_error_not_a_crash(self):
+        self.auth(self.owner).post(self.URL, self.payload(), format="json")
+        resp = self.auth(self.owner).post(self.URL, self.payload(), format="json")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("admin_username", resp.data)
+
+    def test_short_password_is_rejected(self):
+        resp = self.auth(self.owner).post(
+            self.URL, self.payload(admin_password="short"), format="json")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("admin_password", resp.data)
+
+    def test_taken_slug_is_rejected(self):
+        resp = self.auth(self.owner).post(
+            self.URL, self.payload(slug=self.t1.slug), format="json")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("slug", resp.data)
+
+    def test_unknown_plan_is_rejected(self):
+        resp = self.auth(self.owner).post(
+            self.URL, self.payload(plan="no-such-plan"), format="json")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("plan", resp.data)
+
+    def test_nothing_is_created_when_the_admin_cannot_be(self):
+        """
+        Tenant and user are one transaction. A tenant with no reachable admin
+        is the half-finished state this endpoint exists to avoid.
+        """
+        User.objects.create_user(
+            username="taken", password="x", role=User.TENANT_ADMIN, tenant=self.t1)
+        before = Tenant.objects.count()
+        resp = self.auth(self.owner).post(
+            self.URL, self.payload(admin_username="taken"), format="json")
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(Tenant.objects.count(), before)
+
+    # ---- the new operator is properly isolated -----------------------------
+
+    def test_the_new_admin_sees_only_their_own_empty_business(self):
+        self.auth(self.owner).post(self.URL, self.payload(), format="json")
+        admin = User.objects.get(username="coastadmin")
+        resp = self.auth(admin).get("/api/customers/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["count"], 0)

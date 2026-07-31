@@ -66,9 +66,11 @@ api.interceptors.response.use(
 export default api;
 
 // ─── ACCESS LOOKUP ──────────────────────────────────────────────────────────
-// NOTE: backend URLs for access-lookup/access-deactivate are missing the /api/
-// prefix. They will be fixed in the backend session. Meanwhile these use the
-// correct param names and endpoint paths that match the view logic.
+// Both endpoints are routed under /api/ and resolve correctly — verified
+// against the running backend. A previous note here claimed the prefix was
+// missing; it is not, and the thing that made it look missing is that
+// access-lookup answers a query it cannot match with its own 404,
+// {"detail": "No access record found"}, which is not a routing failure.
 
 export const accessLookup = (query) =>
   api.get("admin/access-lookup/", { params: { q: query } });

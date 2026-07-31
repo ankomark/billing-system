@@ -5,8 +5,8 @@ from celery import chain
 from .auth_tokens import TenantTokenObtainPairView
 from rest_framework.filters import SearchFilter
 from .permissions import (
-    IsCustomer, IsPlatformStaff, IsTenantAdmin, IsTenantAdminForBilling,
-    IsTenantMember,
+    IsCustomer, IsPlatformOwner, IsPlatformStaff, IsTenantAdmin,
+    IsTenantAdminForBilling, IsTenantMember,
 )
 from .throttles import LoginRateThrottle, HotspotPublicThrottle, MpesaCallbackThrottle, STKPushThrottle
 from rest_framework.views import APIView
@@ -34,12 +34,14 @@ from rest_framework import viewsets
 from .models import Customer, Package, Subscription,Invoice, Payment,MpesaTransaction,SystemSetting,RouterFailoverLog, HotspotUsageRecord, AccessAuditLog, Tenant
 from .models import PlatformPlan, TenantSubscription, TenantInvoice, TenantPayment
 from .models import ImpersonationLog
+from .models import User
 from .tenancy import tenant_context
 import logging
 
 logger = logging.getLogger(__name__)
 from .serializers import (PlatformPlanSerializer, TenantSubscriptionSerializer,
-                          TenantInvoiceSerializer, TenantPaymentSerializer,)
+                          TenantInvoiceSerializer, TenantPaymentSerializer,
+                          OperatorCreateSerializer,)
 from .serializers import (CustomerSerializer,CustomerDetailSerializer,PackageSerializer,SubscriptionSerializer,InvoiceSerializer,  PaymentSerializer,SystemSettingSerializer,)
 from billing.tasks.notification_tasks import notify_customer_task,send_sms_task, send_whatsapp_task
 from .config import get_setting
@@ -2461,8 +2463,79 @@ class PlatformOperatorListView(APIView):
 
     Counts are gathered as bulk aggregates keyed by tenant and joined in
     Python, rather than queried per operator.
+
+    POST onboards a new operator. Reading is open to all platform staff;
+    creating one is not — see the permission split on post().
     """
     permission_classes = [IsPlatformStaff]
+
+    def get_permissions(self):
+        # Onboarding mints a tenant and a working login for it, and there is no
+        # delete endpoint to undo either. That is an owner-level action, so
+        # platform_staff can look but not create.
+        if self.request.method == "POST":
+            return [IsPlatformOwner()]
+        return super().get_permissions()
+
+    def post(self, request):
+        serializer = OperatorCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        plan = None
+        if data.get("plan"):
+            plan = PlatformPlan.objects.filter(slug=data["plan"], is_active=True).first()
+
+        # One transaction: an operator that exists without its admin account is
+        # the half-finished state this endpoint is meant to prevent.
+        with transaction.atomic():
+            tenant = Tenant.objects.create(
+                name=data["name"],
+                slug=data["slug"],
+                status="trial",
+                business_name=data.get("business_name") or data["name"],
+                support_phone=data.get("support_phone", ""),
+                pppoe_prefix=data.get("pppoe_prefix") or "NET",
+                contact_email=data.get("contact_email", ""),
+                contact_phone=data.get("contact_phone", ""),
+            )
+
+            User.objects.create_user(
+                username=data["admin_username"],
+                password=data["admin_password"],
+                email=data.get("admin_email", ""),
+                role=User.TENANT_ADMIN,
+                tenant=tenant,
+            )
+
+            if plan is not None:
+                now = timezone.now()
+                TenantSubscription.objects.create(
+                    tenant=tenant,
+                    plan=plan,
+                    status="trialing",
+                    current_period_start=now,
+                    current_period_end=now + timezone.timedelta(days=plan.billing_period_days),
+                )
+
+        return Response(
+            {
+                "id": tenant.id,
+                "name": tenant.business_name or tenant.name,
+                "slug": tenant.slug,
+                "status": tenant.status,
+                "is_restricted": tenant.is_restricted,
+                "plan": plan.name if plan else None,
+                "subscribers": 0,
+                "active_subscribers": 0,
+                "routers": 0,
+                "routers_offline": 0,
+                "amount_owed": Decimal("0.00"),
+                "created_at": tenant.created_at,
+                "admin_username": data["admin_username"],
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
     def get(self, request):
         from django.db.models import Count, Sum

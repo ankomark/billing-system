@@ -1,8 +1,9 @@
+from django.utils.text import slugify
 from rest_framework import serializers
 from .models import (
     Customer, Package, Subscription, Invoice, Payment,
     MpesaTransaction, User, SystemSetting, Voucher, RouterDevice,
-    PlatformPlan, TenantSubscription, TenantInvoice, TenantPayment,
+    PlatformPlan, Tenant, TenantSubscription, TenantInvoice, TenantPayment,
 )
 
 
@@ -304,3 +305,59 @@ class TenantPaymentSerializer(serializers.ModelSerializer):
         model = TenantPayment
         fields = ("id", "tenant", "invoice", "amount", "method", "reference", "paid_at")
         read_only_fields = ("tenant", "paid_at")
+
+
+class OperatorCreateSerializer(serializers.Serializer):
+    """
+    Onboarding one operator: the tenant, and the first account that can log in
+    to it.
+
+    Both together, deliberately. A tenant with no admin is a business nobody
+    can reach — the platform owner would have to go to the Django admin to
+    finish the job, which is exactly the manual step this endpoint exists to
+    remove.
+    """
+
+    name = serializers.CharField(max_length=120)
+    slug = serializers.SlugField(max_length=60, required=False, allow_blank=True)
+    business_name = serializers.CharField(max_length=120, required=False, allow_blank=True)
+    support_phone = serializers.CharField(max_length=20, required=False, allow_blank=True)
+    pppoe_prefix = serializers.CharField(max_length=10, required=False, allow_blank=True)
+    contact_email = serializers.EmailField(required=False, allow_blank=True)
+    contact_phone = serializers.CharField(max_length=20, required=False, allow_blank=True)
+
+    # The operator's first admin.
+    admin_username = serializers.CharField(max_length=150)
+    admin_password = serializers.CharField(min_length=8, write_only=True)
+    admin_email = serializers.EmailField(required=False, allow_blank=True)
+
+    # Optional — an operator may start with no plan and be put on one later.
+    plan = serializers.SlugField(required=False, allow_blank=True)
+
+    def validate_slug(self, value):
+        if value and Tenant.objects.filter(slug=value).exists():
+            raise serializers.ValidationError("An operator with this slug already exists.")
+        return value
+
+    def validate_admin_username(self, value):
+        if User.objects.filter(username__iexact=value).exists():
+            raise serializers.ValidationError("That username is already taken.")
+        return value
+
+    def validate_plan(self, value):
+        if value and not PlatformPlan.objects.filter(slug=value, is_active=True).exists():
+            raise serializers.ValidationError("No active plan with that slug.")
+        return value
+
+    def validate(self, attrs):
+        # Derive the slug from the name when one was not given, and make it
+        # unique here rather than letting the database raise — the caller gets
+        # a field error instead of a 500.
+        if not attrs.get("slug"):
+            base = slugify(attrs["name"])[:55] or "operator"
+            candidate, n = base, 1
+            while Tenant.objects.filter(slug=candidate).exists():
+                n += 1
+                candidate = f"{base}-{n}"[:60]
+            attrs["slug"] = candidate
+        return attrs
