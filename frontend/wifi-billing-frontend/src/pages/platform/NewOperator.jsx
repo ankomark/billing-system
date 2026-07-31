@@ -28,6 +28,11 @@ export default function NewOperator() {
     admin_password: "",
     admin_email: "",
     plan: "",
+    mpesa_env: "sandbox",
+    mpesa_consumer_key: "",
+    mpesa_consumer_secret: "",
+    mpesa_shortcode: "",
+    mpesa_passkey: "",
   });
   // Field-level errors as returned by the serializer, keyed by field name.
   const [errors, setErrors] = useState({});
@@ -48,7 +53,12 @@ export default function NewOperator() {
     onSuccess: (op) => {
       qc.invalidateQueries({ queryKey: ["platform-operators"] });
       qc.invalidateQueries({ queryKey: ["platform-overview"] });
-      toast.success(`${op.name} created — ${op.admin_username} can sign in now`);
+      qc.invalidateQueries({ queryKey: ["platform-health"] });
+      toast.success(
+        op.payments_missing?.length
+          ? `${op.name} created — finish M-Pesa setup so they can be paid`
+          : `${op.name} created and ready to take payments`
+      );
       navigate(`/platform/operators/${op.id}`);
     },
     onError: (e) => {
@@ -189,6 +199,41 @@ export default function NewOperator() {
               onChange={set("admin_email")}
               className={input(errors.admin_email)}
             />
+          </Field>
+        </Section>
+
+        <Section title="Taking payments">
+          <div className="sm:col-span-2 -mb-1">
+            <p className="text-xs text-slate-400">
+              Optional, and usually not available yet — a new operator is
+              normally still waiting on Safaricom for their own Daraja app.
+              Leave this blank and finish it from their page later. Until it is
+              done they can sign in and set everything up, but nobody can pay
+              them.
+            </p>
+          </div>
+          <Field label="Environment" error={errors.mpesa_env}>
+            <select value={form.mpesa_env} onChange={set("mpesa_env")} className={input(errors.mpesa_env)}>
+              <option value="sandbox">Sandbox — for testing</option>
+              <option value="production">Production — real money</option>
+            </select>
+          </Field>
+          <Field label="Shortcode / till" hint="e.g. 600000" error={errors.mpesa_shortcode}>
+            <input value={form.mpesa_shortcode} onChange={set("mpesa_shortcode")}
+                   className={input(errors.mpesa_shortcode)} />
+          </Field>
+          <Field label="Consumer key" error={errors.mpesa_consumer_key}>
+            <input value={form.mpesa_consumer_key} onChange={set("mpesa_consumer_key")}
+                   autoComplete="off" className={input(errors.mpesa_consumer_key)} />
+          </Field>
+          <Field label="Consumer secret" error={errors.mpesa_consumer_secret}>
+            <input type="password" value={form.mpesa_consumer_secret}
+                   onChange={set("mpesa_consumer_secret")} autoComplete="new-password"
+                   className={input(errors.mpesa_consumer_secret)} />
+          </Field>
+          <Field label="Passkey" error={errors.mpesa_passkey}>
+            <input type="password" value={form.mpesa_passkey} onChange={set("mpesa_passkey")}
+                   autoComplete="new-password" className={input(errors.mpesa_passkey)} />
           </Field>
         </Section>
 

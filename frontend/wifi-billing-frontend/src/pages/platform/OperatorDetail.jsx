@@ -6,6 +6,7 @@ import { AlertTriangle, ArrowLeft, Eye, KeyRound, ShieldAlert, ShieldCheck } fro
 import PlatformLayout from "../../components/platform/PlatformLayout";
 import ResetPasswordModal from "../../components/platform/ResetPasswordModal";
 import AnalyticsPanel from "../../components/platform/AnalyticsPanel";
+import MpesaSetupPanel from "../../components/platform/MpesaSetupPanel";
 import { Skeleton } from "../../components/ui/Skeleton";
 import { getUser, startImpersonating } from "../../services/auth";
 import { PLATFORM_OWNER } from "../../constants/roles";
@@ -160,6 +161,8 @@ export default function OperatorDetail() {
           <Card label="Routers" value={op.network.routers} />
           <Card label="Their revenue" value={KES(op.network.subscriber_revenue)} />
         </div>
+
+        <MpesaSetupPanel operatorId={op.id} canEdit={isOwner} />
 
         <AnalyticsPanel tenant={op.id} title="Their trends" />
 

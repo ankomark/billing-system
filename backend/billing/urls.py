@@ -11,6 +11,8 @@ from .views import (
     TenantUserViewSet,
     OperatorPasswordResetView,
     OperatorWarningView,
+    OperatorMpesaSetupView,
+    OperatorMpesaTestView,
     RouterEventsView,
     StationViewSet,
     PlatformHealthView,
@@ -239,6 +241,8 @@ urlpatterns = [
     path("api/platform/operators/<int:tenant_id>/status/", TenantStatusView.as_view(), name="platform-tenant-status"),
     path("api/platform/operators/<int:tenant_id>/reset-password/", OperatorPasswordResetView.as_view(), name="platform-operator-reset-password"),
     path("api/platform/operators/<int:tenant_id>/warn/", OperatorWarningView.as_view(), name="platform-operator-warn"),
+    path("api/platform/operators/<int:tenant_id>/mpesa/", OperatorMpesaSetupView.as_view(), name="platform-operator-mpesa"),
+    path("api/platform/operators/<int:tenant_id>/mpesa/test/", OperatorMpesaTestView.as_view(), name="platform-operator-mpesa-test"),
 
     # ─── DRF ViewSets ────────────────────────────────────────────────────────
     path("api/", include(router.urls)),

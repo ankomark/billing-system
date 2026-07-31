@@ -2657,6 +2657,27 @@ class PlatformOperatorListView(APIView):
                 tenant=tenant,
             )
 
+            # Payment credentials, when the owner had them to hand. Same
+            # transaction as the tenant and its admin: an operator recorded as
+            # configured while the credentials failed to save would be a worse
+            # state than one plainly not set up yet.
+            mpesa = {
+                "MPESA_ENV": data.get("mpesa_env"),
+                "MPESA_CONSUMER_KEY": data.get("mpesa_consumer_key"),
+                "MPESA_CONSUMER_SECRET": data.get("mpesa_consumer_secret"),
+                "MPESA_SHORTCODE": data.get("mpesa_shortcode"),
+                "MPESA_PASSKEY": data.get("mpesa_passkey"),
+            }
+            supplied = {k: v for k, v in mpesa.items() if v}
+            for key, value in supplied.items():
+                SystemSetting.objects.update_or_create(
+                    tenant=tenant, key=key, defaults={"value": value})
+            if supplied:
+                record_admin_action(
+                    request.user, AdminActionLog.CONFIGURE_PAYMENTS,
+                    target_tenant=tenant, detail=", ".join(sorted(supplied)),
+                )
+
             if plan is not None:
                 now = timezone.now()
                 TenantSubscription.objects.create(
@@ -2682,6 +2703,8 @@ class PlatformOperatorListView(APIView):
                 "amount_owed": Decimal("0.00"),
                 "created_at": tenant.created_at,
                 "admin_username": data["admin_username"],
+                # So the caller knows whether onboarding is actually finished.
+                "payments_missing": missing_mpesa_keys(tenant=tenant),
             },
             status=status.HTTP_201_CREATED,
         )
@@ -3044,6 +3067,147 @@ class OperatorWarningView(APIView):
                 else "No contact phone on file for this operator"
                 if not tenant.contact_phone else "Sending failed"
             ),
+        })
+
+
+class OperatorMpesaSetupView(APIView):
+    """
+    Set up an operator's M-Pesa till from the platform side.
+
+    Onboarding an operator is not finished when the account exists — it is
+    finished when money can reach them, and that step is gated on Safaricom
+    rather than on us. An operator waiting on Daraja looks completely healthy
+    from their own dashboard: nothing errors, there is simply no revenue. This
+    is the endpoint that lets whoever is helping them finish the job without
+    asking them to read credentials down a phone line.
+
+    Reading is open to platform staff because every secret comes back masked.
+    Writing is owner-only: these are the credentials that decide whose bank
+    account a subscriber's money lands in.
+    """
+
+    permission_classes = [IsPlatformStaff]
+
+    KEYS = [
+        "MPESA_ENV",
+        "MPESA_CONSUMER_KEY",
+        "MPESA_CONSUMER_SECRET",
+        "MPESA_SHORTCODE",
+        "MPESA_PASSKEY",
+        "MPESA_CALLBACK_URL",
+    ]
+
+    def get_permissions(self):
+        if self.request.method in ("PUT", "PATCH"):
+            return [IsPlatformOwner()]
+        return super().get_permissions()
+
+    def _tenant(self, tenant_id):
+        return Tenant.objects.filter(id=tenant_id).first()
+
+    def get(self, request, tenant_id):
+        tenant = self._tenant(tenant_id)
+        if tenant is None:
+            return Response({"detail": "Operator not found"}, status=404)
+
+        from billing.mpesa_client import callback_url_for
+
+        data = {}
+        for key in self.KEYS:
+            value = get_setting(key, default="", tenant=tenant)
+            # Same masking rule as the operator's own settings page. A secret
+            # is never returned in readable form once it has been set, not even
+            # to the platform owner — there is no reason to read one back.
+            if key in SystemSettingsView.SENSITIVE_KEYS and value not in ("", None):
+                data[key] = "********"
+            else:
+                data[key] = value or ""
+
+        data["operator"] = tenant.business_name or tenant.name
+        data["missing"] = missing_mpesa_keys(tenant=tenant)
+        data["configured"] = not data["missing"]
+        # What has to be pasted into the Daraja portal. Per-operator, and
+        # unguessable, so it cannot be worked out from the operator's name.
+        try:
+            data["callback_url"] = callback_url_for(tenant=tenant)
+        except Exception as exc:
+            data["callback_url"] = ""
+            data["callback_hint"] = str(exc)
+
+        return Response(data)
+
+    def put(self, request, tenant_id):
+        tenant = self._tenant(tenant_id)
+        if tenant is None:
+            return Response({"detail": "Operator not found"}, status=404)
+
+        serializer = SystemSettingSerializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+
+        written = []
+        for key, value in serializer.validated_data.items():
+            if key not in self.KEYS:
+                # This endpoint is about payments. SMS and WhatsApp credentials
+                # belong to the operator's own settings page.
+                continue
+            if value == "********":
+                continue  # unchanged secret, left alone
+            SystemSetting.objects.update_or_create(
+                tenant=tenant, key=key, defaults={"value": value},
+            )
+            written.append(key)
+
+        from .config import clear_settings_cache
+        clear_settings_cache(tenant=tenant)
+
+        if written:
+            # The names of what changed, never the values.
+            record_admin_action(
+                request.user, AdminActionLog.CONFIGURE_PAYMENTS,
+                target_tenant=tenant, detail=", ".join(written),
+            )
+
+        return Response({
+            "detail": "Payment settings updated",
+            "updated": written,
+            "missing": missing_mpesa_keys(tenant=tenant),
+        })
+
+
+class OperatorMpesaTestView(APIView):
+    """
+    Ask Safaricom for a token with this operator's credentials.
+
+    The only honest test of whether setup worked: it either authenticates or it
+    does not, and the error Daraja returns is far more useful than anything
+    guessed from the shape of the values.
+    """
+
+    permission_classes = [IsPlatformStaff]
+
+    def post(self, request, tenant_id):
+        tenant = Tenant.objects.filter(id=tenant_id).first()
+        if tenant is None:
+            return Response({"detail": "Operator not found"}, status=404)
+
+        missing = missing_mpesa_keys(tenant=tenant)
+        if missing:
+            return Response({
+                "success": False,
+                "error": f"Not set up yet — missing {', '.join(missing)}.",
+                "missing": missing,
+            }, status=400)
+
+        try:
+            get_mpesa_access_token(tenant=tenant)
+        except Exception as exc:
+            # The credentials themselves are never echoed back, only what
+            # Safaricom said about them.
+            return Response({"success": False, "error": str(exc)}, status=400)
+
+        return Response({
+            "success": True,
+            "detail": f"{tenant.business_name or tenant.name} can take payments.",
         })
 
 

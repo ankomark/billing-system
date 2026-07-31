@@ -228,6 +228,7 @@ class AdminActionLog(models.Model):
     ENABLE_USER = "enable_user"
     CHANGE_ROLE = "change_role"
     UPDATE_OPERATOR = "update_operator"
+    CONFIGURE_PAYMENTS = "configure_payments"
 
     ACTION_CHOICES = (
         (RESET_PASSWORD, "Reset password"),
@@ -238,6 +239,7 @@ class AdminActionLog(models.Model):
         (ENABLE_USER, "Enabled user"),
         (CHANGE_ROLE, "Changed role"),
         (UPDATE_OPERATOR, "Updated operator details"),
+        (CONFIGURE_PAYMENTS, "Configured payment credentials"),
     )
 
     actor = models.ForeignKey(

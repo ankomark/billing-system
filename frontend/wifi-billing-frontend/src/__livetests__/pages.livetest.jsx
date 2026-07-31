@@ -331,6 +331,69 @@ describe("creating an operator against the live backend", () => {
   }, 60000);
 });
 
+describe("helping an operator get paid, against the live backend", () => {
+  test("the owner sees what is missing and the callback URL to register", async () => {
+    authAs(ownerTokens);
+    const { fetchOperatorMpesa } = require("../services/platform");
+    const setup = await fetchOperatorMpesa(2);
+
+    expect(setup).toHaveProperty("configured");
+    expect(setup).toHaveProperty("missing");
+    // The value Safaricom asks for, which the operator has no other way to find.
+    expect(setup).toHaveProperty("callback_url");
+  }, 40000);
+
+  test("saving credentials never reads a secret back", async () => {
+    authAs(ownerTokens);
+    const { fetchOperatorMpesa, updateOperatorMpesa } = require("../services/platform");
+
+    await updateOperatorMpesa(2, {
+      MPESA_CONSUMER_KEY: "livetest-key",
+      MPESA_CONSUMER_SECRET: "livetest-secret-never-readable",
+      MPESA_SHORTCODE: "600000",
+      MPESA_PASSKEY: "livetest-passkey",
+    });
+
+    const after = await fetchOperatorMpesa(2);
+    expect(after.configured).toBe(true);
+    expect(after.MPESA_SHORTCODE).toBe("600000");
+    expect(after.MPESA_CONSUMER_SECRET).toBe("********");
+    expect(JSON.stringify(after)).not.toContain("livetest-secret-never-readable");
+  }, 40000);
+
+  test("testing bad credentials reports Safaricom's refusal, not success", async () => {
+    authAs(ownerTokens);
+    const { testOperatorMpesa } = require("../services/platform");
+    // The values above are not real, so Daraja must reject them. A pass here
+    // would mean the test is not actually reaching Safaricom.
+    await expect(testOperatorMpesa(2)).rejects.toMatchObject({
+      response: { status: 400 },
+    });
+  }, 60000);
+
+  test("an operator cannot configure another operator", async () => {
+    authAs(adminTokens);
+    const { updateOperatorMpesa } = require("../services/platform");
+    await expect(
+      updateOperatorMpesa(2, { MPESA_SHORTCODE: "999999" })
+    ).rejects.toMatchObject({ response: { status: 403 } });
+  }, 40000);
+
+  afterAll(async () => {
+    // Put the operator back to unconfigured. Leaving fake credentials behind
+    // would make the health feed report this operator as able to take payments
+    // when it cannot, which is worse than the gap it was reporting before.
+    authAs(ownerTokens);
+    const { updateOperatorMpesa } = require("../services/platform");
+    await updateOperatorMpesa(2, {
+      MPESA_CONSUMER_KEY: "",
+      MPESA_CONSUMER_SECRET: "",
+      MPESA_SHORTCODE: "",
+      MPESA_PASSKEY: "",
+    }).catch(() => {});
+  });
+});
+
 describe("stations against the live backend", () => {
   const NAME = `Livetest Site ${Date.now().toString().slice(-6)}`;
   let created;

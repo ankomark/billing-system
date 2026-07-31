@@ -506,6 +506,19 @@ class OperatorCreateSerializer(serializers.Serializer):
     # Optional — an operator may start with no plan and be put on one later.
     plan = serializers.SlugField(required=False, allow_blank=True)
 
+    # Optional M-Pesa credentials, so onboarding can finish the job in one pass
+    # rather than leaving an operator who exists but cannot be paid. Left out,
+    # they are set later from the operator's page; an operator waiting on
+    # Safaricom is the normal case, not an error.
+    mpesa_env = serializers.ChoiceField(
+        choices=("sandbox", "production"), required=False)
+    mpesa_consumer_key = serializers.CharField(required=False, allow_blank=True)
+    mpesa_consumer_secret = serializers.CharField(
+        required=False, allow_blank=True, write_only=True)
+    mpesa_shortcode = serializers.CharField(required=False, allow_blank=True)
+    mpesa_passkey = serializers.CharField(
+        required=False, allow_blank=True, write_only=True)
+
     def validate_slug(self, value):
         if value and Tenant.objects.filter(slug=value).exists():
             raise serializers.ValidationError("An operator with this slug already exists.")

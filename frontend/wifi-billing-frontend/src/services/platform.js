@@ -24,6 +24,28 @@ export const fetchPlatformAnalytics = async ({ days = 30, tenant } = {}) => {
   return res.data;
 };
 
+// ─── Helping an operator get paid ───────────────────────────────────────────
+// Onboarding is not finished when the account exists, it is finished when money
+// can reach them — and that step is gated on Safaricom, not on us.
+
+export const fetchOperatorMpesa = async (id) => {
+  const res = await api.get(`platform/operators/${id}/mpesa/`);
+  return res.data;
+};
+
+/** Secrets already stored come back as "********"; sending that back leaves
+ *  them untouched, so a partial edit never wipes a key nobody retyped. */
+export const updateOperatorMpesa = async (id, payload) => {
+  const res = await api.put(`platform/operators/${id}/mpesa/`, payload);
+  return res.data;
+};
+
+/** Asks Safaricom for a token with these credentials. The only honest test. */
+export const testOperatorMpesa = async (id) => {
+  const res = await api.post(`platform/operators/${id}/mpesa/test/`, {});
+  return res.data;
+};
+
 export const fetchPlatformHealth = async () => {
   const res = await api.get("platform/health/");
   return res.data;

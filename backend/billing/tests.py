@@ -4293,3 +4293,219 @@ class StationApiTests(TwoOperatorMixin, TestCase):
         self.kilifi.delete()
         router.refresh_from_db()
         self.assertIsNone(router.station_id)
+
+
+# =====================================================
+# 23. Platform-side M-Pesa setup for an operator
+# =====================================================
+
+class OperatorMpesaSetupTests(PlatformBillingMixin, TestCase):
+    """
+    The owner finishing an operator's payment setup for them.
+
+    Onboarding is not done when the account exists — it is done when money can
+    reach them, and that step is gated on Safaricom. An operator waiting on
+    Daraja looks perfectly healthy from their own dashboard: nothing errors,
+    there is simply no revenue.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_billing()
+        self.owner = make_platform_owner()
+
+    def url(self, tenant):
+        return f"/api/platform/operators/{tenant.id}/mpesa/"
+
+    def mpesa_test_url(self, tenant):
+        return f"/api/platform/operators/{tenant.id}/mpesa/test/"
+
+    # ---- access ------------------------------------------------------------
+
+    def test_operator_cannot_read_another_operators_setup(self):
+        resp = self.auth(self.admin1).get(self.url(self.t2))
+        self.assertEqual(resp.status_code, 403)
+
+    def test_platform_staff_may_read_but_not_write(self):
+        """Reading is safe because every secret comes back masked. Writing decides
+        whose bank account a subscriber's money lands in."""
+        staff = User.objects.create_user(
+            username="pstaff_mpesa", password="x",
+            role=User.PLATFORM_STAFF, tenant=None)
+        self.assertEqual(self.auth(staff).get(self.url(self.t1)).status_code, 200)
+        self.assertEqual(
+            self.auth(staff).put(
+                self.url(self.t1), {"MPESA_SHORTCODE": "4321"}, format="json"
+            ).status_code,
+            403,
+        )
+
+    def test_unknown_operator_is_404(self):
+        resp = self.auth(self.owner).get("/api/platform/operators/999999/mpesa/")
+        self.assertEqual(resp.status_code, 404)
+
+    # ---- reading -----------------------------------------------------------
+
+    def test_reports_what_is_still_missing(self):
+        resp = self.auth(self.owner).get(self.url(self.t1))
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(resp.data["configured"])
+        self.assertTrue(resp.data["missing"])
+
+    def test_surfaces_the_callback_url_to_register_with_safaricom(self):
+        resp = self.auth(self.owner).get(self.url(self.t1))
+        self.assertIn("callback_url", resp.data)
+
+    def test_secrets_are_never_returned_in_readable_form(self):
+        self.auth(self.owner).put(
+            self.url(self.t1),
+            {"MPESA_CONSUMER_SECRET": "super-secret", "MPESA_PASSKEY": "pass-key"},
+            format="json")
+
+        resp = self.auth(self.owner).get(self.url(self.t1))
+        self.assertEqual(resp.data["MPESA_CONSUMER_SECRET"], "********")
+        self.assertEqual(resp.data["MPESA_PASSKEY"], "********")
+        self.assertNotIn("super-secret", str(resp.data))
+
+    # ---- writing -----------------------------------------------------------
+
+    def test_owner_can_configure_an_operator(self):
+        resp = self.auth(self.owner).put(
+            self.url(self.t1),
+            {
+                "MPESA_ENV": "sandbox",
+                "MPESA_CONSUMER_KEY": "ck",
+                "MPESA_CONSUMER_SECRET": "cs",
+                "MPESA_SHORTCODE": "600000",
+                "MPESA_PASSKEY": "pk",
+            },
+            format="json")
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(resp.data["missing"], [])
+        self.assertEqual(
+            get_setting("MPESA_SHORTCODE", tenant=self.t1), "600000")
+
+    def test_writes_land_on_the_named_operator_only(self):
+        self.auth(self.owner).put(
+            self.url(self.t1), {"MPESA_SHORTCODE": "111111"}, format="json")
+        self.assertEqual(get_setting("MPESA_SHORTCODE", tenant=self.t1), "111111")
+        self.assertIn(get_setting("MPESA_SHORTCODE", default="", tenant=self.t2), ("", None))
+
+    def test_a_masked_value_leaves_the_secret_alone(self):
+        self.auth(self.owner).put(
+            self.url(self.t1), {"MPESA_CONSUMER_SECRET": "original"}, format="json")
+        self.auth(self.owner).put(
+            self.url(self.t1),
+            {"MPESA_CONSUMER_SECRET": "********", "MPESA_SHORTCODE": "222222"},
+            format="json")
+        self.assertEqual(get_setting("MPESA_CONSUMER_SECRET", tenant=self.t1), "original")
+        self.assertEqual(get_setting("MPESA_SHORTCODE", tenant=self.t1), "222222")
+
+    def test_messaging_credentials_are_not_settable_here(self):
+        """This endpoint is about payments; the rest is the operator's own page."""
+        self.auth(self.owner).put(
+            self.url(self.t1), {"AT_API_KEY": "should-not-land"}, format="json")
+        self.assertIn(get_setting("AT_API_KEY", default="", tenant=self.t1), ("", None))
+
+    def test_configuring_is_audited_without_recording_the_values(self):
+        self.auth(self.owner).put(
+            self.url(self.t1),
+            {"MPESA_CONSUMER_SECRET": "do-not-log-me", "MPESA_SHORTCODE": "333333"},
+            format="json")
+
+        log = AdminActionLog.objects.filter(
+            action=AdminActionLog.CONFIGURE_PAYMENTS).first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.target_tenant, self.t1)
+        self.assertIn("MPESA_SHORTCODE", log.detail)
+        self.assertNotIn("do-not-log-me", log.detail)
+
+    # ---- testing the credentials ------------------------------------------
+
+    def test_testing_an_unconfigured_operator_says_what_is_missing(self):
+        resp = self.auth(self.owner).post(self.mpesa_test_url(self.t1), {}, format="json")
+        self.assertEqual(resp.status_code, 400)
+        self.assertFalse(resp.data["success"])
+        self.assertTrue(resp.data["missing"])
+
+    @patch("billing.views.get_mpesa_access_token", return_value="a-token")
+    def test_a_working_configuration_reports_success(self, _token):
+        self.auth(self.owner).put(
+            self.url(self.t1),
+            {"MPESA_CONSUMER_KEY": "ck", "MPESA_CONSUMER_SECRET": "cs",
+             "MPESA_SHORTCODE": "600000", "MPESA_PASSKEY": "pk"},
+            format="json")
+        resp = self.auth(self.owner).post(self.mpesa_test_url(self.t1), {}, format="json")
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertTrue(resp.data["success"])
+
+    @patch("billing.views.get_mpesa_access_token",
+           side_effect=Exception("400 Client Error: Bad Request"))
+    def test_a_rejected_configuration_passes_safaricoms_reason_back(self, _token):
+        self.auth(self.owner).put(
+            self.url(self.t1),
+            {"MPESA_CONSUMER_KEY": "wrong", "MPESA_CONSUMER_SECRET": "wrong",
+             "MPESA_SHORTCODE": "600000", "MPESA_PASSKEY": "wrong"},
+            format="json")
+        resp = self.auth(self.owner).post(self.mpesa_test_url(self.t1), {}, format="json")
+        self.assertEqual(resp.status_code, 400)
+        self.assertFalse(resp.data["success"])
+        self.assertIn("Bad Request", resp.data["error"])
+
+    def test_the_token_is_never_returned(self):
+        """The operator's access token is not something the caller needs."""
+        with patch("billing.views.get_mpesa_access_token", return_value="secret-token"):
+            self.auth(self.owner).put(
+                self.url(self.t1),
+                {"MPESA_CONSUMER_KEY": "ck", "MPESA_CONSUMER_SECRET": "cs",
+                 "MPESA_SHORTCODE": "600000", "MPESA_PASSKEY": "pk"},
+                format="json")
+            resp = self.auth(self.owner).post(self.mpesa_test_url(self.t1), {}, format="json")
+        self.assertNotIn("secret-token", str(resp.data))
+
+
+class OperatorOnboardingWithMpesaTests(PlatformBillingMixin, TestCase):
+    URL = "/api/platform/operators/"
+
+    def setUp(self):
+        cache.clear()
+        self.build_billing()
+        self.owner = make_platform_owner()
+
+    def test_an_operator_can_be_created_ready_to_take_money(self):
+        resp = self.auth(self.owner).post(self.URL, {
+            "name": "Ready Networks",
+            "admin_username": "readyadmin",
+            "admin_password": "a-good-password",
+            "mpesa_env": "sandbox",
+            "mpesa_consumer_key": "ck",
+            "mpesa_consumer_secret": "cs",
+            "mpesa_shortcode": "600000",
+            "mpesa_passkey": "pk",
+        }, format="json")
+
+        self.assertEqual(resp.status_code, 201, resp.data)
+        self.assertEqual(resp.data["payments_missing"], [])
+        tenant = Tenant.objects.get(slug="ready-networks")
+        self.assertEqual(get_setting("MPESA_SHORTCODE", tenant=tenant), "600000")
+
+    def test_credentials_stay_optional(self):
+        """Waiting on Safaricom is the normal case, not an error."""
+        resp = self.auth(self.owner).post(self.URL, {
+            "name": "Waiting Networks",
+            "admin_username": "waitingadmin",
+            "admin_password": "a-good-password",
+        }, format="json")
+        self.assertEqual(resp.status_code, 201, resp.data)
+        self.assertTrue(resp.data["payments_missing"])
+
+    def test_the_secret_is_never_echoed_back(self):
+        resp = self.auth(self.owner).post(self.URL, {
+            "name": "Quiet Networks",
+            "admin_username": "quietadmin",
+            "admin_password": "a-good-password",
+            "mpesa_consumer_secret": "never-echo-this",
+            "mpesa_passkey": "nor-this",
+        }, format="json")
+        self.assertNotIn("never-echo-this", str(resp.data))
+        self.assertNotIn("nor-this", str(resp.data))
