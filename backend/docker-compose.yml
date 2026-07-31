@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   postgres:
     image: postgres:16
@@ -11,52 +9,124 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+    # Without this there is nothing for `condition: service_healthy` to wait on,
+    # and dependents race the ~2s postgres takes to accept TCP connections.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wifi_user -d wifi_billing"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
 
   redis:
     image: redis:7
     ports:
       - "6379:6379"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # One-shot: runs to completion, then everything else starts. Nothing else in
+  # this stack ran migrations, so the whole thing used to come up against an
+  # empty database — /health/ passes on one, because it only proves the server
+  # answers, not that any table exists.
+  #
+  # It lives here rather than in web's command because worker and beat need the
+  # schema too, and because web runs multiple gunicorn workers — concurrent
+  # `migrate` calls race each other on the same database.
+  migrate:
+    build: .
+    command: python manage.py migrate --noinput
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    # Inherited from the image, which points at gunicorn on :8000. Nothing
+    # listens there in this container. See the note on worker.
+    healthcheck:
+      disable: true
 
   web:
     build: .
     # gunicorn, not `manage.py runserver` — runserver is single-threaded, does
     # not serve static under DEBUG=False, and is explicitly not for production.
     # collectstatic runs first so WhiteNoise has something to serve (/admin/).
-    command: >
-      sh -c "python manage.py collectstatic --noinput &&
-             exec gunicorn backend.wsgi:application
-             --bind 0.0.0.0:8000
-             --workers ${GUNICORN_WORKERS:-4}
-             --timeout 60
-             --access-logfile -
-             --error-logfile -"
+    #
+    # Exec-form list, deliberately. This was a `>` folded block, and a folded
+    # block does NOT fold lines indented deeper than its first line — it keeps
+    # their newlines. Every flag below therefore became its own shell line, and
+    # since `exec` replaces the shell, gunicorn started with no arguments at all
+    # and none of the later lines ever ran. It fell back to its defaults:
+    # 127.0.0.1:8000 and one worker.
+    #
+    # Binding loopback inside a container means nothing outside it can connect,
+    # so the published port answered nothing. The healthcheck passed the whole
+    # time — it curls localhost from inside the container, the one place
+    # 127.0.0.1 does work — so the container reported healthy while serving no
+    # traffic. A list is immune to this; keep it a list.
+    command:
+      - sh
+      - -c
+      - "python manage.py collectstatic --noinput && exec gunicorn backend.wsgi:application --bind 0.0.0.0:8000 --workers ${GUNICORN_WORKERS:-4} --timeout 60 --access-logfile - --error-logfile -"
     env_file:
       - .env
     ports:
       - "8000:8000"
+    restart: unless-stopped
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   worker:
     build: .
     command: celery -A backend worker -l info
     env_file:
       - .env
+    restart: unless-stopped
     depends_on:
-      - web
-      - redis
-      - postgres
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    # The image's HEALTHCHECK curls gunicorn on :8000. A celery worker serves no
+    # HTTP, so it inherited a check that can never pass and sat permanently
+    # unhealthy — which would keep it out of any orchestrator's rotation and
+    # makes `--wait` never return. Celery has no cheap liveness probe worth the
+    # broker round-trip here, so disable rather than substitute.
+    healthcheck:
+      disable: true
 
   beat:
     build: .
     command: celery -A backend beat -l info
     env_file:
       - .env
+    # beat is the one service whose death is silent: no scheduler means no
+    # expiry sweeps or reminders, and nothing else errors. It previously had
+    # neither an ordering guarantee nor a restart policy, so losing the startup
+    # race with postgres killed it for the lifetime of the stack.
+    restart: unless-stopped
     depends_on:
-      - web
-      - redis
-      - postgres
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      disable: true
 
   flower:
     build: .
@@ -78,9 +148,21 @@ services:
     # Change to "5555:5555" only if you front it with a TLS-terminating proxy.
     ports:
       - "127.0.0.1:5555:5555"
+    restart: unless-stopped
     depends_on:
-      - redis
-      - worker
+      redis:
+        condition: service_healthy
+      worker:
+        condition: service_started
+    # Flower listens on 5555, not 8000, so it inherited the same unpassable
+    # check as worker. It does expose /healthcheck, and that endpoint is served
+    # without basic auth, so no credentials need to appear in this file.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:5555/healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
 
 volumes:
   pgdata:
