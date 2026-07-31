@@ -1,6 +1,4 @@
 /**
- * @jest-environment-options {"url": "http://localhost:3000"}
- *
  * Smoke-renders every page against the REAL backend in Docker.
  *
  * Not part of `npm test` — it needs the compose stack up, so it would fail in
@@ -8,8 +6,12 @@
  *
  *   npx react-scripts test --testMatch "**\/*.livetest.jsx" --watchAll=false
  *
- * The jsdom URL above is set to the dev server's origin because jsdom enforces
- * CORS on XHR, and the backend allows http://localhost:3000 specifically.
+ * WHAT THIS SUITE CANNOT TELL YOU: it sends requests through axios's Node
+ * adapter, which performs no CORS preflight. A missing entry in
+ * CORS_ALLOW_HEADERS is therefore invisible here and breaks only in a browser
+ * — that is how the impersonation headers shipped broken while every test
+ * passed. Anything CORS-shaped belongs in the backend suite, where
+ * ImpersonationCorsTests now checks the preflight directly.
  */
 import axios from "axios";
 import { Routes, Route } from "react-router-dom";
