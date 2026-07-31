@@ -1507,10 +1507,18 @@ class TenantPayment(TenantScopedModel):
 
             # Restriction is lifted here rather than waiting for a sweep, so an
             # operator who pays is not left locked out.
+            #
+            # Through set_tenant_status, not a direct write: this used to set
+            # the column itself, so being reinstated by paying left no
+            # TenantStatusChange row and the history showed a restriction that
+            # apparently never ended.
             tenant = invoice.tenant
             if tenant.status in ("past_due", "restricted"):
-                tenant.status = "active"
-                tenant.save(update_fields=["status"])
+                set_tenant_status(
+                    tenant, "active",
+                    reason=f"Payment {self.reference or self.id} received",
+                    automatic=True,
+                )
 
     def __str__(self):
         return f"{self.tenant} paid {self.amount}"

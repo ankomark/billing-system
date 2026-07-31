@@ -50,6 +50,15 @@ export const resetOperatorPassword = async (id, { username, reason } = {}) => {
   return res.data;
 };
 
+/**
+ * A notice that changes nothing about their access, but is on the record and
+ * texted to them. The step between saying nothing and restricting.
+ */
+export const warnOperator = async (id, message) => {
+  const res = await api.post(`platform/operators/${id}/warn/`, { message });
+  return res.data;
+};
+
 export const fetchOperatorStatusHistory = async (id) => {
   const res = await api.get(`platform/operators/${id}/status/`);
   return res.data;

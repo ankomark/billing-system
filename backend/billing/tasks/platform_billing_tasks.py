@@ -14,7 +14,9 @@ from celery import shared_task
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
-from billing.models import Tenant, TenantInvoice, TenantSubscription
+from billing.models import (
+    Tenant, TenantInvoice, TenantSubscription, set_tenant_status,
+)
 from billing.tenancy import tenant_context
 
 logger = logging.getLogger(__name__)
@@ -127,8 +129,15 @@ def mark_overdue_tenants(self):
         # they started. Already past_due, restricted or cancelled operators are
         # left alone — this sweep never escalates.
         if tenant.status in ("trial", "active"):
-            tenant.status = "past_due"
-            tenant.save(update_fields=["status"])
+            # Through set_tenant_status rather than a direct write. This sweep
+            # used to set the column itself, so the single most common
+            # transition in the system — the one that starts every escalation —
+            # was the one with no audit row behind it.
+            set_tenant_status(
+                tenant, "past_due",
+                reason=f"Invoice {invoice.number} is past its due date",
+                automatic=True,
+            )
             flagged += 1
             logger.warning("[platform-billing] %s is past due", tenant)
 
@@ -228,7 +237,6 @@ def restrict_expired_grace_tenants(self):
     deliberate manual decision, because they paid the operator in good faith
     and are not party to this dispute.
     """
-    from billing.models import set_tenant_status
 
     cutoff = timezone.now() - timezone.timedelta(days=Tenant.GRACE_DAYS)
     restricted = 0

@@ -38,7 +38,11 @@ export default function MyPlatformAccount() {
     );
   }
 
-  const restricted = data.account_status === "restricted";
+  // `cancelled` counts as restricted on the backend — Tenant.is_restricted
+  // returns true for both — but this page only knew about "restricted", so a
+  // cancelled operator saw a locked dashboard and no explanation anywhere.
+  const cancelled = data.account_status === "cancelled";
+  const restricted = data.account_status === "restricted" || cancelled;
   const pastDue = data.account_status === "past_due";
 
   return (
@@ -58,10 +62,16 @@ export default function MyPlatformAccount() {
             <AlertTriangle size={18} className="flex-shrink-0 mt-0.5" />
             <div className="text-sm">
               <p className="font-semibold">
-                {restricted ? "Your dashboard is locked" : "Payment overdue"}
+                {cancelled
+                  ? "Your account has been closed"
+                  : restricted
+                  ? "Your dashboard is locked"
+                  : "Payment overdue"}
               </p>
               <p className="mt-1">
-                {restricted
+                {cancelled
+                  ? "Contact the platform to discuss reopening it. Your customers are not affected — they keep their internet and can still renew."
+                  : restricted
                   ? "Settle the invoice below to restore access. Your customers are not affected — they keep their internet and can still renew."
                   : "Settle the invoice below to avoid your dashboard being locked. Your customers are never affected."}
               </p>

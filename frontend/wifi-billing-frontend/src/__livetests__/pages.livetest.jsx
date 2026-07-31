@@ -329,6 +329,37 @@ describe("creating an operator against the live backend", () => {
   }, 60000);
 });
 
+describe("operator lifecycle against the live backend", () => {
+  test("a warning records without changing standing", async () => {
+    authAs(ownerTokens);
+    const { warnOperator, fetchOperator, fetchOperatorStatusHistory } =
+      require("../services/platform");
+
+    const before = await fetchOperator(2);
+    const res = await warnOperator(2, "Livetest warning — please ignore");
+    expect(res.detail).toMatch(/recorded/i);
+
+    const after = await fetchOperator(2);
+    expect(after.status).toBe(before.status);
+    expect(after.is_restricted).toBe(before.is_restricted);
+
+    // A warning is a same-status entry, so it shares the timeline with the
+    // real transitions rather than living in a separate list.
+    const history = await fetchOperatorStatusHistory(2);
+    const warned = history.history.find((h) => h.reason?.includes("Livetest warning"));
+    expect(warned).toBeTruthy();
+    expect(warned.from).toBe(warned.to);
+  }, 40000);
+
+  test("an operator admin cannot warn anyone", async () => {
+    authAs(adminTokens);
+    const { warnOperator } = require("../services/platform");
+    await expect(warnOperator(2, "nope")).rejects.toMatchObject({
+      response: { status: 403 },
+    });
+  }, 40000);
+});
+
 describe("operator picker against the live backend", () => {
   test("lists real operators and requires a reason", async () => {
     authAs(ownerTokens);

@@ -21,7 +21,7 @@ from billing.services.voucher_service import validate_voucher
 from billing.router_service import enable_customer_access
 from .mpesa_client import initiate_stk_push
 from billing.models import Customer,Subscription,PPPoEUsageRecord
-from billing.notifications import send_sms, send_whatsapp
+from billing.notifications import send_sms, send_whatsapp, notify_customer
 from billing.serializers import BroadcastSerializer
 from billing.mpesa_client import get_mpesa_access_token, missing_mpesa_keys
 from django.db.models import Prefetch, Sum
@@ -35,7 +35,7 @@ from billing.tasks.mpesa_tasks import initiate_stk_push_task
 from django.utils import timezone
 from rest_framework import viewsets
 from .models import Customer, Package, Subscription,Invoice, Payment,MpesaTransaction,SystemSetting,RouterFailoverLog, HotspotUsageRecord, AccessAuditLog, Tenant
-from .models import PlatformPlan, TenantSubscription, TenantInvoice, TenantPayment
+from .models import PlatformPlan, TenantSubscription, TenantInvoice, TenantPayment, TenantStatusChange
 from .models import ImpersonationLog
 from .models import User, AdminActionLog, record_admin_action
 from .tenancy import tenant_context, get_current_tenant_id
@@ -2735,6 +2735,64 @@ class PlatformOperatorListView(APIView):
             }
             for t in tenants
         ])
+
+
+class OperatorWarningView(APIView):
+    """
+    Send an operator a notice without changing their standing.
+
+    The gap this fills: the only warnings that existed were the automated
+    billing reminders on a fixed schedule. An owner with a reason to say "sort
+    this out" had nothing between saying nothing and restricting — and
+    restricting locks a business out of its own dashboard, which is a heavy
+    answer to a first conversation.
+
+    Recorded as a status change from the current status to itself, so it lands
+    in the same timeline as the restrictions and appears in the history the
+    operator can be shown later. set_tenant_status returns False for a no-op
+    move, so the row is written directly here.
+    """
+
+    permission_classes = [IsPlatformStaff]
+
+    def post(self, request, tenant_id):
+        tenant = Tenant.objects.filter(id=tenant_id).first()
+        if tenant is None:
+            return Response({"detail": "Operator not found"}, status=404)
+
+        message = (request.data.get("message") or "").strip()
+        if not message:
+            return Response({"message": ["Say what the warning is about."]}, status=400)
+
+        TenantStatusChange.objects.create(
+            tenant=tenant,
+            from_status=tenant.status,
+            to_status=tenant.status,
+            reason=f"Warning: {message}",
+            changed_by=request.user,
+            automatic=False,
+        )
+
+        # Best effort. A warning that failed to send is still a warning that was
+        # issued and recorded, and losing the record because an SMS gateway was
+        # down would be the worse outcome.
+        delivered = False
+        if tenant.contact_phone:
+            try:
+                notify_customer(tenant.contact_phone, message)
+                delivered = True
+            except Exception:
+                logger.warning("[platform] warning SMS to %s failed", tenant, exc_info=True)
+
+        return Response({
+            "detail": "Warning recorded" + (" and sent" if delivered else ""),
+            "delivered": delivered,
+            "reason_no_delivery": (
+                None if delivered
+                else "No contact phone on file for this operator"
+                if not tenant.contact_phone else "Sending failed"
+            ),
+        })
 
 
 class OperatorPasswordResetView(APIView):

@@ -3547,3 +3547,140 @@ class OperatorDetailUpdateTests(PlatformBillingMixin, TestCase):
             self.url(self.t1), {"business_name": "Corrected Name"}, format="json")
         self.assertTrue(
             AdminActionLog.objects.filter(action=AdminActionLog.UPDATE_OPERATOR).exists())
+
+
+# =====================================================
+# 19. Phase 2 — operator lifecycle: the audit gaps and warnings
+# =====================================================
+
+class StatusAuditCompletenessTests(PlatformBillingMixin, TestCase):
+    """
+    Every transition leaves a row.
+
+    Two paths used to write Tenant.status directly and so left no
+    TenantStatusChange behind: the overdue sweep, which starts every
+    escalation, and being reinstated by paying, which ends one. The history an
+    operator gets shown in a dispute had a beginning and an end missing from it.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_billing()
+        generate_tenant_invoices()
+
+    def test_going_past_due_is_recorded(self):
+        TenantInvoice.objects.all_tenants().update(
+            due_date=timezone.now() - timezone.timedelta(days=1))
+        mark_overdue_tenants()
+
+        change = TenantStatusChange.objects.filter(
+            tenant=self.t1, to_status="past_due").first()
+        self.assertIsNotNone(change, "the overdue sweep left no audit row")
+        self.assertTrue(change.automatic)
+        self.assertEqual(change.from_status, "active")
+        self.assertIn("past its due date", change.reason)
+
+    def test_being_reinstated_by_paying_is_recorded(self):
+        set_tenant_status(self.t1, "restricted", reason="unpaid", automatic=True)
+        invoice = TenantInvoice.objects.all_tenants().filter(tenant=self.t1).first()
+
+        with tenant_context(self.t1):
+            TenantPayment.objects.create(
+                tenant=self.t1, invoice=invoice, amount=invoice.amount,
+                method="mpesa", reference="RCT999")
+
+        self.t1.refresh_from_db()
+        self.assertEqual(self.t1.status, "active")
+
+        change = TenantStatusChange.objects.filter(
+            tenant=self.t1, to_status="active").first()
+        self.assertIsNotNone(change, "reinstatement by payment left no audit row")
+        self.assertEqual(change.from_status, "restricted")
+        self.assertIn("RCT999", change.reason)
+
+    def test_the_full_escalation_reads_as_one_story(self):
+        """active -> past_due -> restricted -> active, all four visible."""
+        TenantInvoice.objects.all_tenants().update(
+            due_date=timezone.now() - timezone.timedelta(days=Tenant.GRACE_DAYS + 1))
+        mark_overdue_tenants()
+        restrict_expired_grace_tenants()
+
+        invoice = TenantInvoice.objects.all_tenants().filter(tenant=self.t1).first()
+        with tenant_context(self.t1):
+            TenantPayment.objects.create(
+                tenant=self.t1, invoice=invoice, amount=invoice.amount,
+                method="mpesa", reference="RCT1000")
+
+        moves = list(
+            TenantStatusChange.objects.filter(tenant=self.t1)
+            .order_by("created_at").values_list("from_status", "to_status")
+        )
+        self.assertEqual(
+            moves,
+            [("active", "past_due"), ("past_due", "restricted"), ("restricted", "active")],
+        )
+
+
+class OperatorWarningTests(PlatformBillingMixin, TestCase):
+    """A notice that changes nothing but is on the record."""
+
+    def setUp(self):
+        cache.clear()
+        self.build_billing()
+        self.owner = make_platform_owner()
+
+    def url(self, tenant):
+        return f"/api/platform/operators/{tenant.id}/warn/"
+
+    def test_operator_cannot_warn_anyone(self):
+        resp = self.auth(self.admin1).post(
+            self.url(self.t1), {"message": "hi"}, format="json")
+        self.assertEqual(resp.status_code, 403)
+
+    def test_a_warning_needs_something_to_say(self):
+        resp = self.auth(self.owner).post(self.url(self.t1), {"message": "  "}, format="json")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_warning_does_not_change_standing(self):
+        before = self.t1.status
+        resp = self.auth(self.owner).post(
+            self.url(self.t1), {"message": "Please settle invoice PINV-1"}, format="json")
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.t1.refresh_from_db()
+        self.assertEqual(self.t1.status, before)
+        self.assertFalse(self.t1.is_restricted)
+
+    def test_warning_lands_in_the_same_history(self):
+        self.auth(self.owner).post(
+            self.url(self.t1), {"message": "Please settle invoice PINV-1"}, format="json")
+        entry = TenantStatusChange.objects.filter(tenant=self.t1).first()
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry.from_status, entry.to_status)
+        self.assertIn("Warning:", entry.reason)
+        self.assertEqual(entry.changed_by, self.owner)
+        self.assertFalse(entry.automatic)
+
+    def test_says_so_when_there_is_no_number_to_send_to(self):
+        self.t1.contact_phone = ""
+        self.t1.save(update_fields=["contact_phone"])
+        resp = self.auth(self.owner).post(
+            self.url(self.t1), {"message": "Settle up"}, format="json")
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(resp.data["delivered"])
+        self.assertIn("No contact phone", resp.data["reason_no_delivery"])
+
+    def test_a_failed_send_still_records_the_warning(self):
+        self.t1.contact_phone = "254700000000"
+        self.t1.save(update_fields=["contact_phone"])
+        with patch("billing.views.notify_customer", side_effect=RuntimeError("gateway down")):
+            resp = self.auth(self.owner).post(
+                self.url(self.t1), {"message": "Settle up"}, format="json")
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(resp.data["delivered"])
+        self.assertTrue(
+            TenantStatusChange.objects.filter(tenant=self.t1, reason__contains="Warning:").exists())
+
+    def test_unknown_operator_is_404(self):
+        resp = self.auth(self.owner).post(
+            "/api/platform/operators/999999/warn/", {"message": "x"}, format="json")
+        self.assertEqual(resp.status_code, 404)

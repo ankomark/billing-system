@@ -2,14 +2,57 @@ import { useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import toast from "react-hot-toast";
-import { ArrowLeft, Eye, KeyRound, ShieldAlert, ShieldCheck } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Eye, KeyRound, ShieldAlert, ShieldCheck } from "lucide-react";
 import PlatformLayout from "../../components/platform/PlatformLayout";
 import ResetPasswordModal from "../../components/platform/ResetPasswordModal";
 import { Skeleton } from "../../components/ui/Skeleton";
 import { getUser, startImpersonating } from "../../services/auth";
 import { PLATFORM_OWNER } from "../../constants/roles";
-import { fetchOperator, setOperatorStatus } from "../../services/platform";
-import { KES } from "../../components/platform/ui";
+import {
+  fetchOperator,
+  fetchOperatorStatusHistory,
+  setOperatorStatus,
+  warnOperator,
+} from "../../services/platform";
+import { KES, StatusBadge, STATUS_STYLES } from "../../components/platform/ui";
+
+const STATUS_ACTIONS = [
+  {
+    status: "active",
+    label: "Restore access",
+    icon: ShieldCheck,
+    cls: "bg-emerald-500 hover:bg-emerald-400 text-slate-950",
+    help: "Full access. Their dashboard works and they can take on new subscribers.",
+  },
+  {
+    status: "past_due",
+    label: "Mark past due",
+    icon: AlertTriangle,
+    cls: "bg-amber-500 hover:bg-amber-400 text-slate-950",
+    help: "Flagged as owing, but nothing is blocked yet. This is what the grace period runs from.",
+  },
+  {
+    status: "restricted",
+    label: "Restrict",
+    icon: ShieldAlert,
+    cls: "bg-red-500 hover:bg-red-400 text-slate-950",
+    help: "Locks their dashboard and stops new signups. Existing subscribers keep their internet.",
+  },
+  {
+    status: "cancelled",
+    label: "Cancel",
+    icon: ShieldAlert,
+    cls: "border border-white/15 hover:bg-white/5 text-slate-300",
+    help: "Ends the relationship. Same effect as restricted, but final rather than pending payment.",
+  },
+];
+
+const STATUS_MESSAGES = {
+  active: "Access restored",
+  past_due: "Marked past due",
+  restricted: "Operator restricted",
+  cancelled: "Operator cancelled",
+};
 
 export default function OperatorDetail() {
   const { id } = useParams();
@@ -19,11 +62,18 @@ export default function OperatorDetail() {
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const [warning, setWarning] = useState("");
   const isOwner = getUser()?.role === PLATFORM_OWNER;
 
   const { data: op, isLoading } = useQuery({
     queryKey: ["platform-operator", id],
     queryFn: () => fetchOperator(id),
+  });
+
+  // Implemented and tested on the backend since phase 6, and never displayed.
+  const { data: history } = useQuery({
+    queryKey: ["platform-operator-status", id],
+    queryFn: () => fetchOperatorStatusHistory(id),
   });
 
   if (isLoading) {
@@ -45,11 +95,35 @@ export default function OperatorDetail() {
     setBusy(true);
     try {
       await setOperatorStatus(id, { status, reason: reason.trim() });
-      toast.success(status === "active" ? "Access restored" : "Operator restricted");
+      toast.success(STATUS_MESSAGES[status] || "Status updated");
       setReason("");
       qc.invalidateQueries({ queryKey: ["platform-operator", id] });
+      qc.invalidateQueries({ queryKey: ["platform-operator-status", id] });
+      qc.invalidateQueries({ queryKey: ["platform-operators"] });
     } catch (e) {
       toast.error(e.response?.data?.detail || "Couldn't change status");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const sendWarning = async () => {
+    if (!warning.trim()) {
+      toast.error("Say what the warning is about.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await warnOperator(id, warning.trim());
+      toast.success(
+        res.delivered
+          ? "Warning sent and recorded"
+          : `Warning recorded, but not sent — ${res.reason_no_delivery}`
+      );
+      setWarning("");
+      qc.invalidateQueries({ queryKey: ["platform-operator-status", id] });
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Couldn't send the warning");
     } finally {
       setBusy(false);
     }
@@ -140,23 +214,96 @@ export default function OperatorDetail() {
                 <KeyRound size={14} /> Reset password
               </button>
             )}
-            {op.is_restricted ? (
-              <button onClick={() => changeStatus("active")} disabled={busy}
-                      className="inline-flex items-center gap-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 px-4 py-2 rounded-lg text-sm font-semibold disabled:opacity-50">
-                <ShieldCheck size={14} /> Restore access
-              </button>
-            ) : (
-              <button onClick={() => changeStatus("restricted")} disabled={busy}
-                      className="inline-flex items-center gap-2 bg-red-500 hover:bg-red-400 text-slate-950 px-4 py-2 rounded-lg text-sm font-semibold disabled:opacity-50">
-                <ShieldAlert size={14} /> Restrict
-              </button>
-            )}
+          </div>
+
+          {/* Standing. The API has accepted four statuses since phase 6; the UI
+              offered a binary toggle, so past_due and cancelled were reachable
+              only by curl. */}
+          <div className="mt-4 pt-4 border-t border-white/10">
+            <p className="text-xs font-medium text-slate-400 mb-2">
+              Standing — currently{" "}
+              <StatusBadge status={op.status} styles={STATUS_STYLES} />
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {STATUS_ACTIONS.filter((a) => a.status !== op.status).map((a) => (
+                <button
+                  key={a.status}
+                  onClick={() => changeStatus(a.status)}
+                  disabled={busy}
+                  title={a.help}
+                  className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold disabled:opacity-50 transition-colors ${a.cls}`}
+                >
+                  <a.icon size={14} aria-hidden="true" /> {a.label}
+                </button>
+              ))}
+            </div>
           </div>
           <p className="text-xs text-slate-500 mt-3">
             Restricting locks this operator out of their dashboard and stops new
             signups. Their existing customers keep their internet and can still
             renew.
           </p>
+        </Panel>
+
+        <Panel title="Send a warning">
+          <p className="text-sm text-slate-400 mb-3">
+            Goes on the record and is texted to their contact number. Nothing
+            changes about their access — this is the step before restricting,
+            which until now did not exist.
+          </p>
+          <textarea
+            value={warning}
+            onChange={(e) => setWarning(e.target.value)}
+            rows={2}
+            placeholder="Invoice PINV-0002 is 9 days overdue. Please settle it to avoid your dashboard being locked."
+            className="w-full border border-white/15 bg-slate-950 text-slate-100 placeholder-slate-600 rounded-lg px-3 py-2 text-sm mb-3 focus:outline-none focus:ring-2 focus:ring-teal-500"
+          />
+          <button
+            onClick={sendWarning}
+            disabled={busy}
+            className="inline-flex items-center gap-2 bg-amber-500 hover:bg-amber-400 text-slate-950 px-4 py-2 rounded-lg text-sm font-semibold disabled:opacity-50 transition-colors"
+          >
+            <AlertTriangle size={14} aria-hidden="true" /> Send warning
+          </button>
+        </Panel>
+
+        <Panel title="Standing history">
+          {!history?.history?.length ? (
+            <p className="text-sm text-slate-500">
+              Nothing has changed this operator's standing.
+            </p>
+          ) : (
+            <ul className="space-y-2.5">
+              {history.history.map((h, i) => (
+                <li key={i} className="flex justify-between gap-4 border-b border-white/10 pb-2.5 last:border-0 last:pb-0">
+                  <span className="text-sm min-w-0">
+                    <span className="text-slate-200">
+                      {h.from === h.to ? (
+                        <span className="text-amber-300">Warned</span>
+                      ) : (
+                        <>
+                          <span className="capitalize">{String(h.from).replace("_", " ")}</span>
+                          {" → "}
+                          <span className="capitalize font-medium">
+                            {String(h.to).replace("_", " ")}
+                          </span>
+                        </>
+                      )}
+                    </span>
+                    <span className="text-slate-500">
+                      {" "}· {h.automatic ? "automatic" : h.by || "unknown"}
+                    </span>
+                    {h.reason && (
+                      <span className="block text-xs text-slate-500 mt-0.5">{h.reason}</span>
+                    )}
+                  </span>
+                  <span className="text-slate-500 text-xs whitespace-nowrap">
+                    {new Date(h.at).toLocaleString("en-KE")}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
         </Panel>
 
         <Panel title="Recent support access">
