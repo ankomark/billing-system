@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Users, Package, FileText, AlertCircle,
   Settings, MessageSquare, LogOut, Activity, Router,
   RefreshCw, Search, Wifi, ShieldAlert, HeartPulse, X,
-  UserPlus, CreditCard, UserCog, MapPin,
+  UserPlus, CreditCard, UserCog, MapPin, TrendingUp,
 } from "lucide-react";
 
 export default function AdminSidebar({ open, onClose }) {
@@ -75,6 +75,7 @@ export default function AdminSidebar({ open, onClose }) {
         <nav className="flex-1 overflow-y-auto py-3 px-3 space-y-0.5">
           <SectionLabel label="Overview" />
           <NavItem to="/admin/dashboard"      icon={LayoutDashboard} label="Dashboard"     onClick={onClose} />
+          <NavItem to="/admin/analytics"      icon={TrendingUp}      label="Analytics"     onClick={onClose} />
 
           <SectionLabel label="Billing" />
           <NavItem to="/admin/customers"       icon={Users}         label="Customers"       onClick={onClose} />

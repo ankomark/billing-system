@@ -27,6 +27,13 @@ from billing.mpesa_client import get_mpesa_access_token, missing_mpesa_keys
 from django.db.models import Count, Prefetch, Q, Sum
 from django.db.models.functions import TruncDate, TruncMonth
 from .reports import (revenue_summary,revenue_by_method,revenue_by_package,customer_stats,)
+from .analytics import (
+    performance_pulse, revenue_series, peak_hours, expiring_soon,
+    customer_flow, by_station,
+    revenue_by_package as analytics_by_package,
+    revenue_by_method as analytics_by_method,
+)
+from django.utils.dateparse import parse_datetime
 from .dashboards import (unpaid_invoices,pending_invoices,failed_mpesa_transactions,)
 from .serializers import (InvoiceDashboardSerializer,MpesaTransactionDashboardSerializer,)
 from .pagination import StandardPagination
@@ -2079,6 +2086,98 @@ class AdminDeactivateAccessView(APIView):
             },
             status=200,
         )
+class OperatorAnalyticsView(APIView):
+    """
+    One request, everything the analytics page shows.
+
+    Deliberately one endpoint rather than eight. The page shows a single period
+    across every panel, and eight calls would let them disagree — a pulse from
+    one moment beside a chart from another is worse than a slower page.
+
+    Reading is the day job, so staff may see it.
+    """
+
+    permission_classes = [IsTenantMember]
+
+    MAX_DAYS = 366
+
+    def get(self, request):
+        now = timezone.now()
+
+        # Explicit range wins; otherwise a day count, defaulting to a month.
+        raw_from = request.query_params.get("from")
+        raw_to = request.query_params.get("to")
+        if raw_from and raw_to:
+            start = parse_datetime(f"{raw_from}T00:00:00") or parse_datetime(raw_from)
+            end = parse_datetime(f"{raw_to}T23:59:59") or parse_datetime(raw_to)
+            if start is None or end is None:
+                return Response({"detail": "Dates must look like 2026-07-01."}, status=400)
+            start = timezone.make_aware(start) if timezone.is_naive(start) else start
+            end = timezone.make_aware(end) if timezone.is_naive(end) else end
+            if end <= start:
+                return Response({"detail": "The end date must be after the start."}, status=400)
+            if (end - start).days > self.MAX_DAYS:
+                return Response(
+                    {"detail": f"Ranges are limited to {self.MAX_DAYS} days."}, status=400)
+        else:
+            days = max(1, min(int(request.query_params.get("days", 30) or 30), 90))
+            start = now - timezone.timedelta(days=days - 1)
+            start = timezone.localtime(start).replace(
+                hour=0, minute=0, second=0, microsecond=0)
+            end = now
+
+        station = request.query_params.get("station") or None
+        if station:
+            # Scoped, so a station id belonging to another operator resolves to
+            # nothing rather than leaking their figures.
+            if not Station.objects.filter(id=station).exists():
+                return Response({"detail": "Unknown station."}, status=404)
+
+        total_revenue = float(
+            _analytics_total(start, end, station)
+        )
+        active_customers = Customer.objects.filter(status="active")
+        if station:
+            active_customers = active_customers.filter(router__station_id=station)
+        active_count = active_customers.count()
+
+        series = revenue_series(start, end, station)
+        transactions = sum(p["transactions"] for p in series)
+
+        return Response({
+            "range": {
+                "from": timezone.localtime(start).date().isoformat(),
+                "to": timezone.localtime(end).date().isoformat(),
+                "days": len(series),
+            },
+            "station": int(station) if station else None,
+            "pulse": performance_pulse(station),
+            "totals": {
+                "revenue": total_revenue,
+                "transactions": transactions,
+                "active_customers": active_count,
+                # Revenue per paying customer. A total says how big the month
+                # was; this says whether each customer is worth more or less
+                # than they were, which is the number that moves a decision.
+                "arpu": round(total_revenue / active_count, 2) if active_count else 0.0,
+            },
+            "series": series,
+            "by_package": analytics_by_package(start, end, station),
+            "by_method": analytics_by_method(start, end, station),
+            "peak_hours": peak_hours(start, end, station),
+            "expiring": expiring_soon(station),
+            "flow": customer_flow(start, end, station),
+            "by_station": by_station(start, end),
+        })
+
+
+def _analytics_total(start, end, station=None):
+    qs = Payment.objects.filter(paid_at__gte=start, paid_at__lt=end)
+    if station:
+        qs = qs.filter(customer__router__station_id=station)
+    return qs.aggregate(t=Sum("amount"))["t"] or 0
+
+
 class DailyRevenueView(APIView):
     permission_classes = [IsTenantMember]
 

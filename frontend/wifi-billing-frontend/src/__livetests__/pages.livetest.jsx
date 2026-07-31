@@ -6,6 +6,13 @@
  *
  *   npx react-scripts test --testMatch "**\/*.livetest.jsx" --watchAll=false
  *
+ * RUNNING IT BACK TO BACK: the login endpoint allows 5 a minute, and this
+ * suite needs more than that — several tests exist precisely to prove a login
+ * works (a temporary password, a newly created admin). Tokens are cached per
+ * account and a 429 is waited out rather than treated as a failure, but two
+ * runs in quick succession can still brush the limit. That is the throttle
+ * doing its job; leave a minute between runs.
+ *
  * WHAT THIS SUITE CANNOT TELL YOU: it sends requests through axios's Node
  * adapter, which performs no CORS preflight. A missing entry in
  * CORS_ALLOW_HEADERS is therefore invisible here and breaks only in a browser
@@ -65,12 +72,30 @@ const ADMIN_PAGES = [
   ["MyAccount", () => require("../pages/admin/MyAccount").default, /Operator admin/i],
   ["Users", () => require("../pages/admin/Users").default, /skyadmin/i],
   ["Stations", () => require("../pages/admin/Stations").default, /Stations/i],
+  ["Analytics", () => require("../pages/admin/Analytics").default, /Performance/i],
 ];
 
-/** Log in for real. Retries because the login endpoint is rate-limited. */
+/**
+ * Log in for real.
+ *
+ * Patient on purpose. The login endpoint is deliberately rate-limited, and
+ * running this suite repeatedly trips it — a 429 here is the throttle working,
+ * not a defect, so the right response is to wait it out rather than to treat it
+ * as a failure. Backs off progressively up to about two minutes.
+ */
+const _tokenCache = new Map();
+
+/** One login per account per run. The throttle allows 5 a minute. */
+async function tokenFor(username) {
+  if (!_tokenCache.has(username)) {
+    _tokenCache.set(username, await login(username));
+  }
+  return _tokenCache.get(username);
+}
+
 async function login(username) {
   let lastErr;
-  for (let i = 0; i < 20; i++) {
+  for (let i = 0; i < 30; i++) {
     try {
       const res = await axios.post(`${API}auth/login/`, {
         username,
@@ -79,10 +104,15 @@ async function login(username) {
       return res.data;
     } catch (e) {
       lastErr = e;
-      await new Promise((r) => setTimeout(r, 1500));
+      const status = e.response?.status;
+      // A wrong password will never come right by waiting.
+      if (status === 401) throw new Error(`bad credentials for ${username}`);
+      await new Promise((r) => setTimeout(r, status === 429 ? 5000 : 1500));
     }
   }
-  throw new Error(`could not log in as ${username}: ${lastErr?.message}`);
+  throw new Error(
+    `could not log in as ${username}: ${lastErr?.response?.status ?? lastErr?.message}`
+  );
 }
 
 function authAs(tokens) {
@@ -100,9 +130,9 @@ const realConsoleError = console.error;
 beforeAll(async () => {
   // Stop msw so requests reach the real backend instead of the mock handlers.
   server.close();
-  ownerTokens = await login("owner");
-  adminTokens = await login("skyadmin");
-}, 120000);
+  ownerTokens = await tokenFor("owner");
+  adminTokens = await tokenFor("skyadmin");
+}, 300000);
 
 afterAll(() => {
   console.error = realConsoleError;
@@ -333,6 +363,63 @@ describe("creating an operator against the live backend", () => {
   }, 60000);
 });
 
+describe("operator analytics, against the live backend", () => {
+  test("one request carries every panel", async () => {
+    authAs(adminTokens);
+    const { fetchAnalytics } = require("../services/dashboard");
+    const d = await fetchAnalytics({ days: 30 });
+
+    for (const key of ["range", "pulse", "totals", "series", "by_package",
+                       "by_method", "peak_hours", "expiring", "flow", "by_station"]) {
+      expect(d).toHaveProperty(key);
+    }
+    // One call, so no two panels can describe different moments.
+    expect(d.series).toHaveLength(d.range.days);
+  }, 40000);
+
+  test("every hour of the day is present, not only the ones with sales", async () => {
+    authAs(adminTokens);
+    const { fetchAnalytics } = require("../services/dashboard");
+    const d = await fetchAnalytics({ days: 30 });
+    expect(d.peak_hours.map((h) => h.hour)).toEqual([...Array(24).keys()]);
+  }, 40000);
+
+  test("packages carry the volume behind the revenue", async () => {
+    authAs(adminTokens);
+    const { fetchAnalytics } = require("../services/dashboard");
+    const d = await fetchAnalytics({ days: 60 });
+    expect(d.by_package.length).toBeGreaterThan(0);
+    for (const p of d.by_package) {
+      expect(p).toHaveProperty("purchases");
+      expect(p).toHaveProperty("customers");
+    }
+  }, 40000);
+
+  test("a backwards range is refused rather than returning nonsense", async () => {
+    authAs(adminTokens);
+    const { fetchAnalytics } = require("../services/dashboard");
+    await expect(
+      fetchAnalytics({ from: "2026-07-31", to: "2026-07-01" })
+    ).rejects.toMatchObject({ response: { status: 400 } });
+  }, 40000);
+
+  test("it never reports another operator's revenue", async () => {
+    const { fetchAnalytics } = require("../services/dashboard");
+
+    authAs(adminTokens);
+    const mine = await fetchAnalytics({ days: 90 });
+
+    const blue = await tokenFor("blueadmin");
+    const theirs = await axios.get(`${API}reports/analytics/?days=90`, {
+      headers: { Authorization: `Bearer ${blue.access}` },
+    });
+
+    // Two real businesses with different books; identical totals would mean
+    // the scoping had collapsed.
+    expect(mine.totals.revenue).not.toBe(theirs.data.totals.revenue);
+  }, 60000);
+});
+
 describe("the four gaps, against the live backend", () => {
   test("the audit log is actually readable now", async () => {
     authAs(ownerTokens);
@@ -494,11 +581,9 @@ describe("stations against the live backend", () => {
     expect(mine.map((s) => s.name)).toContain(NAME);
 
     // blueadmin belongs to the second operator.
-    const blue = await axios.post(`${API}auth/login/`, {
-      username: "blueadmin", password: "devpass123",
-    });
+    const blue = await tokenFor("blueadmin");
     const theirs = await axios.get(`${API}stations/`, {
-      headers: { Authorization: `Bearer ${blue.data.access}` },
+      headers: { Authorization: `Bearer ${blue.access}` },
     });
     const names = (theirs.data.results ?? theirs.data).map((s) => s.name);
     expect(names).not.toContain(NAME);

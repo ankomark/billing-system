@@ -4968,3 +4968,177 @@ class TenantStaffCapabilityTests(TwoOperatorMixin, TestCase):
         self.assertEqual(client.get("/api/system/settings/").status_code, 200)
         self.assertEqual(client.get("/api/users/").status_code, 200)
         self.assertEqual(client.get("/api/stations/").status_code, 200)
+
+
+# =====================================================
+# 27. Operator analytics
+# =====================================================
+
+class OperatorAnalyticsTests(TwoOperatorMixin, TestCase):
+    URL = "/api/reports/analytics/"
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        self.package = self.data["t1"]["package"]
+        self.customer = self.data["t1"]["customer"]
+        self.sub = self.data["t1"]["sub"]
+
+    def _pay(self, amount, days_ago=0, hour=None):
+        with tenant_context(self.t1):
+            p = Payment.objects.create(
+                tenant=self.t1, customer=self.customer, subscription=self.sub,
+                amount=Decimal(str(amount)), method="mpesa",
+                reference=f"AN{amount}{days_ago}{hour or 0}")
+        when = timezone.now() - timezone.timedelta(days=days_ago)
+        if hour is not None:
+            when = timezone.localtime(when).replace(hour=hour, minute=0)
+        Payment.objects.all_tenants().filter(pk=p.pk).update(paid_at=when)
+        return p
+
+    # ---- access ------------------------------------------------------------
+
+    def test_staff_may_read_it(self):
+        """Reading the business is the day job."""
+        staff = User.objects.create_user(
+            username="an_staff", password="x", role=User.TENANT_STAFF, tenant=self.t1)
+        self.assertEqual(self.auth(staff).get(self.URL).status_code, 200)
+
+    def test_another_operators_figures_never_appear(self):
+        with tenant_context(self.t2):
+            Payment.objects.create(
+                tenant=self.t2, customer=self.data["t2"]["customer"],
+                subscription=self.data["t2"]["sub"],
+                amount=Decimal("99999.00"), method="mpesa", reference="OTHER")
+
+        resp = self.auth(self.admin1).get(self.URL, {"days": 30})
+        self.assertLess(resp.data["totals"]["revenue"], 99999)
+
+    # ---- the range ---------------------------------------------------------
+
+    def test_every_day_in_the_window_is_present(self):
+        resp = self.auth(self.admin1).get(self.URL, {"days": 14})
+        self.assertEqual(len(resp.data["series"]), 14)
+        days = [p["day"] for p in resp.data["series"]]
+        self.assertEqual(days, sorted(days))
+
+    def test_an_explicit_range_is_honoured(self):
+        resp = self.auth(self.admin1).get(
+            self.URL, {"from": "2026-07-01", "to": "2026-07-07"})
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(resp.data["range"]["from"], "2026-07-01")
+
+    def test_a_backwards_range_is_refused(self):
+        resp = self.auth(self.admin1).get(
+            self.URL, {"from": "2026-07-31", "to": "2026-07-01"})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_an_absurd_range_is_refused(self):
+        resp = self.auth(self.admin1).get(
+            self.URL, {"from": "2000-01-01", "to": "2026-07-01"})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_a_junk_date_is_refused_rather_than_crashing(self):
+        resp = self.auth(self.admin1).get(
+            self.URL, {"from": "not-a-date", "to": "also-not"})
+        self.assertEqual(resp.status_code, 400)
+
+    # ---- the numbers -------------------------------------------------------
+
+    def test_revenue_lands_on_the_day_it_was_paid(self):
+        self._pay(500, days_ago=2)
+        resp = self.auth(self.admin1).get(self.URL, {"days": 7})
+        day = (timezone.localtime(timezone.now()).date()
+               - timezone.timedelta(days=2)).isoformat()
+        point = next(p for p in resp.data["series"] if p["day"] == day)
+        self.assertEqual(point["revenue"], 500.0)
+
+    def test_a_delta_is_none_when_there_is_nothing_to_compare_with(self):
+        """
+        None, not zero and not 100%. "No change" and "no basis for comparison"
+        are different statements, and the second must not look like the first.
+        """
+        resp = self.auth(self.admin1).get(self.URL)
+        self.assertIsNone(resp.data["pulse"]["today"]["delta"])
+
+    def test_a_delta_is_computed_against_the_prior_window(self):
+        self._pay(100, days_ago=1)   # yesterday
+        self._pay(200, days_ago=0)   # today
+        resp = self.auth(self.admin1).get(self.URL)
+        self.assertEqual(resp.data["pulse"]["today"]["delta"], 100.0)
+
+    def test_arpu_is_revenue_over_paying_customers(self):
+        self._pay(1000, days_ago=1)
+        resp = self.auth(self.admin1).get(self.URL, {"days": 7})
+        totals = resp.data["totals"]
+        expected = round(totals["revenue"] / totals["active_customers"], 2)
+        self.assertEqual(totals["arpu"], expected)
+
+    def test_packages_come_back_with_the_volume_behind_them(self):
+        """Revenue without purchase count cannot distinguish one big sale from many."""
+        self._pay(300, days_ago=1)
+        resp = self.auth(self.admin1).get(self.URL, {"days": 7})
+        row = resp.data["by_package"][0]
+        self.assertIn("purchases", row)
+        self.assertIn("customers", row)
+
+    def test_every_hour_of_the_day_is_present(self):
+        self._pay(50, days_ago=1, hour=20)
+        resp = self.auth(self.admin1).get(self.URL, {"days": 7})
+        hours = [h["hour"] for h in resp.data["peak_hours"]]
+        self.assertEqual(hours, list(range(24)))
+
+    def test_expiring_soon_reports_what_is_at_risk(self):
+        resp = self.auth(self.admin1).get(self.URL)
+        expiring = resp.data["expiring"]
+        for bucket in ("today", "next_7_days", "expired_last_7_days"):
+            self.assertIn("count", expiring[bucket])
+            self.assertIn("value", expiring[bucket])
+
+    def test_flow_reports_joins_against_lapses(self):
+        resp = self.auth(self.admin1).get(self.URL, {"days": 30})
+        flow = resp.data["flow"]
+        self.assertIn("joined", flow)
+        self.assertIn("lapsed", flow)
+        self.assertIn("net_value", flow)
+
+    # ---- stations ----------------------------------------------------------
+
+    def test_a_single_site_operator_gets_no_station_breakdown(self):
+        """One row saying what the totals already said is noise."""
+        resp = self.auth(self.admin1).get(self.URL)
+        self.assertEqual(resp.data["by_station"], [])
+
+    def test_two_sites_are_broken_down(self):
+        with tenant_context(self.t1):
+            Station.objects.create(tenant=self.t1, name="Kilifi")
+            Station.objects.create(tenant=self.t1, name="Mtwapa")
+        resp = self.auth(self.admin1).get(self.URL)
+        names = {s["name"] for s in resp.data["by_station"]}
+        self.assertEqual(names, {"Kilifi", "Mtwapa"})
+
+    def test_an_unknown_station_is_404(self):
+        resp = self.auth(self.admin1).get(self.URL, {"station": 999999})
+        self.assertEqual(resp.status_code, 404)
+
+    def test_another_operators_station_does_not_resolve(self):
+        with tenant_context(self.t2):
+            theirs = Station.objects.create(tenant=self.t2, name="Not Yours")
+        resp = self.auth(self.admin1).get(self.URL, {"station": theirs.id})
+        self.assertEqual(resp.status_code, 404)
+
+    # ---- cost --------------------------------------------------------------
+
+    def test_query_count_does_not_grow_with_the_window(self):
+        """
+        Every panel is a SQL aggregate. A regression to looping the days or the
+        packages would not show up until it was slow somewhere real.
+        """
+        self.auth(self.admin1).get(self.URL, {"days": 7})   # warm
+
+        with CaptureQueriesContext(connection) as short:
+            self.auth(self.admin1).get(self.URL, {"days": 7})
+        with CaptureQueriesContext(connection) as long:
+            self.auth(self.admin1).get(self.URL, {"days": 90})
+
+        self.assertEqual(len(short.captured_queries), len(long.captured_queries))

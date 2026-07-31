@@ -14,6 +14,7 @@ const ChangePassword   = lazy(() => import("./pages/ChangePassword"));
 
 // Admin
 const Dashboard        = lazy(() => import("./pages/admin/Dashboard"));
+const Analytics        = lazy(() => import("./pages/admin/Analytics"));
 const Customers        = lazy(() => import("./pages/admin/Customers"));
 const CustomerDetail   = lazy(() => import("./pages/admin/CustomerDetail"));
 const CustomerForm     = lazy(() => import("./pages/admin/CustomerForm"));
@@ -120,6 +121,7 @@ export default function App() {
 
         {/* Admin — overview */}
         <Route path="/admin/dashboard"  element={<Admin><Dashboard /></Admin>} />
+        <Route path="/admin/analytics"  element={<Admin><Analytics /></Admin>} />
 
         {/* Admin — billing */}
         <Route path="/admin/customers"              element={<Admin><Customers /></Admin>} />

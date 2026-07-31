@@ -16,6 +16,7 @@ from .views import (
     OperatorPlanView,
     AdminActionLogView,
     RouterEventsView,
+    OperatorAnalyticsView,
     StationViewSet,
     PlatformHealthView,
     PlatformAnalyticsView,
@@ -135,6 +136,7 @@ urlpatterns = [
     # ─── Reports & dashboards ────────────────────────────────────────────────
     path("api/reports/revenue/",            RevenueDashboardView.as_view(),         name="revenue-dashboard"),
     path("api/reports/revenue/daily/",      DailyRevenueView.as_view(),             name="daily-revenue"),
+    path("api/reports/analytics/",          OperatorAnalyticsView.as_view(),        name="operator-analytics"),
     path("api/dashboard/invoices/unpaid/",  UnpaidInvoicesView.as_view(),           name="unpaid-invoices"),
     path("api/dashboard/invoices/pending/", PendingInvoicesView.as_view(),          name="pending-invoices"),
     path("api/dashboard/mpesa/failed/",     FailedMpesaTransactionsView.as_view(),  name="failed-mpesa"),
