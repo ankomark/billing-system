@@ -3,6 +3,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from datetime import timedelta
 from celery.schedules import crontab
+from corsheaders.defaults import default_headers
 
 # =====================================================
 # BASE CONFIG
@@ -241,6 +242,25 @@ else:
     ).split(",")
 
 CORS_ALLOW_CREDENTIALS = True
+
+# The impersonation headers must be listed explicitly or a browser will not
+# send them.
+#
+# django-cors-headers answers a preflight with a fixed default list of allowed
+# headers, and anything absent from it is refused — CORS_ALLOW_ALL_ORIGINS does
+# not cover headers, so this failed in development too. The preflight itself
+# returns 200, which makes it look fine from the server side; what fails is the
+# real request, which the browser then never sends. The frontend sees a bare
+# network error and reports it as a connection problem, so the symptom points
+# nowhere near the cause.
+#
+# Nothing is loosened by naming them: the backend already ignores both headers
+# for non-platform accounts and records every use in ImpersonationLog.
+CORS_ALLOW_HEADERS = (
+    *default_headers,
+    "x-impersonate-tenant",
+    "x-impersonate-reason",
+)
 
 # =====================================================
 # DJANGO REST FRAMEWORK

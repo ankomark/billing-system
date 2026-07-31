@@ -3184,3 +3184,44 @@ class OperatorOnboardingTests(PlatformBillingMixin, TestCase):
         resp = self.auth(admin).get("/api/customers/")
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.data["count"], 0)
+
+
+class ImpersonationCorsTests(TestCase):
+    """
+    A browser will not send the impersonation headers unless the preflight
+    names them.
+
+    This is worth a test because every server-side check passes while it is
+    broken: the preflight itself returns 200, the endpoint works from curl, and
+    the API tests here drive Django directly and never perform a preflight at
+    all. Only a real browser refuses, and it refuses by never sending the
+    request — so the frontend reports a connection problem and the cause looks
+    unrelated.
+    """
+
+    ORIGIN = "http://localhost:3000"
+
+    def preflight(self, requested):
+        return self.client.options(
+            "/api/customers/",
+            HTTP_ORIGIN=self.ORIGIN,
+            HTTP_ACCESS_CONTROL_REQUEST_METHOD="GET",
+            HTTP_ACCESS_CONTROL_REQUEST_HEADERS=requested,
+        )
+
+    def test_preflight_allows_the_impersonation_tenant_header(self):
+        allowed = self.preflight("authorization,x-impersonate-tenant")[
+            "access-control-allow-headers"].lower()
+        self.assertIn("x-impersonate-tenant", allowed)
+
+    def test_preflight_allows_the_impersonation_reason_header(self):
+        allowed = self.preflight("authorization,x-impersonate-reason")[
+            "access-control-allow-headers"].lower()
+        self.assertIn("x-impersonate-reason", allowed)
+
+    def test_the_ordinary_headers_are_still_allowed(self):
+        """The custom entries are added to the defaults, not substituted."""
+        allowed = self.preflight("authorization,content-type")[
+            "access-control-allow-headers"].lower()
+        self.assertIn("authorization", allowed)
+        self.assertIn("content-type", allowed)
