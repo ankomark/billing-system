@@ -16,8 +16,13 @@ ALL_SETTING_KEYS = [
     "MPESA_PASSKEY",
     "MPESA_CALLBACK_URL",
     "MPESA_ENV",
+    # BlessedTexts replaced Africa's Talking. The old keys are left in the
+    # list so existing rows still resolve rather than erroring; nothing
+    # reads them any more.
     "AT_USERNAME",
     "AT_API_KEY",
+    "BLESSEDTEXTS_API_KEY",
+    "BLESSEDTEXTS_SENDER_ID",
     "WHATSAPP_TOKEN",
     "WHATSAPP_PHONE_ID",
     "WHATSAPP_API_VERSION",

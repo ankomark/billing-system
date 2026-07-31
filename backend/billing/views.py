@@ -1116,7 +1116,7 @@ class SystemSettingsView(APIView):
         "MPESA_CONSUMER_KEY",
         "MPESA_CONSUMER_SECRET",
         "MPESA_PASSKEY",
-        "AT_API_KEY",
+        "BLESSEDTEXTS_API_KEY",
         "WHATSAPP_TOKEN",
     }
 
@@ -1127,8 +1127,8 @@ class SystemSettingsView(APIView):
         "MPESA_SHORTCODE",
         "MPESA_PASSKEY",
         "MPESA_CALLBACK_URL",
-        "AT_USERNAME",
-        "AT_API_KEY",
+        "BLESSEDTEXTS_API_KEY",
+        "BLESSEDTEXTS_SENDER_ID",
         "WHATSAPP_TOKEN",
         "WHATSAPP_PHONE_ID",
     ]
@@ -1232,9 +1232,65 @@ class _TestMessageView(APIView):
         return Response({"success": True, "sent_to": phone})
 
 
-class TestSmsView(_TestMessageView):
-    task = send_sms_task
-    label = "SMS"
+class TestSmsView(APIView):
+    """
+    Send a real test SMS and report what actually happened.
+
+    Not queued. The other channels queue and answer "success" for having
+    dispatched a task, which is all they can honestly claim — but send_sms now
+    returns whether the provider accepted the message, and a test that reports
+    delivery it has not confirmed is worse than no test. This one waits.
+
+    It also returns the remaining credit, because the most common reason an
+    operator's messages stop arriving is an empty account, and nothing else in
+    the product would show that.
+    """
+
+    permission_classes = [IsTenantAdmin]
+
+    def get(self, request):
+        from billing.notifications import send_sms, sms_balance
+
+        tenant = getattr(request.user, "tenant", None)
+        phone = request.query_params.get("phone") or getattr(tenant, "contact_phone", "")
+        if not phone:
+            return Response(
+                {
+                    "success": False,
+                    "error": "No recipient. Pass ?phone=2547XXXXXXXX, or set a "
+                             "contact phone on your business profile.",
+                },
+                status=400,
+            )
+
+        credit = sms_balance(tenant=tenant)
+        sent = send_sms(phone, "SMS test OK", tenant=tenant)
+
+        if not sent:
+            return Response({
+                "success": False,
+                "sent_to": phone,
+                "balance": credit.get("balance"),
+                "error": credit.get("error")
+                or "The SMS provider refused the message. Check the log for the reason.",
+            }, status=400)
+
+        return Response({
+            "success": True,
+            "sent_to": phone,
+            "balance": credit.get("balance"),
+        })
+
+
+class SmsBalanceView(APIView):
+    """How much SMS credit is left. Staff may read it; it is a support question."""
+
+    permission_classes = [IsTenantMember]
+
+    def get(self, request):
+        from billing.notifications import sms_balance
+
+        return Response(sms_balance(tenant=getattr(request.user, "tenant", None)))
 
 
 class TestWhatsappView(_TestMessageView):

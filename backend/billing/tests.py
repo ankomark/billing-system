@@ -14,7 +14,7 @@ Coverage:
 import json
 from decimal import Decimal
 from unittest import skipUnless
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from cryptography.fernet import Fernet
 
 from django.db import connection
@@ -51,6 +51,7 @@ from billing.tasks.platform_billing_tasks import (
 from billing.tasks.router_health import prune_router_events_task
 from billing.tasks.provisioning import ensure_customer_access_task
 from billing.router_service import enable_customer_access
+from billing.notifications import send_sms, send_bulk_sms, sms_balance
 from celery.exceptions import Retry
 from billing.router_service import (
     _station_of, _tenant_routers, pick_best_router_for_new_customer,
@@ -5286,3 +5287,173 @@ class SilentRehomingTests(TwoOperatorMixin, TestCase):
             enable_customer_access(self.customer)
 
         self.assertEqual(RouterFailoverLog.objects.all_tenants().count(), 0)
+
+
+# =====================================================
+# 29. BlessedTexts
+# =====================================================
+
+class BlessedTextsSmsTests(TwoOperatorMixin, TestCase):
+    """
+    The provider answers HTTP 200 for a refusal and puts the reason in the body.
+
+    That is the whole reason this was rewritten: the previous implementation
+    called raise_for_status() and returned True, so a message rejected for an
+    empty account or a bad number was recorded as sent. An expiry warning
+    nobody received, logged as delivered, is worse than a visible failure.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        for key, value in (
+            ("BLESSEDTEXTS_API_KEY", "test-key"),
+            ("BLESSEDTEXTS_SENDER_ID", "23107"),
+        ):
+            SystemSetting.objects.create(tenant=self.t1, key=key, value=value)
+        clear_settings_cache(tenant=self.t1)
+
+    def _response(self, payload, status_code=200):
+        mock = MagicMock()
+        mock.status_code = status_code
+        mock.json.return_value = payload
+        mock.raise_for_status.return_value = None
+        return mock
+
+    # ---- single send -------------------------------------------------------
+
+    def test_a_success_code_is_a_success(self):
+        body = [{"status_code": "1000", "status_desc": "Success",
+                 "phone": "254722000000", "message_cost": "0.5"}]
+        with patch("billing.notifications.requests.post", return_value=self._response(body)):
+            self.assertTrue(send_sms("254722000000", "hello", tenant=self.t1))
+
+    def test_a_refusal_inside_a_200_is_a_failure(self):
+        """The exact shape the old code reported as sent."""
+        body = [{"status_code": "1009", "status_desc": "Low bulk credits",
+                 "phone": "254722000000"}]
+        with patch("billing.notifications.requests.post", return_value=self._response(body)):
+            self.assertFalse(send_sms("254722000000", "hello", tenant=self.t1))
+
+    def test_an_invalid_number_is_a_failure(self):
+        body = [{"status_code": "1008", "status_desc": "Invalid Phone number"}]
+        with patch("billing.notifications.requests.post", return_value=self._response(body)):
+            self.assertFalse(send_sms("nonsense", "hello", tenant=self.t1))
+
+    def test_a_bare_object_response_is_handled(self):
+        """A malformed request answers with an object rather than a list."""
+        body = {"status_code": "1005", "status_desc": "Missing Message"}
+        with patch("billing.notifications.requests.post", return_value=self._response(body)):
+            self.assertFalse(send_sms("254722000000", "", tenant=self.t1))
+
+    def test_missing_credentials_never_reach_the_network(self):
+        with patch("billing.notifications.requests.post") as post:
+            self.assertFalse(send_sms("254722000000", "hello", tenant=self.t2))
+        post.assert_not_called()
+
+    def test_each_operator_sends_on_their_own_account(self):
+        SystemSetting.objects.create(
+            tenant=self.t2, key="BLESSEDTEXTS_API_KEY", value="their-key")
+        SystemSetting.objects.create(
+            tenant=self.t2, key="BLESSEDTEXTS_SENDER_ID", value="99999")
+        clear_settings_cache(tenant=self.t2)
+
+        body = [{"status_code": "1000"}]
+        with patch("billing.notifications.requests.post",
+                   return_value=self._response(body)) as post:
+            send_sms("254722000000", "hello", tenant=self.t2)
+
+        sent = post.call_args.kwargs["json"]
+        self.assertEqual(sent["api_key"], "their-key")
+        self.assertEqual(sent["sender_id"], "99999")
+
+    # ---- the failures that need a person -----------------------------------
+
+    def test_running_out_of_credit_reaches_the_operator(self):
+        """
+        A bad number concerns one customer. An empty account concerns every
+        message until somebody acts, so it must not sit in a log.
+        """
+        body = [{"status_code": "1009", "status_desc": "Low bulk credits"}]
+        with patch("billing.notifications.requests.post", return_value=self._response(body)), \
+             patch("billing.tasks.alert_tasks.notify_admin_task.delay") as alert:
+            send_sms("254722000000", "hello", tenant=self.t1)
+        self.assertTrue(alert.called)
+        self.assertIn("not going out", alert.call_args.args[0])
+
+    def test_a_bad_number_does_not_alarm_the_operator(self):
+        body = [{"status_code": "1008", "status_desc": "Invalid Phone number"}]
+        with patch("billing.notifications.requests.post", return_value=self._response(body)), \
+             patch("billing.tasks.alert_tasks.notify_admin_task.delay") as alert:
+            send_sms("nonsense", "hello", tenant=self.t1)
+        self.assertFalse(alert.called)
+
+    # ---- bulk --------------------------------------------------------------
+
+    def test_bulk_sends_one_request_for_many_recipients(self):
+        pairs = [(f"25472200000{i}", f"hello {i}") for i in range(5)]
+        body = [{"status_code": "1000", "phone": p} for p, _ in pairs]
+        with patch("billing.notifications.requests.post",
+                   return_value=self._response(body)) as post:
+            result = send_bulk_sms(pairs, tenant=self.t1)
+
+        self.assertEqual(post.call_count, 1, "one request, not one per recipient")
+        self.assertEqual(result["sent"], 5)
+        self.assertEqual(result["failed"], 0)
+
+    def test_bulk_counts_the_refusals_separately(self):
+        pairs = [("254722000001", "a"), ("254722000002", "b")]
+        body = [
+            {"status_code": "1000", "phone": "254722000001"},
+            {"status_code": "1008", "phone": "254722000002",
+             "status_desc": "Invalid Phone number"},
+        ]
+        with patch("billing.notifications.requests.post", return_value=self._response(body)):
+            result = send_bulk_sms(pairs, tenant=self.t1)
+
+        self.assertEqual(result["sent"], 1)
+        self.assertEqual(result["failed"], 1)
+        self.assertIn("254722000002", result["errors"][0])
+
+    def test_recipients_the_provider_ignored_count_as_failed(self):
+        """
+        Fewer rows than recipients means someone was not sent to. Counting the
+        difference as sent would be the same lie in a new place.
+        """
+        pairs = [("254722000001", "a"), ("254722000002", "b"), ("254722000003", "c")]
+        body = [{"status_code": "1000", "phone": "254722000001"}]
+        with patch("billing.notifications.requests.post", return_value=self._response(body)):
+            result = send_bulk_sms(pairs, tenant=self.t1)
+
+        self.assertEqual(result["sent"], 1)
+        self.assertEqual(result["failed"], 2)
+
+    def test_a_network_failure_fails_everyone_rather_than_nobody(self):
+        pairs = [("254722000001", "a"), ("254722000002", "b")]
+        with patch("billing.notifications.requests.post", side_effect=Exception("timeout")):
+            result = send_bulk_sms(pairs, tenant=self.t1)
+        self.assertEqual(result["sent"], 0)
+        self.assertEqual(result["failed"], 2)
+
+    # ---- balance -----------------------------------------------------------
+
+    def test_balance_is_read(self):
+        body = {"status_code": "1000", "balance": "200"}
+        with patch("billing.notifications.requests.post", return_value=self._response(body)):
+            result = sms_balance(tenant=self.t1)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["balance"], 200)
+
+    def test_balance_reports_an_invalid_key_rather_than_zero(self):
+        """Zero credit and a rejected key are different problems."""
+        body = {"status_code": "1002"}
+        with patch("billing.notifications.requests.post", return_value=self._response(body)):
+            result = sms_balance(tenant=self.t1)
+        self.assertFalse(result["ok"])
+        self.assertIn("Invalid API key", result["error"])
+
+    def test_balance_without_a_key_does_not_call_out(self):
+        with patch("billing.notifications.requests.post") as post:
+            result = sms_balance(tenant=self.t2)
+        post.assert_not_called()
+        self.assertFalse(result["ok"])

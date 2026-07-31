@@ -8,6 +8,7 @@ import {
   updateSystemSettings,
   testMpesa,
   testSms,
+  fetchSmsBalance,
   testWhatsapp,
 } from "../../services/settings";
 
@@ -17,8 +18,8 @@ const EMPTY = {
   MPESA_SHORTCODE: "",
   MPESA_PASSKEY: "",
   MPESA_CALLBACK_URL: "",
-  AT_USERNAME: "",
-  AT_API_KEY: "",
+  BLESSEDTEXTS_API_KEY: "",
+  BLESSEDTEXTS_SENDER_ID: "",
   WHATSAPP_TOKEN: "",
   WHATSAPP_PHONE_ID: "",
 };
@@ -33,6 +34,15 @@ export default function SystemSettings() {
     queryKey: ["system-settings"],
     queryFn: fetchSystemSettings,
     staleTime: 5 * 60 * 1000,
+  });
+
+  // Read on its own so a provider that is slow or unreachable delays this
+  // panel rather than the whole settings page.
+  const { data: smsBalance, refetch: refetchBalance } = useQuery({
+    queryKey: ["sms-balance"],
+    queryFn: fetchSmsBalance,
+    staleTime: 60 * 1000,
+    retry: false,
   });
 
   useEffect(() => {
@@ -64,7 +74,19 @@ export default function SystemSettings() {
       if (type === "mpesa")     res = await testMpesa();
       if (type === "sms")       res = await testSms();
       if (type === "whatsapp")  res = await testWhatsapp();
-      toast.success(res?.message || "Connection successful");
+
+      if (type === "sms") {
+        // This one waits for the provider rather than queueing, so it can say
+        // what actually happened.
+        refetchBalance();
+        toast.success(
+          res?.balance != null
+            ? `Test SMS sent to ${res.sent_to} · ${res.balance} credit left`
+            : `Test SMS sent to ${res.sent_to}`
+        );
+      } else {
+        toast.success(res?.message || "Connection successful");
+      }
     } catch (err) {
       toast.error("Test failed: " + (err.response?.data?.error || err.message));
     } finally {
@@ -111,13 +133,53 @@ export default function SystemSettings() {
             <TestBtn label="Test M-Pesa" color="emerald" loading={testing === "mpesa"} onClick={() => runTest("mpesa")} />
           </Section>
 
-          {/* Africa's Talking */}
-          <Section title="Africa's Talking (SMS)">
+          {/* BlessedTexts */}
+          <Section title="BlessedTexts (SMS)">
             <div className="grid sm:grid-cols-2 gap-4">
-              <Field label="AT Username" name="AT_USERNAME" value={form.AT_USERNAME} onChange={handleChange} />
-              <Field label="AT API Key"  name="AT_API_KEY"  value={form.AT_API_KEY}  onChange={handleChange} />
+              <Field
+                label="API Key"
+                name="BLESSEDTEXTS_API_KEY"
+                value={form.BLESSEDTEXTS_API_KEY}
+                onChange={handleChange}
+              />
+              <Field
+                label="Sender ID"
+                name="BLESSEDTEXTS_SENDER_ID"
+                value={form.BLESSEDTEXTS_SENDER_ID}
+                onChange={handleChange}
+              />
             </div>
-            <TestBtn label="Test SMS" color="amber" loading={testing === "sms"} onClick={() => runTest("sms")} />
+            <p className="text-xs text-slate-500">
+              Both from your BlessedTexts profile. The sender ID must be one
+              already assigned to your account.
+            </p>
+            {/* The most common reason messages stop arriving is an empty
+                account, and nothing else in the product would show it. */}
+            {smsBalance?.ok && (
+              <p
+                className={`text-xs ${
+                  smsBalance.balance != null && smsBalance.balance < 50
+                    ? "text-amber-300"
+                    : "text-slate-400"
+                }`}
+              >
+                {smsBalance.balance} SMS credit remaining
+                {smsBalance.balance != null && smsBalance.balance < 50
+                  ? " — top up before it runs out"
+                  : ""}
+              </p>
+            )}
+            {smsBalance && !smsBalance.ok && smsBalance.error && (
+              <p className="text-xs text-amber-300">
+                Couldn't read your balance: {smsBalance.error}
+              </p>
+            )}
+            <TestBtn
+              label="Send a test SMS"
+              color="amber"
+              loading={testing === "sms"}
+              onClick={() => runTest("sms")}
+            />
           </Section>
 
           {/* WhatsApp */}

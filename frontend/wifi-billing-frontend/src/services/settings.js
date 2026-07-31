@@ -29,3 +29,14 @@ export async function testWhatsapp() {
   const res = await api.get("system/test/whatsapp/");
   return res.data;
 }
+
+/**
+ * Remaining SMS credit.
+ *
+ * Running out is otherwise invisible: every send fails, the customer hears
+ * nothing, and the only trace is a log line.
+ */
+export async function fetchSmsBalance() {
+  const res = await api.get("system/sms/balance/");
+  return res.data;
+}

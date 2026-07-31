@@ -87,17 +87,66 @@ def dispatch_broadcast_task(
         qs = qs.filter(id__in=customer_ids)
     # "all" → no additional filter
 
-    sent = failed = 0
+    if channel == "sms":
+        return _broadcast_sms(qs, message, tenant_id, audience)
+
+    # WhatsApp has no bulk endpoint, so it stays one message per customer.
+    queued = failed = 0
     for customer in qs.iterator(chunk_size=200):
         try:
-            if channel == "sms":
-                send_sms_task.delay(customer.phone, message, tenant_id=customer.tenant_id)
-            else:
-                send_whatsapp_task.delay(customer.phone, message, tenant_id=customer.tenant_id)
-            sent += 1
+            send_whatsapp_task.delay(customer.phone, message, tenant_id=customer.tenant_id)
+            queued += 1
         except Exception as exc:
             failed += 1
             logger.error(f"[broadcast] Failed to queue for {customer.phone}: {exc}")
 
-    logger.info(f"[broadcast] Queued {sent} messages ({failed} failed) — {channel}/{audience}")
-    return {"sent": sent, "failed": failed, "channel": channel, "audience": audience}
+    logger.info(f"[broadcast] Queued {queued} whatsapp message(s), {failed} failed — {audience}")
+    # "queued", not "sent". Dispatching a task is all this knows.
+    return {"queued": queued, "failed": failed, "channel": channel, "audience": audience}
+
+
+# The provider takes many messages per request. Batched rather than sent whole
+# because one request carrying ten thousand recipients is a single point of
+# failure and a timeout waiting to happen.
+BULK_BATCH = 100
+
+
+def _broadcast_sms(qs, message, tenant_id, audience):
+    """
+    SMS broadcast through the provider's bulk endpoint.
+
+    This queued one Celery task per customer, so a broadcast to four hundred
+    subscribers was four hundred tasks and four hundred round trips, and the
+    number it reported was how many it had queued rather than how many were
+    accepted. Batched now, and the count is what the provider actually took.
+    """
+    from billing.notifications import send_bulk_sms
+
+    sent = failed = 0
+    errors = []
+    batch = []
+
+    def flush():
+        nonlocal sent, failed
+        if not batch:
+            return
+        result = send_bulk_sms(batch, tenant=tenant_id)
+        sent += result["sent"]
+        failed += result["failed"]
+        errors.extend(result["errors"])
+        batch.clear()
+
+    for customer in qs.iterator(chunk_size=200):
+        batch.append((customer.phone, message))
+        if len(batch) >= BULK_BATCH:
+            flush()
+    flush()
+
+    logger.info("[broadcast] SMS: %s sent, %s failed — %s", sent, failed, audience)
+    return {
+        "sent": sent,
+        "failed": failed,
+        "channel": "sms",
+        "audience": audience,
+        "errors": errors[:20],
+    }

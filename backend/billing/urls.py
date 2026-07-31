@@ -17,6 +17,7 @@ from .views import (
     AdminActionLogView,
     RouterEventsView,
     OperatorAnalyticsView,
+    SmsBalanceView,
     StationViewSet,
     PlatformHealthView,
     PlatformAnalyticsView,
@@ -225,6 +226,7 @@ urlpatterns = [
     # ─── System ──────────────────────────────────────────────────────────────
     path("api/system/settings/",       SystemSettingsView.as_view(), name="system-settings"),
     path("api/system/test/mpesa/",     TestMpesaView.as_view(),      name="test-mpesa"),
+    path("api/system/sms/balance/",   SmsBalanceView.as_view(),     name="sms-balance"),
     path("api/system/test/sms/",       TestSmsView.as_view(),        name="test-sms"),
     path("api/system/test/whatsapp/",  TestWhatsappView.as_view(),   name="test-whatsapp"),
 
