@@ -13,6 +13,7 @@ from .views import (
     OperatorWarningView,
     RouterEventsView,
     PlatformHealthView,
+    PlatformAnalyticsView,
 
     # ViewSets
     CustomerViewSet,
@@ -228,6 +229,7 @@ urlpatterns = [
     path("api/platform/payments/",     RecordTenantPaymentView.as_view(),    name="platform-record-payment"),
     path("api/platform/overview/",  PlatformOverviewView.as_view(),     name="platform-overview"),
     path("api/platform/health/",    PlatformHealthView.as_view(),       name="platform-health"),
+    path("api/platform/analytics/", PlatformAnalyticsView.as_view(),    name="platform-analytics"),
     path("api/platform/operators/", PlatformOperatorListView.as_view(), name="platform-operators"),
     path("api/platform/operators/<int:tenant_id>/", PlatformOperatorDetailView.as_view(), name="platform-operator-detail"),
     path("api/platform/operators/<int:tenant_id>/status/", TenantStatusView.as_view(), name="platform-tenant-status"),

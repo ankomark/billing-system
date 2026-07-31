@@ -5,6 +5,7 @@ import toast from "react-hot-toast";
 import { AlertTriangle, ArrowLeft, Eye, KeyRound, ShieldAlert, ShieldCheck } from "lucide-react";
 import PlatformLayout from "../../components/platform/PlatformLayout";
 import ResetPasswordModal from "../../components/platform/ResetPasswordModal";
+import AnalyticsPanel from "../../components/platform/AnalyticsPanel";
 import { Skeleton } from "../../components/ui/Skeleton";
 import { getUser, startImpersonating } from "../../services/auth";
 import { PLATFORM_OWNER } from "../../constants/roles";
@@ -159,6 +160,8 @@ export default function OperatorDetail() {
           <Card label="Routers" value={op.network.routers} />
           <Card label="Their revenue" value={KES(op.network.subscriber_revenue)} />
         </div>
+
+        <AnalyticsPanel tenant={op.id} title="Their trends" />
 
         <Panel title="Owes the platform">
           <div className="grid sm:grid-cols-2 gap-4 text-sm">

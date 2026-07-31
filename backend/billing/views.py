@@ -24,7 +24,7 @@ from billing.models import Customer,Subscription,PPPoEUsageRecord
 from billing.notifications import send_sms, send_whatsapp, notify_customer
 from billing.serializers import BroadcastSerializer
 from billing.mpesa_client import get_mpesa_access_token, missing_mpesa_keys
-from django.db.models import Prefetch, Q, Sum
+from django.db.models import Count, Prefetch, Q, Sum
 from django.db.models.functions import TruncDate, TruncMonth
 from .reports import (revenue_summary,revenue_by_method,revenue_by_package,customer_stats,)
 from .dashboards import (unpaid_invoices,pending_invoices,failed_mpesa_transactions,)
@@ -2791,6 +2791,94 @@ class RouterEventsView(APIView):
                 }
                 for r in routers
             ],
+        })
+
+
+class PlatformAnalyticsView(APIView):
+    """
+    Time series across every operator.
+
+    Nothing platform-wide had a time dimension before this: reports.py returns
+    three scalars, and the only date-bucketed aggregation in the codebase
+    (AdminUsageDailyView) is scoped to one operator. So the platform could say
+    what its revenue is and never whether it is going up.
+
+    Every series is bucketed in SQL and gap-filled in one pass here, because a
+    chart with holes in it reads as a fall to zero rather than as a day with no
+    rows. Query count is fixed — four, regardless of how many days or operators
+    are in play — which is the property worth protecting as those tables grow.
+
+    `tenant` narrows everything to one operator, which is what the operator
+    detail page uses.
+    """
+
+    permission_classes = [IsPlatformStaff]
+
+    MAX_DAYS = 365
+
+    def get(self, request):
+        days = max(1, min(int(request.query_params.get("days", 30) or 30), self.MAX_DAYS))
+        since = timezone.now() - timezone.timedelta(days=days - 1)
+        start_date = timezone.localtime(since).date()
+
+        tenant_id = request.query_params.get("tenant")
+        tenant = None
+        if tenant_id:
+            tenant = Tenant.objects.filter(id=tenant_id).first()
+            if tenant is None:
+                return Response({"detail": "Operator not found"}, status=404)
+
+        def bucket(qs, date_field, value=None):
+            """One row per day: SUM(value) or COUNT(*), keyed by local date."""
+            qs = qs.annotate(day=TruncDate(date_field)).values("day")
+            qs = qs.annotate(v=Sum(value) if value else Count("id"))
+            return {r["day"]: r["v"] or 0 for r in qs}
+
+        platform_payments = TenantPayment.objects.all_tenants().filter(paid_at__gte=since)
+        subscriber_payments = Payment.objects.all_tenants().filter(paid_at__gte=since)
+        new_customers = Customer.objects.all_tenants().filter(created_at__gte=since)
+        if tenant is not None:
+            platform_payments = platform_payments.filter(tenant=tenant)
+            subscriber_payments = subscriber_payments.filter(tenant=tenant)
+            new_customers = new_customers.filter(tenant=tenant)
+
+        platform_revenue = bucket(platform_payments, "paid_at", "amount")
+        subscriber_revenue = bucket(subscriber_payments, "paid_at", "amount")
+        subscribers_added = bucket(new_customers, "created_at")
+        operators_added = (
+            {} if tenant is not None
+            else bucket(Tenant.objects.filter(created_at__gte=since), "created_at")
+        )
+
+        # Cumulative operator count needs the population before the window, or
+        # the line starts at zero and implies the platform was founded on the
+        # first day of whatever range happens to be selected.
+        running = (
+            0 if tenant is not None
+            else Tenant.objects.filter(created_at__lt=since).count()
+        )
+
+        series = []
+        for offset in range(days):
+            day = start_date + timezone.timedelta(days=offset)
+            running += operators_added.get(day, 0)
+            series.append({
+                "day": day.isoformat(),
+                "platform_revenue": float(platform_revenue.get(day, 0) or 0),
+                "subscriber_revenue": float(subscriber_revenue.get(day, 0) or 0),
+                "subscribers_added": subscribers_added.get(day, 0),
+                "operators": running,
+            })
+
+        return Response({
+            "days": days,
+            "operator": tenant.business_name or tenant.name if tenant else None,
+            "series": series,
+            "totals": {
+                "platform_revenue": sum(p["platform_revenue"] for p in series),
+                "subscriber_revenue": sum(p["subscriber_revenue"] for p in series),
+                "subscribers_added": sum(p["subscribers_added"] for p in series),
+            },
         })
 
 

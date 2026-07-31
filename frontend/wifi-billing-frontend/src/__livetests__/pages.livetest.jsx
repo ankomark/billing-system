@@ -330,6 +330,52 @@ describe("creating an operator against the live backend", () => {
   }, 60000);
 });
 
+describe("analytics against the live backend", () => {
+  test("every day in the window is present, in order", async () => {
+    authAs(ownerTokens);
+    const { fetchPlatformAnalytics } = require("../services/platform");
+    const data = await fetchPlatformAnalytics({ days: 14 });
+
+    expect(data.days).toBe(14);
+    // Gap-filled: a missing day would render as a fall to zero, which is a
+    // different claim from "nothing happened that day".
+    expect(data.series).toHaveLength(14);
+    const days = data.series.map((p) => p.day);
+    expect(days).toEqual([...days].sort());
+    expect(new Set(days).size).toBe(14);
+  }, 40000);
+
+  test("the operator line only ever goes up", async () => {
+    authAs(ownerTokens);
+    const { fetchPlatformAnalytics } = require("../services/platform");
+    const data = await fetchPlatformAnalytics({ days: 30 });
+    const counts = data.series.map((p) => p.operators);
+    expect(counts).toEqual([...counts].sort((a, b) => a - b));
+  }, 40000);
+
+  test("narrowing to one operator changes the numbers", async () => {
+    authAs(ownerTokens);
+    const { fetchPlatformAnalytics } = require("../services/platform");
+    const all = await fetchPlatformAnalytics({ days: 60 });
+    const one = await fetchPlatformAnalytics({ days: 60, tenant: 1 });
+
+    expect(one.operator).toBeTruthy();
+    // Skylink is one of several operators, so its slice cannot exceed the whole.
+    expect(one.totals.subscriber_revenue).toBeLessThanOrEqual(
+      all.totals.subscriber_revenue
+    );
+    expect(one.totals.subscriber_revenue).toBeGreaterThan(0);
+  }, 40000);
+
+  test("an operator cannot read platform analytics", async () => {
+    authAs(adminTokens);
+    const { fetchPlatformAnalytics } = require("../services/platform");
+    await expect(fetchPlatformAnalytics({ days: 7 })).rejects.toMatchObject({
+      response: { status: 403 },
+    });
+  }, 40000);
+});
+
 describe("monitoring against the live backend", () => {
   test("platform health names the operator behind each problem", async () => {
     authAs(ownerTokens);

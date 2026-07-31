@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { AlertTriangle, ExternalLink, Plus } from "lucide-react";
 import PlatformLayout from "../../components/platform/PlatformLayout";
 import OperatorPickerModal from "../../components/platform/OperatorPickerModal";
+import AnalyticsPanel from "../../components/platform/AnalyticsPanel";
 import {
   PageHeader,
   Section,
@@ -135,6 +136,8 @@ export default function PlatformOverview() {
                 />
               </div>
             </Section>
+
+            <AnalyticsPanel />
 
             {rev.overdue_count > 0 && (
               <button

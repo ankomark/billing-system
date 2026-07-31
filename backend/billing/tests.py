@@ -24,6 +24,7 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import ProtectedError
 from django.db.utils import IntegrityError
 from django.test import TestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from rest_framework.test import APIClient
@@ -3928,3 +3929,143 @@ class RouterEventPruningTests(TwoOperatorMixin, TestCase):
 
         self.assertEqual(removed, 1)
         self.assertEqual(RouterEvent.objects.all_tenants().count(), 1)
+
+
+# =====================================================
+# 21. Phase 4 — platform analytics
+# =====================================================
+
+class PlatformAnalyticsTests(PlatformBillingMixin, TestCase):
+    URL = "/api/platform/analytics/"
+
+    def setUp(self):
+        cache.clear()
+        self.build_billing()
+        self.owner = make_platform_owner()
+
+    # ---- access ------------------------------------------------------------
+
+    def test_operator_cannot_read_platform_analytics(self):
+        self.assertEqual(self.auth(self.admin1).get(self.URL).status_code, 403)
+
+    # ---- shape -------------------------------------------------------------
+
+    def test_every_day_in_the_window_is_present(self):
+        """
+        Gap-filled deliberately. A missing day renders as a drop to zero rather
+        than as a day nothing happened, which is a different claim.
+        """
+        resp = self.auth(self.owner).get(self.URL, {"days": 14})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(resp.data["series"]), 14)
+
+        days = [p["day"] for p in resp.data["series"]]
+        self.assertEqual(days, sorted(days))
+        self.assertEqual(len(set(days)), 14)
+
+    def test_days_is_clamped_to_a_year(self):
+        resp = self.auth(self.owner).get(self.URL, {"days": 100000})
+        self.assertEqual(resp.data["days"], 365)
+
+    def test_a_junk_day_count_does_not_error(self):
+        resp = self.auth(self.owner).get(self.URL, {"days": ""})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["days"], 30)
+
+    # ---- content -----------------------------------------------------------
+
+    def test_platform_revenue_lands_on_the_day_it_was_paid(self):
+        invoice = TenantInvoice.objects.all_tenants().filter(tenant=self.t1).first()
+        if invoice is None:
+            generate_tenant_invoices()
+            invoice = TenantInvoice.objects.all_tenants().filter(tenant=self.t1).first()
+
+        with tenant_context(self.t1):
+            TenantPayment.objects.create(
+                tenant=self.t1, invoice=invoice, amount=Decimal("2000.00"),
+                method="mpesa", reference="AN1")
+
+        resp = self.auth(self.owner).get(self.URL, {"days": 7})
+        today = timezone.localtime(timezone.now()).date().isoformat()
+        point = next(p for p in resp.data["series"] if p["day"] == today)
+        self.assertEqual(point["platform_revenue"], 2000.0)
+        self.assertEqual(resp.data["totals"]["platform_revenue"], 2000.0)
+
+    def test_the_operator_line_carries_in_operators_created_earlier(self):
+        """
+        Cumulative, not counted from the window's first day — otherwise the
+        line starts at zero and implies the platform began whenever the range
+        happens to start.
+        """
+        old = Tenant.objects.create(name="Long Standing", slug="long-standing")
+        Tenant.objects.filter(pk=old.pk).update(
+            created_at=timezone.now() - timezone.timedelta(days=400))
+
+        resp = self.auth(self.owner).get(self.URL, {"days": 7})
+        series = resp.data["series"]
+
+        # Day one already knows about the operator that predates the window.
+        self.assertGreaterEqual(series[0]["operators"], 1)
+        # And the line never goes backwards.
+        counts = [p["operators"] for p in series]
+        self.assertEqual(counts, sorted(counts))
+        # By the end it accounts for everyone.
+        self.assertEqual(counts[-1], Tenant.objects.count())
+
+    def test_narrowing_to_one_operator_excludes_the_others(self):
+        invoice = TenantInvoice.objects.all_tenants().filter(tenant=self.t2).first()
+        if invoice is None:
+            generate_tenant_invoices()
+            invoice = TenantInvoice.objects.all_tenants().filter(tenant=self.t2).first()
+
+        with tenant_context(self.t2):
+            TenantPayment.objects.create(
+                tenant=self.t2, invoice=invoice, amount=Decimal("500.00"),
+                method="mpesa", reference="AN2")
+
+        resp = self.auth(self.owner).get(self.URL, {"days": 7, "tenant": self.t1.id})
+        self.assertEqual(resp.data["totals"]["platform_revenue"], 0.0)
+        self.assertEqual(resp.data["operator"], self.t1.business_name or self.t1.name)
+
+    def test_unknown_operator_is_404(self):
+        resp = self.auth(self.owner).get(self.URL, {"tenant": 999999})
+        self.assertEqual(resp.status_code, 404)
+
+    def test_subscribers_added_counts_new_customers(self):
+        with tenant_context(self.t1):
+            Customer.objects.create(
+                full_name="Analytics Person", phone="254799000111",
+                connection_type="pppoe", tenant=self.t1)
+
+        resp = self.auth(self.owner).get(self.URL, {"days": 7})
+        self.assertGreaterEqual(resp.data["totals"]["subscribers_added"], 1)
+
+    # ---- cost --------------------------------------------------------------
+
+    def test_query_count_does_not_grow_with_the_window(self):
+        """
+        These are cross-tenant aggregates over tables that only grow. Bucketing
+        in SQL rather than looping in Python is what keeps this flat, and a
+        regression to per-day or per-operator queries would not otherwise be
+        visible until it was slow in production.
+        """
+        self.auth(self.owner).get(self.URL, {"days": 7})   # warm any lazy setup
+
+        with CaptureQueriesContext(connection) as short:
+            self.auth(self.owner).get(self.URL, {"days": 7})
+        with CaptureQueriesContext(connection) as long:
+            self.auth(self.owner).get(self.URL, {"days": 365})
+
+        self.assertEqual(len(short.captured_queries), len(long.captured_queries))
+
+    def test_query_count_does_not_grow_with_the_number_of_operators(self):
+        with CaptureQueriesContext(connection) as before:
+            self.auth(self.owner).get(self.URL, {"days": 30})
+
+        for i in range(5):
+            Tenant.objects.create(name=f"Extra {i}", slug=f"extra-{i}")
+
+        with CaptureQueriesContext(connection) as after:
+            self.auth(self.owner).get(self.URL, {"days": 30})
+
+        self.assertEqual(len(before.captured_queries), len(after.captured_queries))

@@ -13,6 +13,17 @@ export const fetchPlatformOverview = async () => {
  * entry names the operator — "a router is down" is not actionable on the
  * platform side without knowing whose.
  */
+/**
+ * Date-bucketed series across every operator, or one when `tenant` is given.
+ * Gap-filled server-side — a missing day would render as a fall to zero.
+ */
+export const fetchPlatformAnalytics = async ({ days = 30, tenant } = {}) => {
+  const res = await api.get("platform/analytics/", {
+    params: { days, ...(tenant ? { tenant } : {}) },
+  });
+  return res.data;
+};
+
 export const fetchPlatformHealth = async () => {
   const res = await api.get("platform/health/");
   return res.data;
