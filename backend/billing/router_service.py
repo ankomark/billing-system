@@ -79,24 +79,63 @@ def disable_hotspot(api, mac_address):
             users.remove(**{".id": u[".id"]})
             return
 def enable_customer_access(customer):
+    """
+    Put a paying customer onto working hardware.
+
+    Returns True when access was actually granted, False when it was not.
+
+    The return value matters. This used to return None either way, so a caller
+    could not tell the difference between "provisioned" and "no router was
+    reachable, nothing happened" — and the caller that mattered was the one
+    right after a payment. A customer could pay, have their invoice marked paid
+    and their subscription activated, receive an SMS saying their account was
+    ready, and have no access at all, with nothing retrying and nobody told.
+    """
     subscription = (
         customer.subscriptions.filter(status="active")
         .order_by("-expiry_date")
         .first()
     )
     if not subscription:
-        return
+        return False
 
     router, api = pick_working_router(customer)
     if not router or not api:
         logger.warning(f"No router online for {customer.full_name}")
-        return
+        return False
 
-    # ✅ IMPORTANT: if failover router differs, update customer.router
+    # A move, so record it. This wrote only a log line, which meant a customer
+    # could be re-homed onto different hardware and Failover Logs — the page an
+    # operator opens to ask exactly that — would show nothing.
+    # migrate_customer_router has always recorded its moves; this path is the
+    # one that happens on its own, so it needed the record more.
     if customer.router_id != router.id:
+        from .models import RouterFailoverLog
+
+        previous_id = customer.router_id
         customer.router = router
         customer.save(update_fields=["router"])
         logger.info(f"{customer.full_name} moved to router {router.name}")
+
+        try:
+            RouterFailoverLog.objects.create(
+                # Explicit, not left to the ambient tenant. This runs from
+                # Celery tasks where no middleware has set a context, and the
+                # model default would have nothing to resolve — the row would
+                # fail and the failure be swallowed by the guard below.
+                tenant_id=customer.tenant_id,
+                customer=customer,
+                from_router_id=previous_id,
+                to_router=router,
+                reason="auto_recovery",
+            )
+        except Exception:
+            # Losing the record must not cost the customer their connection,
+            # which is the whole point of this function.
+            logger.exception(
+                "[router] could not record the move of %s to %s",
+                customer, router,
+            )
 
     package = subscription.package
 
@@ -106,6 +145,8 @@ def enable_customer_access(customer):
 
     elif customer.connection_type == "hotspot":
         enable_hotspot(api, router, customer.hotspot_username, package, subscription.expiry_date)
+
+    return True
 
 
 def disable_customer_access(customer):
@@ -374,6 +415,8 @@ def provision_customer_on_router(api, router, customer, subscription):
 
     elif customer.connection_type == "hotspot":
         enable_hotspot(api, router, customer.hotspot_username, package, subscription.expiry_date)
+
+    return True
 
 def count_pppoe_sessions(api) -> int:
     """Count active PPPoE sessions on this router."""

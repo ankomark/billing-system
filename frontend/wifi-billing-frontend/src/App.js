@@ -2,7 +2,6 @@ import { lazy, Suspense } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 import ProtectedRoute from "./components/ProtectedRoute";
 import ErrorBoundary from "./components/ErrorBoundary";
-import { Skeleton } from "./components/ui/Skeleton";
 import {
   CUSTOMER, OPERATOR_ROLES, OPERATOR_ADMIN_ROLES, PLATFORM_ROLES,
 } from "./constants/roles";
@@ -64,13 +63,22 @@ const ADMIN_ROLES = OPERATOR_ROLES;
 const SUPER_ROLES = OPERATOR_ADMIN_ROLES;
 
 // Full-page loading fallback
+/**
+ * Shown before any lazy route resolves — including the light subscriber pages
+ * and the dark consoles, so it must belong to neither.
+ *
+ * It used to be a light background holding shared Skeleton bars. Those bars
+ * were darkened with the operator console and nothing here changed, so the
+ * first thing anyone saw on any route was dark-on-light. The bars are local
+ * and neutral now: a translucent grey reads on either ground.
+ */
 function PageLoader() {
   return (
-    <div className="min-h-screen bg-slate-50 flex items-center justify-center">
-      <div className="space-y-3 w-64">
-        <Skeleton className="h-4 w-full" />
-        <Skeleton className="h-4 w-3/4" />
-        <Skeleton className="h-4 w-1/2" />
+    <div className="min-h-screen bg-slate-100 dark:bg-slate-950 flex items-center justify-center">
+      <div className="space-y-3 w-64" role="status" aria-label="Loading">
+        <div className="h-4 w-full rounded bg-slate-400/25 animate-pulse" />
+        <div className="h-4 w-3/4 rounded bg-slate-400/25 animate-pulse" />
+        <div className="h-4 w-1/2 rounded bg-slate-400/25 animate-pulse" />
       </div>
     </div>
   );

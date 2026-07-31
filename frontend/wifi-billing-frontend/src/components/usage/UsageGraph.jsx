@@ -1,3 +1,14 @@
+/**
+ * SUBSCRIBER-FACING — keep this light.
+ *
+ * Rendered inside the customer PPPoE portal, which is a light page. It was
+ * darkened by mistake along with the operator console, because it lives under
+ * components/usage/ beside AdminUsageGraph and the sweep did not check who
+ * consumed it. A subscriber then saw a dark card in a light page.
+ *
+ * The operator console has its own chart in components/admin/ui; this one is
+ * not shared with it and should not follow it.
+ */
 import {
   LineChart,
   Line,
@@ -11,7 +22,7 @@ import {
 export default function UsageGraph({ data, title }) {
   if (!data || data.length === 0) {
     return (
-      <div className="bg-slate-900/80 p-4 rounded shadow mt-6">
+      <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm mt-6">
         <h3 className="font-semibold mb-3">{title}</h3>
         <p className="text-sm text-gray-500">No usage data available</p>
       </div>
@@ -19,7 +30,7 @@ export default function UsageGraph({ data, title }) {
   }
 
   return (
-    <div className="bg-slate-900/80 p-4 rounded shadow mt-6">
+    <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm mt-6">
       <h3 className="font-semibold mb-3">{title}</h3>
 
       <ResponsiveContainer width="100%" height={250}>

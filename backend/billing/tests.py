@@ -49,6 +49,9 @@ from billing.tasks.platform_billing_tasks import (
     send_platform_billing_reminders,
 )
 from billing.tasks.router_health import prune_router_events_task
+from billing.tasks.provisioning import ensure_customer_access_task
+from billing.router_service import enable_customer_access
+from celery.exceptions import Retry
 from billing.router_service import (
     _station_of, _tenant_routers, pick_best_router_for_new_customer,
     pick_failover_router, pick_working_router,
@@ -283,15 +286,25 @@ class PaymentProcessingTests(TestCase):
         self.sub.refresh_from_db()
         self.assertEqual(self.sub.status, "active")
 
-    @patch("billing.router_service.enable_customer_access")
+    @patch("billing.tasks.provisioning.ensure_customer_access_task.delay")
     @patch("billing.models.notify_customer")
-    def test_router_access_enabled_exactly_once(self, _, mock_enable):
+    def test_router_access_is_requested_exactly_once(self, _, mock_provision):
+        """
+        A payment provisions the customer, once.
+
+        It asserted the inline call before provisioning was made retryable. A
+        router briefly unreachable used to cost the customer the access they had
+        just paid for, so it now goes through a task that retries and, failing
+        that, tells the operator — which means the thing to assert is that the
+        work was requested, not that it finished synchronously.
+        """
         with self.captureOnCommitCallbacks(execute=True):
             Payment.objects.create(
                 customer=self.customer, subscription=self.sub,
                 amount=self.package.price, method="cash",
             )
-        mock_enable.assert_called_once()
+        mock_provision.assert_called_once()
+        self.assertEqual(mock_provision.call_args.args[0], self.customer.id)
 
     @patch("billing.router_service.enable_customer_access")
     @patch("billing.models.notify_customer")
@@ -5142,3 +5155,134 @@ class OperatorAnalyticsTests(TwoOperatorMixin, TestCase):
             self.auth(self.admin1).get(self.URL, {"days": 90})
 
         self.assertEqual(len(short.captured_queries), len(long.captured_queries))
+
+
+# =====================================================
+# 28. Paying and actually getting on the network
+# =====================================================
+
+class ProvisioningRetryTests(TwoOperatorMixin, TestCase):
+    """
+    The worst shape a failure can take here: the customer pays, the invoice is
+    marked paid, the subscription goes active, an SMS says the account is
+    ready — and no router answered, so they have nothing. It used to log a
+    warning and stop.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        self.customer = self.data["t1"]["customer"]
+
+    def test_enable_reports_failure_rather_than_returning_nothing(self):
+        """
+        The distinction the caller needs. This returned None either way, so
+        "provisioned" and "no router was reachable" were indistinguishable.
+        """
+        with patch("billing.router_service.pick_working_router", return_value=(None, None)):
+            self.assertIs(enable_customer_access(self.customer), False)
+
+    def test_enable_reports_success(self):
+        with patch("billing.router_service.pick_working_router",
+                   return_value=(self.data["t1"]["router"], object())), \
+             patch("billing.router_service.create_pppoe_secret"), \
+             patch("billing.router_service.enable_pppoe"):
+            self.assertIs(enable_customer_access(self.customer), True)
+
+    def test_a_reachable_router_provisions_first_time(self):
+        with patch("billing.router_service.enable_customer_access", return_value=True) as ok:
+            result = ensure_customer_access_task(self.customer.id)
+        self.assertTrue(result)
+        self.assertEqual(ok.call_count, 1)
+
+    def test_it_retries_rather_than_giving_up(self):
+        """A router down for ninety seconds must not cost someone their access."""
+        with patch("billing.router_service.enable_customer_access", return_value=False), \
+             patch.object(ensure_customer_access_task, "retry",
+                          side_effect=Retry("retrying")) as retry:
+            with self.assertRaises(Retry):
+                ensure_customer_access_task(self.customer.id)
+        self.assertTrue(retry.called)
+        # Backs off rather than hammering a box that is rebooting.
+        self.assertGreaterEqual(retry.call_args.kwargs["countdown"], 60)
+
+    def test_when_it_finally_gives_up_a_person_is_told(self):
+        """
+        Out of attempts, the customer has paid and has nothing. That stops being
+        a network event and becomes something someone must handle.
+        """
+        task = ensure_customer_access_task
+        with patch("billing.router_service.enable_customer_access", return_value=False), \
+             patch("billing.tasks.alert_tasks.notify_admin_task.delay") as alert:
+            # Celery's task proxy has no patchable `request`; push a real one
+            # describing the final attempt instead.
+            task.push_request(retries=task.max_retries)
+            try:
+                result = task(self.customer.id)
+            finally:
+                task.pop_request()
+
+        self.assertFalse(result)
+        self.assertTrue(alert.called, "the operator was not told")
+        self.assertIn("paid", alert.call_args.args[0].lower())
+
+    def test_the_failure_is_recorded_against_the_customer(self):
+        task = ensure_customer_access_task
+        with patch("billing.router_service.enable_customer_access", return_value=False), \
+             patch("billing.tasks.alert_tasks.notify_admin_task.delay"):
+            task.push_request(retries=task.max_retries)
+            try:
+                task(self.customer.id)
+            finally:
+                task.pop_request()
+
+        log = AccessAuditLog.objects.all_tenants().filter(
+            customer=self.customer, action="provisioning_failed").first()
+        self.assertIsNotNone(log, "nothing on the customer's own record")
+        self.assertIn("no router was reachable", log.reason)
+
+    def test_a_deleted_customer_does_not_crash_the_worker(self):
+        missing = 9999999
+        self.assertIs(ensure_customer_access_task(missing), False)
+
+
+class SilentRehomingTests(TwoOperatorMixin, TestCase):
+    """
+    A customer moved to different hardware must appear in Failover Logs — the
+    page an operator opens to ask exactly that question.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        self.customer = self.data["t1"]["customer"]
+        with tenant_context(self.t1):
+            self.spare = RouterDevice.objects.create(
+                tenant=self.t1, name="t1-spare", ip_address="10.0.9.9",
+                username="a", password="p", priority=2)
+
+    def test_an_automatic_move_is_recorded(self):
+        before = self.customer.router
+        with patch("billing.router_service.pick_working_router",
+                   return_value=(self.spare, object())), \
+             patch("billing.router_service.create_pppoe_secret"), \
+             patch("billing.router_service.enable_pppoe"):
+            enable_customer_access(self.customer)
+
+        log = RouterFailoverLog.objects.all_tenants().filter(
+            customer=self.customer).order_by("-id").first()
+        self.assertIsNotNone(log, "the move left no trace in Failover Logs")
+        self.assertEqual(log.to_router, self.spare)
+        self.assertEqual(log.from_router, before)
+        self.assertEqual(log.reason, "auto_recovery")
+
+    def test_staying_put_records_nothing(self):
+        """Only moves are events. A customer on their own router is not news."""
+        RouterFailoverLog.objects.all_tenants().all().delete()
+        with patch("billing.router_service.pick_working_router",
+                   return_value=(self.customer.router, object())), \
+             patch("billing.router_service.create_pppoe_secret"), \
+             patch("billing.router_service.enable_pppoe"):
+            enable_customer_access(self.customer)
+
+        self.assertEqual(RouterFailoverLog.objects.all_tenants().count(), 0)

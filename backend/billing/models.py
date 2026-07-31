@@ -1242,7 +1242,22 @@ class Payment(TenantScopedModel):
 
             # Their routers, their SMS credentials.
             with tenant_context(tenant_id):
-                enable_customer_access(fresh)
+                # Through the task rather than inline, so a router that is
+                # briefly unreachable — a reboot, a power cut — is retried
+                # instead of costing this customer the access they just paid
+                # for. If it still cannot, the operator is told.
+                try:
+                    from billing.tasks.provisioning import ensure_customer_access_task
+                    ensure_customer_access_task.delay(customer_id, reason="payment")
+                except Exception:
+                    # No broker reachable. Better to try once here than to
+                    # leave a paying customer with nothing because the queue
+                    # was down.
+                    logger.exception(
+                        "[payment] could not queue provisioning for %s, "
+                        "attempting inline", customer_id)
+                    enable_customer_access(fresh)
+
                 try:
                     notify_customer(phone, message)
                 except Exception:
