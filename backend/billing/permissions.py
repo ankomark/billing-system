@@ -17,7 +17,7 @@ staff account — including a customer — through fourteen admin endpoints, whi
 locking out operator admins who happened not to have the flag set.
 """
 
-from rest_framework.permissions import BasePermission
+from rest_framework.permissions import BasePermission, SAFE_METHODS
 
 from .models import User
 
@@ -103,6 +103,31 @@ class IsTenantMember(_OperatorPermission):
     allowed_roles = (
         User.TENANT_ADMIN, User.TENANT_STAFF, *User.PLATFORM_ROLES,
     )
+
+
+class IsTenantAdminOrReadOnlyMember(_OperatorPermission):
+    """
+    Staff may look; only an admin may change.
+
+    The split that makes an operator's staff account worth having. Before this,
+    29 of 30 operator endpoints required tenant_admin, so a staff account could
+    sign in and reach almost nothing — the team feature existed and produced
+    logins that could not do the job.
+
+    Reading a customer list is the day-to-day work. Editing one, changing a
+    package price or touching M-Pesa credentials is not, and stays with the
+    admin who is accountable for the business.
+    """
+
+    allowed_roles = (User.TENANT_ADMIN, User.TENANT_STAFF) + User.PLATFORM_ROLES
+
+    def has_permission(self, request, view):
+        if not super().has_permission(request, view):
+            return False
+        if request.method in SAFE_METHODS:
+            return True
+        role = _role(request)
+        return role == User.TENANT_ADMIN or role in User.PLATFORM_ROLES
 
 
 class IsTenantAdminForBilling(_OperatorPermission):

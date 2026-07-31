@@ -135,10 +135,23 @@ export default function Users() {
                   onChange={(e) => setForm({ ...form, role: e.target.value })}
                   className={inputCls(err("role"))}
                 >
-                  <option value="tenant_staff">Staff — day to day</option>
-                  <option value="tenant_admin">Admin — can also manage the team</option>
+                  <option value="tenant_staff">Staff</option>
+                  <option value="tenant_admin">Admin</option>
                 </select>
               </label>
+            </div>
+            <div className="rounded-lg bg-slate-50 border border-slate-200 px-4 py-3 text-xs text-slate-600 space-y-1.5">
+              <p>
+                <strong className="text-slate-800">Staff</strong> run the counter:
+                they can see customers, packages, invoices and the network, look
+                up who has access, resend a voucher and record a cash payment.
+              </p>
+              <p>
+                <strong className="text-slate-800">Admin</strong> can do all of
+                that and change the business — add and edit customers, set
+                package prices, manage routers and stations, edit settings and
+                M-Pesa, and manage this team.
+              </p>
             </div>
             <p className="text-xs text-slate-400">
               Give them this password directly. They will be made to replace it

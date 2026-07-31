@@ -2209,9 +2209,32 @@ class PermissionBoundaryTests(TwoOperatorMixin, TestCase):
         self.assertEqual(resp.status_code, 200)
 
     def test_operator_staff_may_not_reach_admin_only_endpoints(self):
+        """
+        ADMIN_URL is the customer list, which staff may now READ — that is the
+        point of having a staff role at all. What they must not reach is the
+        configuration of the business, so this asserts against those instead,
+        and against writing a customer rather than seeing one.
+        """
         staffer = User.objects.create_user(
             username="clerk", password="pw", role=User.TENANT_STAFF, tenant=self.t1)
-        self.assertEqual(self.auth(staffer).get(self.ADMIN_URL).status_code, 403)
+        client = self.auth(staffer)
+
+        self.assertEqual(client.get("/api/system/settings/").status_code, 403)
+        self.assertEqual(client.get("/api/users/").status_code, 403)
+        self.assertEqual(
+            client.post(self.ADMIN_URL, {
+                "full_name": "Nope", "phone": "254700111888",
+                "connection_type": "pppoe",
+            }, format="json").status_code,
+            403,
+        )
+
+    def test_operator_staff_may_read_the_business(self):
+        """The other half of the same rule, kept beside it so neither drifts."""
+        staffer = User.objects.create_user(
+            username="clerk_reader", password="pw",
+            role=User.TENANT_STAFF, tenant=self.t1)
+        self.assertEqual(self.auth(staffer).get(self.ADMIN_URL).status_code, 200)
 
     def test_platform_staff_may_act_for_support(self):
         owner = make_platform_owner()
@@ -4829,3 +4852,119 @@ class DoublePaymentTests(TwoOperatorMixin, TestCase):
         vouchers = Voucher.objects.all_tenants().filter(
             subscription=self.invoice.subscription).count()
         self.assertEqual(vouchers, 1)
+
+
+# =====================================================
+# 26. Making an operator's staff account worth having
+# =====================================================
+
+class TenantStaffCapabilityTests(TwoOperatorMixin, TestCase):
+    """
+    Before this, 29 of 30 operator endpoints required tenant_admin, so a staff
+    account could sign in and reach almost nothing — the team feature produced
+    logins that could not do the job.
+
+    The rule: reading the business is the day job; changing its configuration,
+    its money settings or its hardware is not.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        self.staff = User.objects.create_user(
+            username="day_staff", password="x",
+            role=User.TENANT_STAFF, tenant=self.t1)
+
+    # ---- what staff must be able to do -------------------------------------
+
+    def test_staff_can_see_the_customer_list(self):
+        self.assertEqual(self.auth(self.staff).get("/api/customers/").status_code, 200)
+
+    def test_staff_can_see_packages_and_invoices(self):
+        client = self.auth(self.staff)
+        self.assertEqual(client.get("/api/packages/").status_code, 200)
+        self.assertEqual(client.get("/api/invoices/").status_code, 200)
+
+    def test_staff_can_see_the_dashboard(self):
+        client = self.auth(self.staff)
+        self.assertEqual(client.get("/api/reports/revenue/").status_code, 200)
+        self.assertEqual(client.get("/api/dashboard/invoices/unpaid/").status_code, 200)
+        self.assertEqual(client.get("/api/dashboard/mpesa/failed/").status_code, 200)
+
+    def test_staff_can_see_the_network(self):
+        client = self.auth(self.staff)
+        self.assertEqual(client.get("/api/admin/routers/").status_code, 200)
+        self.assertEqual(client.get("/api/admin/routers/health/").status_code, 200)
+        self.assertEqual(client.get("/api/admin/routers/failovers/").status_code, 200)
+        self.assertEqual(client.get("/api/admin/routers/events/").status_code, 200)
+
+    def test_staff_can_look_up_access(self):
+        """The single most common thing anyone on a support desk does."""
+        resp = self.auth(self.staff).get("/api/admin/access-lookup/", {"q": "0700"})
+        self.assertNotEqual(resp.status_code, 403)
+
+    def test_staff_can_record_a_manual_payment(self):
+        """Someone paid in cash at the counter — that is the counter's job."""
+        invoice = self.data["t1"]["invoice"]
+        resp = self.auth(self.staff).post("/api/payments/manual/", {
+            "invoice_number": invoice.invoice_number,
+            "amount": str(invoice.total_amount),
+            "method": "cash",
+        }, format="json")
+        self.assertNotEqual(resp.status_code, 403)
+
+    # ---- what stays with the admin -----------------------------------------
+
+    def test_staff_cannot_add_a_customer(self):
+        resp = self.auth(self.staff).post("/api/customers/", {
+            "full_name": "Nope", "phone": "254700111999", "connection_type": "pppoe",
+        }, format="json")
+        self.assertEqual(resp.status_code, 403)
+
+    def test_staff_cannot_change_a_package_price(self):
+        package = self.data["t1"]["package"]
+        resp = self.auth(self.staff).patch(
+            f"/api/packages/{package.id}/", {"price": "1.00"}, format="json")
+        self.assertEqual(resp.status_code, 403)
+
+    def test_staff_cannot_touch_settings_or_credentials(self):
+        client = self.auth(self.staff)
+        self.assertEqual(client.get("/api/system/settings/").status_code, 403)
+        self.assertEqual(client.get("/api/system/test/mpesa/").status_code, 403)
+
+    def test_staff_cannot_manage_the_team(self):
+        """Otherwise staff could promote themselves."""
+        self.assertEqual(self.auth(self.staff).get("/api/users/").status_code, 403)
+
+    def test_staff_cannot_add_or_remove_routers(self):
+        resp = self.auth(self.staff).post("/api/admin/routers/", {
+            "name": "rogue", "ip_address": "10.0.0.9", "username": "a", "password": "p",
+        }, format="json")
+        self.assertEqual(resp.status_code, 403)
+
+    def test_staff_cannot_broadcast_to_every_customer(self):
+        resp = self.auth(self.staff).post(
+            "/api/admin/broadcast/", {"message": "hi"}, format="json")
+        self.assertEqual(resp.status_code, 403)
+
+    def test_staff_cannot_cut_off_a_customer(self):
+        resp = self.auth(self.staff).post(
+            "/api/admin/access-deactivate/",
+            {"subscription_id": 1, "reason": "no"}, format="json")
+        self.assertEqual(resp.status_code, 403)
+
+    def test_staff_cannot_manage_stations(self):
+        self.assertEqual(self.auth(self.staff).get("/api/stations/").status_code, 403)
+
+    # ---- and none of it crosses operators ----------------------------------
+
+    def test_staff_see_only_their_own_operators_customers(self):
+        resp = self.auth(self.staff).get("/api/customers/")
+        names = {c["full_name"] for c in resp.data["results"]}
+        self.assertNotIn(self.data["t2"]["customer"].full_name, names)
+
+    def test_an_admin_keeps_everything_staff_lost(self):
+        client = self.auth(self.admin1)
+        self.assertEqual(client.get("/api/system/settings/").status_code, 200)
+        self.assertEqual(client.get("/api/users/").status_code, 200)
+        self.assertEqual(client.get("/api/stations/").status_code, 200)

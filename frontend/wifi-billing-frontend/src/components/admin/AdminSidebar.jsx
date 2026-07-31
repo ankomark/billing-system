@@ -10,6 +10,12 @@ import {
 export default function AdminSidebar({ open, onClose }) {
   const navigate = useNavigate();
 
+  // Staff read the business; admins change it. Hiding what they cannot reach
+  // is kinder than a 403 they could have been spared — and the routes enforce
+  // it too, so this is presentation, not security.
+  const role = getUser()?.role;
+  const isAdmin = role !== "tenant_staff";
+
   // Impersonation wins: while platform staff are viewing as an operator, the
   // console should name that operator, not the staff member's own tenant
   // (which is null for platform accounts anyway).
@@ -72,7 +78,9 @@ export default function AdminSidebar({ open, onClose }) {
 
           <SectionLabel label="Billing" />
           <NavItem to="/admin/customers"       icon={Users}         label="Customers"       onClick={onClose} />
-          <NavItem to="/admin/customers/new"   icon={UserPlus}      label="Add Customer"    onClick={onClose} />
+          {isAdmin && (
+            <NavItem to="/admin/customers/new"   icon={UserPlus}      label="Add Customer"    onClick={onClose} />
+          )}
           <NavItem to="/admin/packages"        icon={Package}       label="Packages"        onClick={onClose} />
           <NavItem to="/admin/invoices/unpaid" icon={FileText}      label="Unpaid Invoices" onClick={onClose} />
           <NavItem to="/admin/mpesa/failed"    icon={AlertCircle}   label="M-Pesa Errors"  onClick={onClose} />
@@ -80,18 +88,24 @@ export default function AdminSidebar({ open, onClose }) {
           <SectionLabel label="Network" />
           <NavItem to="/admin/pppoe/sessions"  icon={Activity}      label="PPPoE Sessions"  onClick={onClose} />
           <NavItem to="/admin/routers"         icon={Router}        label="Routers"         onClick={onClose} />
-          <NavItem to="/admin/stations"        icon={MapPin}        label="Stations"        onClick={onClose} />
           <NavItem to="/admin/router-health"   icon={HeartPulse}    label="Router Health"   onClick={onClose} />
           <NavItem to="/admin/failover-logs"   icon={RefreshCw}     label="Failover Logs"   onClick={onClose} />
           <NavItem to="/admin/usage-alerts"    icon={ShieldAlert}   label="Usage Alerts"    onClick={onClose} />
 
           <SectionLabel label="Communications" />
-          <NavItem to="/admin/broadcast"       icon={MessageSquare} label="Broadcast"       onClick={onClose} />
+          {isAdmin && (
+            <NavItem to="/admin/broadcast"     icon={MessageSquare} label="Broadcast"       onClick={onClose} />
+          )}
           <NavItem to="/admin/access-lookup"   icon={Search}        label="Access Lookup"   onClick={onClose} />
 
           <SectionLabel label="System" />
-          <NavItem to="/admin/settings"        icon={Settings}      label="Settings"        onClick={onClose} />
-          <NavItem to="/admin/team"            icon={Users}         label="Team"            onClick={onClose} />
+          {isAdmin && (
+            <>
+              <NavItem to="/admin/settings"    icon={Settings}      label="Settings"        onClick={onClose} />
+              <NavItem to="/admin/stations"    icon={MapPin}        label="Stations"        onClick={onClose} />
+              <NavItem to="/admin/team"        icon={Users}         label="Team"            onClick={onClose} />
+            </>
+          )}
           <NavItem to="/admin/account"         icon={UserCog}       label="My Account"      onClick={onClose} />
           {/* What this operator owes the platform. Stays reachable while
               restricted — it is the page that explains why. */}
