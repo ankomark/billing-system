@@ -11,6 +11,8 @@ from .views import (
     TenantUserViewSet,
     OperatorPasswordResetView,
     OperatorWarningView,
+    RouterEventsView,
+    PlatformHealthView,
 
     # ViewSets
     CustomerViewSet,
@@ -203,6 +205,7 @@ urlpatterns = [
     path("api/admin/routers/",             AdminRouterListView.as_view(),   name="admin-routers"),
     path("api/admin/routers/<int:pk>/",    AdminRouterDetailView.as_view(), name="admin-router-detail"),
     path("api/admin/routers/health/",      AdminRouterHealthView.as_view(), name="admin-router-health"),
+    path("api/admin/routers/events/",       RouterEventsView.as_view(),             name="router-events"),
     path("api/admin/routers/failovers/",   AdminFailoverLogsView.as_view(), name="admin-failover-logs"),
 
     # ─── Admin — broadcast ───────────────────────────────────────────────────
@@ -224,6 +227,7 @@ urlpatterns = [
     path("api/platform/my-account/",   MyPlatformSubscriptionView.as_view(), name="platform-my-account"),
     path("api/platform/payments/",     RecordTenantPaymentView.as_view(),    name="platform-record-payment"),
     path("api/platform/overview/",  PlatformOverviewView.as_view(),     name="platform-overview"),
+    path("api/platform/health/",    PlatformHealthView.as_view(),       name="platform-health"),
     path("api/platform/operators/", PlatformOperatorListView.as_view(), name="platform-operators"),
     path("api/platform/operators/<int:tenant_id>/", PlatformOperatorDetailView.as_view(), name="platform-operator-detail"),
     path("api/platform/operators/<int:tenant_id>/status/", TenantStatusView.as_view(), name="platform-tenant-status"),

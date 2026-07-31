@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { RefreshCw } from "lucide-react";
 import AdminLayout from "../../components/admin/AdminLayout";
 import { SkeletonTable } from "../../components/ui/Skeleton";
-import { fetchRouterHealth, fetchFailoverLogs } from "../../services/routers";
+import { fetchRouterHealth, fetchFailoverLogs, fetchRouterEvents } from "../../services/routers";
 
 export default function RouterHealth() {
   const { data: routers = [], isLoading: loadingRouters, isFetching: fetchingRouters, refetch: refetchRouters } = useQuery({
@@ -10,6 +10,15 @@ export default function RouterHealth() {
     queryFn: fetchRouterHealth,
     refetchInterval: 10 * 1000,
     staleTime: 10 * 1000,
+  });
+
+  // Availability and the history of going down. The table above shows current
+  // state and one last_error that each new failure overwrites, so it can never
+  // answer "has this been flapping?" or "how long were we down?".
+  const { data: events } = useQuery({
+    queryKey: ["router-events"],
+    queryFn: () => fetchRouterEvents(7),
+    staleTime: 60 * 1000,
   });
 
   const { data: logs = [], isLoading: loadingLogs } = useQuery({
@@ -97,6 +106,80 @@ export default function RouterHealth() {
           </div>
         </div>
 
+        {/* Availability over the last week */}
+        {events?.routers?.length > 0 && (
+          <div>
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">
+              Availability — last {events.days} days
+            </p>
+            <div className="grid gap-4 sm:grid-cols-2">
+              {events.routers.map((r) => (
+                <div key={r.id} className="bg-white rounded-xl border border-slate-200 p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="font-medium text-slate-800 truncate">{r.name}</p>
+                      <p className="text-xs text-slate-400">{r.ip_address}</p>
+                    </div>
+                    <div className="text-right">
+                      <p className={`text-xl font-bold tabular-nums ${
+                        r.availability.uptime_percent >= 99
+                          ? "text-emerald-600"
+                          : r.availability.uptime_percent >= 95
+                          ? "text-amber-600"
+                          : "text-red-600"
+                      }`}>
+                        {r.availability.uptime_percent}%
+                      </p>
+                      <p className="text-xs text-slate-400">
+                        {r.availability.outages} outage
+                        {r.availability.outages === 1 ? "" : "s"}
+                        {r.availability.downtime_seconds > 0 &&
+                          ` · ${formatDuration(r.availability.downtime_seconds)} down`}
+                      </p>
+                    </div>
+                  </div>
+
+                  {r.events.length === 0 ? (
+                    <p className="text-xs text-slate-400 mt-3 pt-3 border-t border-slate-100">
+                      No changes in this period.
+                    </p>
+                  ) : (
+                    <ul className="mt-3 pt-3 border-t border-slate-100 space-y-1.5 max-h-40 overflow-y-auto">
+                      {r.events.map((e, i) => (
+                        <li key={i} className="text-xs flex gap-2">
+                          <span
+                            className={`mt-1 inline-block h-1.5 w-1.5 rounded-full flex-shrink-0 ${
+                              e.kind === "came_online" ? "bg-emerald-500" : "bg-red-500"
+                            }`}
+                            aria-hidden="true"
+                          />
+                          <span className="min-w-0 flex-1">
+                            <span className="text-slate-700 font-medium">
+                              {e.kind === "came_online" ? "Came online" : "Went offline"}
+                            </span>
+                            {e.cause && (
+                              <span className="text-slate-400"> · {CAUSE_LABELS[e.cause] || e.cause}</span>
+                            )}
+                            {e.detail && (
+                              <span className="block text-slate-400 truncate">{e.detail}</span>
+                            )}
+                          </span>
+                          <span className="text-slate-400 whitespace-nowrap">
+                            {new Date(e.at).toLocaleString("en-KE", {
+                              month: "short", day: "numeric",
+                              hour: "2-digit", minute: "2-digit",
+                            })}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Recent failovers */}
         <div>
           <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">Recent Failovers</p>
@@ -151,4 +234,20 @@ export default function RouterHealth() {
       </div>
     </AdminLayout>
   );
+}
+
+const CAUSE_LABELS = {
+  unreachable: "could not be reached",
+  auth_failed: "refused our credentials",
+  error: "error",
+};
+
+/** Compact enough to sit under a percentage without wrapping. */
+function formatDuration(seconds) {
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest ? `${hours}h ${rest}m` : `${hours}h`;
 }

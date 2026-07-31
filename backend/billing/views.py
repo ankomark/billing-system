@@ -24,7 +24,7 @@ from billing.models import Customer,Subscription,PPPoEUsageRecord
 from billing.notifications import send_sms, send_whatsapp, notify_customer
 from billing.serializers import BroadcastSerializer
 from billing.mpesa_client import get_mpesa_access_token, missing_mpesa_keys
-from django.db.models import Prefetch, Sum
+from django.db.models import Prefetch, Q, Sum
 from django.db.models.functions import TruncDate, TruncMonth
 from .reports import (revenue_summary,revenue_by_method,revenue_by_package,customer_stats,)
 from .dashboards import (unpaid_invoices,pending_invoices,failed_mpesa_transactions,)
@@ -36,6 +36,7 @@ from django.utils import timezone
 from rest_framework import viewsets
 from .models import Customer, Package, Subscription,Invoice, Payment,MpesaTransaction,SystemSetting,RouterFailoverLog, HotspotUsageRecord, AccessAuditLog, Tenant
 from .models import PlatformPlan, TenantSubscription, TenantInvoice, TenantPayment, TenantStatusChange
+from .models import RouterEvent, router_uptime
 from .models import ImpersonationLog
 from .models import User, AdminActionLog, record_admin_action
 from .tenancy import tenant_context, get_current_tenant_id
@@ -2735,6 +2736,126 @@ class PlatformOperatorListView(APIView):
             }
             for t in tenants
         ])
+
+
+class RouterEventsView(APIView):
+    """
+    One router's history of going down and coming back, with availability.
+
+    The existing health view shows current state and a single last_error that
+    each new failure overwrites. This is what that field could never answer:
+    whether a router is flapping, and how long it was actually down.
+    """
+
+    permission_classes = [IsTenantMember]
+
+    def get(self, request):
+        days = max(1, min(int(request.query_params.get("days", 7) or 7), 90))
+        since = timezone.now() - timezone.timedelta(days=days)
+
+        routers = list(RouterDevice.objects.filter(is_active=True).order_by("priority"))
+        router_id = request.query_params.get("router")
+        if router_id:
+            routers = [r for r in routers if str(r.id) == str(router_id)]
+
+        # Bulk-loaded and grouped in Python rather than a query per router.
+        events = list(
+            RouterEvent.objects.filter(
+                router__in=routers, created_at__gte=since
+            ).select_related("router").order_by("-created_at")[:500]
+        )
+        by_router = {}
+        for e in events:
+            by_router.setdefault(e.router_id, []).append(e)
+
+        return Response({
+            "days": days,
+            "routers": [
+                {
+                    "id": r.id,
+                    "name": r.name,
+                    "ip_address": r.ip_address,
+                    "is_online": r.is_online,
+                    "last_seen": r.last_seen,
+                    "last_error": r.last_error,
+                    "availability": router_uptime(r, since),
+                    "events": [
+                        {
+                            "kind": e.kind,
+                            "cause": e.cause,
+                            "detail": e.detail,
+                            "at": e.created_at,
+                        }
+                        for e in by_router.get(r.id, [])
+                    ],
+                }
+                for r in routers
+            ],
+        })
+
+
+class PlatformHealthView(APIView):
+    """
+    What is wrong across the whole platform, in one request.
+
+    The overview carried a single failure number — routers offline — so
+    everything else needing attention had to be found by visiting each operator
+    in turn. Each entry names the operator, because on this side of the product
+    "a router is down" is not actionable without knowing whose.
+    """
+
+    permission_classes = [IsPlatformStaff]
+
+    def get(self, request):
+        tenants = {t.id: t for t in Tenant.objects.all()}
+
+        offline = [
+            {
+                "operator": tenants[r.tenant_id].business_name or tenants[r.tenant_id].name,
+                "operator_id": r.tenant_id,
+                "router": r.name,
+                "ip_address": r.ip_address,
+                "last_seen": r.last_seen,
+                "last_error": r.last_error,
+            }
+            for r in RouterDevice.objects.all_tenants()
+            .filter(is_active=True, is_online=False)
+            .order_by("tenant_id", "priority")
+            if r.tenant_id in tenants
+        ]
+
+        # An operator who cannot take money is stuck in a way that looks like
+        # nothing being wrong — no errors, just no revenue.
+        unconfigured = [
+            {"operator": t.business_name or t.name, "operator_id": t.id}
+            for t in tenants.values()
+            if not t.is_restricted and missing_mpesa_keys(tenant=t)
+        ]
+
+        past_due = [
+            {
+                "operator": t.business_name or t.name,
+                "operator_id": t.id,
+                "status": t.status,
+            }
+            for t in tenants.values()
+            if t.status in ("past_due", "restricted")
+        ]
+
+        since = timezone.now() - timezone.timedelta(days=1)
+        failed_payments = (
+            MpesaTransaction.objects.all_tenants()
+            .filter(Q(status="failed") | Q(processed=False), created_at__gte=since)
+            .count()
+        )
+
+        return Response({
+            "routers_offline": offline,
+            "payments_unconfigured": unconfigured,
+            "operators_owing": past_due,
+            "failed_payments_24h": failed_payments,
+            "all_clear": not (offline or unconfigured or past_due or failed_payments),
+        })
 
 
 class OperatorWarningView(APIView):

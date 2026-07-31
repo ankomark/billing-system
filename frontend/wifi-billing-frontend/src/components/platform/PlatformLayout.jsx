@@ -1,6 +1,6 @@
 import { NavLink, useNavigate } from "react-router-dom";
 import {
-  Building2, LayoutDashboard, LogOut, Receipt, ShieldCheck,
+  Activity, Building2, LayoutDashboard, LogOut, Receipt, ShieldCheck,
 } from "lucide-react";
 import { getUser, logout } from "../../services/auth";
 import { PLATFORM_NAME, PLATFORM_TAGLINE } from "../../constants/brand";
@@ -41,6 +41,7 @@ export default function PlatformLayout({ children }) {
           <Item to="/platform" end icon={LayoutDashboard} label="Overview" />
           <Item to="/platform/operators" icon={Building2} label="Operators" />
           <Item to="/platform/invoices" icon={Receipt} label="Invoices" />
+          <Item to="/platform/health" icon={Activity} label="Health" />
         </nav>
 
         <div className="p-3 border-t border-slate-800">

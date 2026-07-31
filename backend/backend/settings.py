@@ -350,6 +350,13 @@ CELERY_BEAT_SCHEDULE = {
         "schedule": crontab(minute="*/2"),
         "options": {"expires": 90},
     },
+    # Router events are transitions only, so this deletes little on a stable
+    # estate — but a flapping router writes rows every two minutes and nothing
+    # else would ever remove them.
+    "prune-router-events": {
+        "task": "billing.tasks.router_health.prune_router_events_task",
+        "schedule": crontab(hour=5, minute=0),
+    },
     "collect-pppoe-usage": {
         "task": "billing.tasks.usage_tasks.collect_pppoe_usage_snapshots",
         "schedule": crontab(minute="*/5"),

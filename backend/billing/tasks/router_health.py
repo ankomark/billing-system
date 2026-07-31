@@ -39,3 +39,29 @@ def check_router_health_task(self):
 
     logger.info(f"[router-health] Check complete: {online} online, {offline} offline")
     return {"online": online, "offline": offline}
+
+
+# Long enough to investigate a pattern of flapping, short enough that the table
+# does not grow without bound. Only transitions are stored, so a stable estate
+# writes almost nothing and this rarely deletes anything.
+EVENT_RETENTION_DAYS = 90
+
+
+@shared_task
+def prune_router_events_task(days=EVENT_RETENTION_DAYS):
+    """
+    Drop router events past the retention window.
+
+    Every sweep that finds a flapping router adds rows, and nothing else would
+    ever remove them.
+    """
+    from django.utils import timezone
+    from billing.models import RouterEvent
+
+    cutoff = timezone.now() - timezone.timedelta(days=days)
+    with all_tenants():
+        deleted, _ = RouterEvent.objects.all_tenants().filter(
+            created_at__lt=cutoff).delete()
+    logger.info("[router-health] pruned %s router event(s) older than %s days",
+                deleted, days)
+    return deleted

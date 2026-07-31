@@ -42,6 +42,7 @@ const PLATFORM_PAGES = [
   ["Operators", () => require("../pages/platform/Operators").default, /Skylink WiFi/i],
   ["PlatformInvoices", () => require("../pages/platform/PlatformInvoices").default, /PINV-0002/i],
   ["NewOperator", () => require("../pages/platform/NewOperator").default, /New operator/i],
+  ["PlatformHealth", () => require("../pages/platform/PlatformHealth").default, /Routers offline/i],
 ];
 
 const ADMIN_PAGES = [
@@ -327,6 +328,55 @@ describe("creating an operator against the live backend", () => {
       })
     ).rejects.toMatchObject({ response: { status: 403 } });
   }, 60000);
+});
+
+describe("monitoring against the live backend", () => {
+  test("platform health names the operator behind each problem", async () => {
+    authAs(ownerTokens);
+    const { fetchPlatformHealth } = require("../services/platform");
+    const health = await fetchPlatformHealth();
+
+    expect(health).toHaveProperty("routers_offline");
+    expect(health).toHaveProperty("payments_unconfigured");
+    expect(health).toHaveProperty("operators_owing");
+    expect(health).toHaveProperty("all_clear");
+
+    // Every entry must be attributable — a problem you cannot pin to an
+    // operator is not actionable on this side.
+    for (const group of [
+      health.routers_offline,
+      health.payments_unconfigured,
+      health.operators_owing,
+    ]) {
+      for (const row of group) {
+        expect(row.operator).toBeTruthy();
+        expect(typeof row.operator_id).toBe("number");
+      }
+    }
+  }, 40000);
+
+  test("an operator cannot see platform health", async () => {
+    authAs(adminTokens);
+    const { fetchPlatformHealth } = require("../services/platform");
+    await expect(fetchPlatformHealth()).rejects.toMatchObject({
+      response: { status: 403 },
+    });
+  }, 40000);
+
+  test("router events carry availability and stay scoped", async () => {
+    authAs(adminTokens);
+    const { fetchRouterEvents } = require("../services/routers");
+    const data = await fetchRouterEvents(7);
+
+    expect(data.days).toBe(7);
+    expect(Array.isArray(data.routers)).toBe(true);
+    for (const r of data.routers) {
+      expect(r.availability).toHaveProperty("uptime_percent");
+      expect(r.availability).toHaveProperty("outages");
+    }
+    // BlueWave's router belongs to the other operator.
+    expect(data.routers.map((r) => r.name)).not.toContain("BlueWave Core");
+  }, 40000);
 });
 
 describe("operator lifecycle against the live backend", () => {

@@ -47,6 +47,7 @@ from billing.tasks.platform_billing_tasks import (
     restrict_expired_grace_tenants,
     send_platform_billing_reminders,
 )
+from billing.tasks.router_health import prune_router_events_task
 from billing.tasks.subscription_tasks import enforce_subscription_expiry
 from billing.router_service import (
     pick_best_router_for_new_customer,
@@ -61,7 +62,8 @@ from billing.models import (
     SystemSetting, PPPoEUsageSnapshot, PPPoEUsageState, PPPoEUsageRecord,
     HotspotUsageState, HotspotUsageRecord, UsageRecord,
     PlatformPlan, PlatformSetting, TenantSubscription, TenantInvoice, TenantPayment,
-    TenantStatusChange, ImpersonationLog, AdminActionLog, set_tenant_status,
+    TenantStatusChange, ImpersonationLog, AdminActionLog, RouterEvent,
+    set_tenant_status, router_uptime,
 )
 from billing.fields import ENCRYPTED_PREFIX
 
@@ -3684,3 +3686,245 @@ class OperatorWarningTests(PlatformBillingMixin, TestCase):
         resp = self.auth(self.owner).post(
             "/api/platform/operators/999999/warn/", {"message": "x"}, format="json")
         self.assertEqual(resp.status_code, 404)
+
+
+# =====================================================
+# 20. Phase 3 — router event history and platform health
+# =====================================================
+
+class RouterEventTests(TwoOperatorMixin, TestCase):
+    """Transitions are recorded; steady state is not."""
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        self.router = self.data["t1"]["router"]
+
+    def test_a_router_going_down_is_recorded(self):
+        self.router.record_health(True)
+        RouterEvent.objects.all_tenants().all().delete()
+
+        self.router.record_health(
+            False, error="TCP unreachable", cause=RouterEvent.CAUSE_UNREACHABLE)
+
+        event = RouterEvent.objects.all_tenants().get()
+        self.assertEqual(event.kind, RouterEvent.WENT_OFFLINE)
+        self.assertEqual(event.cause, RouterEvent.CAUSE_UNREACHABLE)
+        self.assertEqual(event.detail, "TCP unreachable")
+
+    def test_repeated_probes_of_a_down_router_add_nothing(self):
+        """
+        The whole reason for recording transitions only. The sweep runs every
+        two minutes, so logging each probe would add ~720 rows per router per
+        day, every one repeating the row before it.
+        """
+        self.router.record_health(True)
+        RouterEvent.objects.all_tenants().all().delete()
+
+        for _ in range(10):
+            self.router.record_health(False, error="still down")
+
+        self.assertEqual(RouterEvent.objects.all_tenants().count(), 1)
+
+    def test_coming_back_is_recorded_and_clears_the_error(self):
+        self.router.record_health(False, error="TCP unreachable")
+        self.router.record_health(True)
+
+        self.router.refresh_from_db()
+        self.assertTrue(self.router.is_online)
+        self.assertEqual(self.router.last_error, "")
+        self.assertTrue(
+            RouterEvent.objects.all_tenants()
+            .filter(kind=RouterEvent.CAME_ONLINE).exists())
+
+    def test_record_health_reports_whether_it_changed(self):
+        self.router.record_health(True)
+        self.assertTrue(self.router.record_health(False, error="down"))
+        self.assertFalse(self.router.record_health(False, error="down"))
+
+    def test_an_auth_failure_is_distinguishable_from_unreachable(self):
+        """
+        A router that answers and rejects the credentials is a configuration
+        problem; one that cannot be reached is a network problem. Collapsing
+        them loses the distinction that decides who fixes it.
+        """
+        self.router.record_health(True)
+        self.router.record_health(
+            False, error="invalid user name or password",
+            cause=RouterEvent.CAUSE_AUTH_FAILED)
+        event = RouterEvent.objects.all_tenants().filter(
+            kind=RouterEvent.WENT_OFFLINE).first()
+        self.assertEqual(event.cause, RouterEvent.CAUSE_AUTH_FAILED)
+
+    def test_events_are_scoped_to_their_operator(self):
+        other = self.data["t2"]["router"]
+        # is_online defaults to False, so both must come up first — recording
+        # "offline" on an already-offline router is correctly not a transition
+        # and writes nothing.
+        self.router.record_health(True)
+        other.record_health(True)
+        self.router.record_health(False, error="down")
+        other.record_health(False, error="down")
+
+        with tenant_context(self.t1):
+            names = {e.router_id for e in RouterEvent.objects.all()}
+        self.assertEqual(names, {self.router.id})
+
+    def test_history_survives_a_second_failure(self):
+        """
+        last_error holds one string, so each failure destroyed the previous one.
+        That is the gap this table exists to fill.
+        """
+        self.router.record_health(True)
+        self.router.record_health(False, error="first failure")
+        self.router.record_health(True)
+        self.router.record_health(False, error="second failure")
+
+        details = list(
+            RouterEvent.objects.all_tenants()
+            .filter(kind=RouterEvent.WENT_OFFLINE)
+            .order_by("created_at").values_list("detail", flat=True)
+        )
+        self.assertEqual(details, ["first failure", "second failure"])
+
+
+class RouterUptimeTests(TwoOperatorMixin, TestCase):
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        self.router = self.data["t1"]["router"]
+
+    def _event(self, kind, minutes_ago):
+        event = RouterEvent.objects.create(
+            tenant=self.t1, router=self.router, kind=kind, detail="")
+        # auto_now_add ignores an assigned value, so it is set afterwards.
+        RouterEvent.objects.filter(pk=event.pk).update(
+            created_at=timezone.now() - timezone.timedelta(minutes=minutes_ago))
+        return event
+
+    def test_a_router_with_no_history_reports_its_current_state(self):
+        self.router.is_online = True
+        self.router.save(update_fields=["is_online"])
+        result = router_uptime(self.router, timezone.now() - timezone.timedelta(days=1))
+        self.assertEqual(result["uptime_percent"], 100.0)
+        self.assertEqual(result["outages"], 0)
+
+    def test_a_closed_outage_is_counted(self):
+        self._event(RouterEvent.WENT_OFFLINE, 60)
+        self._event(RouterEvent.CAME_ONLINE, 30)
+
+        result = router_uptime(self.router, timezone.now() - timezone.timedelta(hours=2))
+        self.assertEqual(result["outages"], 1)
+        # 30 minutes down out of 120.
+        self.assertAlmostEqual(result["downtime_seconds"], 1800, delta=60)
+        self.assertAlmostEqual(result["uptime_percent"], 75.0, delta=1)
+
+    def test_an_ongoing_outage_counts_up_to_now(self):
+        self._event(RouterEvent.WENT_OFFLINE, 30)
+        self.router.is_online = False
+        self.router.save(update_fields=["is_online"])
+
+        result = router_uptime(self.router, timezone.now() - timezone.timedelta(hours=1))
+        self.assertEqual(result["outages"], 1)
+        self.assertAlmostEqual(result["downtime_seconds"], 1800, delta=60)
+
+    def test_state_before_the_window_is_carried_in(self):
+        """
+        A router that went down before the window and is still down was down for
+        all of it — not up until the first event inside the window says otherwise.
+        """
+        self._event(RouterEvent.WENT_OFFLINE, 300)     # 5 hours ago
+        self.router.is_online = False
+        self.router.save(update_fields=["is_online"])
+
+        result = router_uptime(self.router, timezone.now() - timezone.timedelta(hours=1))
+        self.assertAlmostEqual(result["uptime_percent"], 0.0, delta=2)
+
+
+class RouterEventsEndpointTests(TwoOperatorMixin, TestCase):
+    URL = "/api/admin/routers/events/"
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        self.router = self.data["t1"]["router"]
+
+    def test_returns_events_and_availability(self):
+        self.router.record_health(True)
+        self.router.record_health(False, error="TCP unreachable")
+
+        resp = self.auth(self.admin1).get(self.URL)
+        self.assertEqual(resp.status_code, 200)
+        router = resp.data["routers"][0]
+        self.assertIn("availability", router)
+        self.assertTrue(any(e["detail"] == "TCP unreachable" for e in router["events"]))
+
+    def test_does_not_show_another_operators_routers(self):
+        other = self.data["t2"]["router"]
+        other.record_health(False, error="down")
+
+        resp = self.auth(self.admin1).get(self.URL)
+        names = {r["name"] for r in resp.data["routers"]}
+        self.assertNotIn(other.name, names)
+
+    def test_days_is_clamped(self):
+        resp = self.auth(self.admin1).get(self.URL, {"days": 9999})
+        self.assertEqual(resp.data["days"], 90)
+
+
+class PlatformHealthTests(PlatformBillingMixin, TestCase):
+    URL = "/api/platform/health/"
+
+    def setUp(self):
+        cache.clear()
+        self.build_billing()
+        self.owner = make_platform_owner()
+
+    def test_operator_cannot_see_platform_health(self):
+        self.assertEqual(self.auth(self.admin1).get(self.URL).status_code, 403)
+
+    def test_an_offline_router_names_its_operator(self):
+        """"A router is down" is not actionable on this side without whose."""
+        router = self.data["t1"]["router"]
+        router.record_health(False, error="TCP unreachable")
+
+        resp = self.auth(self.owner).get(self.URL)
+        self.assertEqual(resp.status_code, 200)
+        entry = next(r for r in resp.data["routers_offline"] if r["router"] == router.name)
+        self.assertEqual(entry["operator_id"], self.t1.id)
+        self.assertEqual(entry["last_error"], "TCP unreachable")
+
+    def test_operators_who_cannot_take_money_are_listed(self):
+        resp = self.auth(self.owner).get(self.URL)
+        ids = {o["operator_id"] for o in resp.data["payments_unconfigured"]}
+        self.assertIn(self.t1.id, ids)
+
+    def test_operators_owing_are_listed(self):
+        set_tenant_status(self.t1, "past_due", reason="test", automatic=True)
+        resp = self.auth(self.owner).get(self.URL)
+        ids = {o["operator_id"] for o in resp.data["operators_owing"]}
+        self.assertIn(self.t1.id, ids)
+
+    def test_all_clear_is_false_when_anything_needs_attention(self):
+        resp = self.auth(self.owner).get(self.URL)
+        self.assertFalse(resp.data["all_clear"])
+
+
+class RouterEventPruningTests(TwoOperatorMixin, TestCase):
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        self.router = self.data["t1"]["router"]
+
+    def test_old_events_are_removed_and_recent_ones_kept(self):
+        old = RouterEvent.objects.create(
+            tenant=self.t1, router=self.router, kind=RouterEvent.WENT_OFFLINE)
+        RouterEvent.objects.filter(pk=old.pk).update(
+            created_at=timezone.now() - timezone.timedelta(days=200))
+        RouterEvent.objects.create(
+            tenant=self.t1, router=self.router, kind=RouterEvent.CAME_ONLINE)
+
+        removed = prune_router_events_task(days=90)
+
+        self.assertEqual(removed, 1)
+        self.assertEqual(RouterEvent.objects.all_tenants().count(), 1)

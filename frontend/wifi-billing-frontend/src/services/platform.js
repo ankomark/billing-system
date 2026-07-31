@@ -8,6 +8,16 @@ export const fetchPlatformOverview = async () => {
   return res.data;
 };
 
+/**
+ * Everything needing attention across every operator, in one request. Each
+ * entry names the operator — "a router is down" is not actionable on the
+ * platform side without knowing whose.
+ */
+export const fetchPlatformHealth = async () => {
+  const res = await api.get("platform/health/");
+  return res.data;
+};
+
 export const fetchOperators = async (status) => {
   const res = await api.get("platform/operators/", {
     params: status ? { status } : {},

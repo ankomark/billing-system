@@ -246,10 +246,11 @@ def safe_connect_router(router):
     Connect safely. Returns API object or None.
     Also updates router health in DB.
     """
+    from billing.models import RouterEvent
+
     if not is_router_reachable(router):
-        router.is_online = False
-        router.last_error = "TCP unreachable"
-        router.save(update_fields=["is_online", "last_error"])
+        router.record_health(
+            False, error="TCP unreachable", cause=RouterEvent.CAUSE_UNREACHABLE)
         return None
 
     try:
@@ -260,22 +261,19 @@ def safe_connect_router(router):
             port=router.api_port,
             timeout=5,
         )
-        router.is_online = True
-        router.last_seen = timezone.now()
-        router.last_error = ""
-        router.save(update_fields=["is_online", "last_seen", "last_error"])
+        router.record_health(True)
         return api
 
     except (LibRouterosError, TrapError, MultiTrapError, FatalError, ProtocolError) as e:
-        router.is_online = False
-        router.last_error = str(e)
-        router.save(update_fields=["is_online", "last_error"])
+        # The router answered and refused us, which is a different problem from
+        # not being able to reach it — usually wrong credentials or a disabled
+        # API service, neither of which a network fix will help.
+        router.record_health(False, error=e, cause=RouterEvent.CAUSE_AUTH_FAILED)
         return None
 
     except Exception as e:
-        router.is_online = False
-        router.last_error = f"Unknown: {e}"
-        router.save(update_fields=["is_online", "last_error"])
+        router.record_health(
+            False, error=f"Unknown: {e}", cause=RouterEvent.CAUSE_ERROR)
         return None
 
 

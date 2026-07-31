@@ -543,6 +543,158 @@ class RouterDevice(TenantScopedModel):
     def __str__(self):
         return self.name
 
+    def record_health(self, online, *, error="", cause=""):
+        """
+        Update this router's health, and log the change if it is one.
+
+        The single place is_online is written. It used to be set from six
+        different call sites, each doing its own save, which is why there was
+        no history: last_error is one field, so every failure destroyed the
+        previous one and nothing recorded that a router had gone down at all.
+
+        Only transitions are written to RouterEvent. The health sweep runs every
+        two minutes, so logging each probe would add around 720 rows per router
+        per day, all of them saying the same thing as the row before. The edges
+        are where the information is.
+
+        Returns True if the state changed.
+        """
+        was_online = self.is_online
+        changed = was_online != online
+
+        self.is_online = online
+        fields = ["is_online", "last_error"]
+        if online:
+            self.last_seen = timezone.now()
+            self.last_error = ""
+            fields.append("last_seen")
+        else:
+            self.last_error = str(error)[:2000]
+        self.save(update_fields=fields)
+
+        if changed:
+            try:
+                RouterEvent.objects.create(
+                    tenant_id=self.tenant_id,
+                    router=self,
+                    kind=RouterEvent.CAME_ONLINE if online else RouterEvent.WENT_OFFLINE,
+                    cause="" if online else (cause or RouterEvent.CAUSE_ERROR),
+                    detail="" if online else str(error)[:255],
+                )
+            except Exception:
+                # Losing the log entry must not fail the health check that
+                # produced it, but it should be visible.
+                logger.exception("[router-health] could not record event for %s", self)
+
+        return changed
+
+
+class RouterEvent(TenantScopedModel):
+    """
+    When a router changed state, and why.
+
+    RouterDevice carries only current state — is_online, and a last_error that
+    each new failure overwrites — so before this there was no way to answer
+    "has this router been flapping?" or "how long were we down last night?".
+    The health sweep ran every two minutes and threw its result away.
+
+    Transitions only. See RouterDevice.record_health.
+    """
+
+    CAME_ONLINE = "came_online"
+    WENT_OFFLINE = "went_offline"
+    KIND_CHOICES = (
+        (CAME_ONLINE, "Came online"),
+        (WENT_OFFLINE, "Went offline"),
+    )
+
+    # Why it went down. Distinguishing "we could not open a socket" from "the
+    # router answered and rejected our credentials" is the difference between
+    # a network problem and a configuration one.
+    CAUSE_UNREACHABLE = "unreachable"
+    CAUSE_AUTH_FAILED = "auth_failed"
+    CAUSE_ERROR = "error"
+    CAUSE_CHOICES = (
+        (CAUSE_UNREACHABLE, "Unreachable"),
+        (CAUSE_AUTH_FAILED, "Authentication failed"),
+        (CAUSE_ERROR, "Error"),
+    )
+
+    router = models.ForeignKey(
+        RouterDevice, on_delete=models.CASCADE, related_name="events"
+    )
+    kind = models.CharField(max_length=16, choices=KIND_CHOICES)
+    cause = models.CharField(max_length=16, choices=CAUSE_CHOICES, blank=True)
+    detail = models.CharField(max_length=255, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["router", "-created_at"], name="revent_router_time_idx"),
+            models.Index(fields=["tenant", "-created_at"], name="revent_tenant_time_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.router} {self.kind} at {self.created_at}"
+
+
+def router_uptime(router, since):
+    """
+    Availability for one router since `since`, derived from its transitions.
+
+    Deliberately not a single percentage pulled from nowhere. The transition log
+    says when state changed, so downtime is the sum of the offline spans, and
+    the starting state is whatever the last event before the window said — or
+    the current state if there were no events at all, which is the common case
+    for a router that has simply been up the whole time.
+    """
+    now = timezone.now()
+    window = (now - since).total_seconds()
+    if window <= 0:
+        return {"uptime_percent": 100.0, "outages": 0, "downtime_seconds": 0}
+
+    events = list(
+        RouterEvent.objects.all_tenants()
+        .filter(router=router, created_at__gte=since)
+        .order_by("created_at")
+    )
+
+    prior = (
+        RouterEvent.objects.all_tenants()
+        .filter(router=router, created_at__lt=since)
+        .order_by("-created_at")
+        .first()
+    )
+    if prior is not None:
+        online = prior.kind == RouterEvent.CAME_ONLINE
+    elif events:
+        # No history before the window: the state at the start was the opposite
+        # of whatever the first transition inside it moved to.
+        online = events[0].kind == RouterEvent.WENT_OFFLINE
+    else:
+        online = router.is_online
+
+    downtime = 0.0
+    outages = 0
+    cursor = since
+    for event in events:
+        if event.kind == RouterEvent.WENT_OFFLINE and online:
+            online = False
+            outages += 1
+            cursor = event.created_at
+        elif event.kind == RouterEvent.CAME_ONLINE and not online:
+            downtime += (event.created_at - cursor).total_seconds()
+            online = True
+    if not online:
+        downtime += (now - cursor).total_seconds()
+
+    return {
+        "uptime_percent": round(max(0.0, 100.0 * (1 - downtime / window)), 2),
+        "outages": outages,
+        "downtime_seconds": int(downtime),
+    }
+
 
 # =====================================================
 # CUSTOMER

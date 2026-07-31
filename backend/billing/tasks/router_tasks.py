@@ -19,16 +19,14 @@ logger = logging.getLogger(__name__)
 # =====================================================
 
 def _mark_router_online(router):
-    router.is_online = True
-    router.last_seen = timezone.now()
-    router.last_error = ""
-    router.save(update_fields=["is_online", "last_seen", "last_error"])
+    # Through record_health so the transition is logged. These used to write
+    # is_online directly, which is why a router could go down and come back with
+    # nothing recording that it had.
+    router.record_health(True)
 
 
 def _mark_router_offline(router, error):
-    router.is_online = False
-    router.last_error = str(error)
-    router.save(update_fields=["is_online", "last_error"])
+    router.record_health(False, error=error)
 
 
 def _load_customer(customer_id):
