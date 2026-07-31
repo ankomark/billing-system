@@ -16,42 +16,29 @@ import {
 } from "../../services/platform";
 import { KES, StatusBadge, STATUS_STYLES } from "../../components/platform/ui";
 
-const STATUS_ACTIONS = [
-  {
-    status: "active",
-    label: "Restore access",
-    icon: ShieldCheck,
-    cls: "bg-emerald-500 hover:bg-emerald-400 text-slate-950",
-    help: "Full access. Their dashboard works and they can take on new subscribers.",
-  },
-  {
-    status: "past_due",
-    label: "Mark past due",
-    icon: AlertTriangle,
-    cls: "bg-amber-500 hover:bg-amber-400 text-slate-950",
-    help: "Flagged as owing, but nothing is blocked yet. This is what the grace period runs from.",
-  },
-  {
-    status: "restricted",
-    label: "Restrict",
-    icon: ShieldAlert,
-    cls: "bg-red-500 hover:bg-red-400 text-slate-950",
-    help: "Locks their dashboard and stops new signups. Existing subscribers keep their internet.",
-  },
-  {
-    status: "cancelled",
-    label: "Cancel",
-    icon: ShieldAlert,
-    cls: "border border-white/15 hover:bg-white/5 text-slate-300",
-    help: "Ends the relationship. Same effect as restricted, but final rather than pending payment.",
-  },
-];
+/**
+ * Standing is one toggle plus one exit.
+ *
+ * It briefly offered all four statuses the API accepts, which read as four
+ * similar buttons with no obvious difference between them. Two of them did not
+ * belong there:
+ *
+ *   past_due is derived, not decided. The nightly sweep sets it from invoice
+ *   due dates and a payment clears it, so setting it by hand produces a record
+ *   that disagrees with the invoices and gets overwritten by whichever runs
+ *   next. It is shown as a state, never offered as an action.
+ *
+ *   cancelled is not another word for restricted. Both lock the dashboard, but
+ *   invoice generation excludes cancelled operators — a restricted operator is
+ *   still being billed while you chase them, a cancelled one has left and stops
+ *   accruing invoices. That is a real decision, just a rare and final one, so
+ *   it sits apart from the toggle rather than beside it.
+ */
 
 const STATUS_MESSAGES = {
   active: "Access restored",
-  past_due: "Marked past due",
   restricted: "Operator restricted",
-  cancelled: "Operator cancelled",
+  cancelled: "Account closed — they will not be invoiced again",
 };
 
 export default function OperatorDetail() {
@@ -216,33 +203,90 @@ export default function OperatorDetail() {
             )}
           </div>
 
-          {/* Standing. The API has accepted four statuses since phase 6; the UI
-              offered a binary toggle, so past_due and cancelled were reachable
-              only by curl. */}
+          {/* Standing: one toggle, plus a separate exit. See the note at the
+              top of this file for why past_due is not a button. */}
           <div className="mt-4 pt-4 border-t border-white/10">
-            <p className="text-xs font-medium text-slate-400 mb-2">
-              Standing — currently{" "}
+            <div className="flex flex-wrap items-center gap-2 mb-3">
+              <span className="text-xs font-medium text-slate-400">Standing</span>
               <StatusBadge status={op.status} styles={STATUS_STYLES} />
-            </p>
-            <div className="flex flex-wrap gap-2">
-              {STATUS_ACTIONS.filter((a) => a.status !== op.status).map((a) => (
-                <button
-                  key={a.status}
-                  onClick={() => changeStatus(a.status)}
-                  disabled={busy}
-                  title={a.help}
-                  className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold disabled:opacity-50 transition-colors ${a.cls}`}
-                >
-                  <a.icon size={14} aria-hidden="true" /> {a.label}
-                </button>
-              ))}
+              {op.status === "past_due" && (
+                <span className="text-xs text-slate-500">
+                  set automatically from their unpaid invoices
+                </span>
+              )}
             </div>
+
+            {op.status === "cancelled" ? (
+              <>
+                <button
+                  onClick={() => changeStatus("active")}
+                  disabled={busy}
+                  className="inline-flex items-center gap-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 px-4 py-2 rounded-lg text-sm font-semibold disabled:opacity-50 transition-colors"
+                >
+                  <ShieldCheck size={14} aria-hidden="true" /> Reopen account
+                </button>
+                <p className="text-xs text-slate-500 mt-2">
+                  This account is closed and is not being invoiced. Reopening
+                  restores access and puts them back on the billing run.
+                </p>
+              </>
+            ) : op.is_restricted ? (
+              <>
+                <button
+                  onClick={() => changeStatus("active")}
+                  disabled={busy}
+                  className="inline-flex items-center gap-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 px-4 py-2 rounded-lg text-sm font-semibold disabled:opacity-50 transition-colors"
+                >
+                  <ShieldCheck size={14} aria-hidden="true" /> Restore access
+                </button>
+                <p className="text-xs text-slate-500 mt-2">
+                  Gives their dashboard back and lets them take on new
+                  subscribers again.
+                </p>
+              </>
+            ) : (
+              <>
+                <button
+                  onClick={() => changeStatus("restricted")}
+                  disabled={busy}
+                  className="inline-flex items-center gap-2 bg-red-500 hover:bg-red-400 text-slate-950 px-4 py-2 rounded-lg text-sm font-semibold disabled:opacity-50 transition-colors"
+                >
+                  <ShieldAlert size={14} aria-hidden="true" /> Restrict
+                </button>
+                <p className="text-xs text-slate-500 mt-2">
+                  Locks their dashboard and stops new signups. Their existing
+                  subscribers keep their internet and can still renew, and they
+                  keep being invoiced.
+                </p>
+              </>
+            )}
           </div>
-          <p className="text-xs text-slate-500 mt-3">
-            Restricting locks this operator out of their dashboard and stops new
-            signups. Their existing customers keep their internet and can still
-            renew.
-          </p>
+
+          {/* Closing an account is rare, final, and does something restricting
+              does not — it takes them off the billing run. Kept away from the
+              toggle so it cannot be hit by accident. */}
+          {isOwner && op.status !== "cancelled" && (
+            <details className="mt-4 pt-4 border-t border-white/10 group">
+              <summary className="text-xs text-slate-500 hover:text-slate-300 cursor-pointer select-none">
+                They have left the platform
+              </summary>
+              <div className="mt-3">
+                <p className="text-xs text-slate-500 mb-2">
+                  Closing stops invoices being generated for them, which
+                  restricting does not — a restricted operator keeps accruing a
+                  bill while you chase it. Their subscribers are unaffected
+                  either way.
+                </p>
+                <button
+                  onClick={() => changeStatus("cancelled")}
+                  disabled={busy}
+                  className="inline-flex items-center gap-2 border border-red-500/30 text-red-300 hover:bg-red-500/10 px-4 py-2 rounded-lg text-sm font-semibold disabled:opacity-50 transition-colors"
+                >
+                  Close this account
+                </button>
+              </div>
+            </details>
+          )}
         </Panel>
 
         <Panel title="Send a warning">
