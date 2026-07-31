@@ -37,7 +37,7 @@ function AlertRow({ a }) {
 
 function SkeletonAlert() {
   return (
-    <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-3">
+    <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 space-y-3">
       <div className="flex justify-between">
         <div className="space-y-1.5">
           <Skeleton className="h-4 w-36" />
@@ -65,7 +65,7 @@ export default function UsageAlerts() {
       <div className="space-y-6">
         <div className="flex items-start justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-slate-800">Usage Alerts</h1>
+            <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Usage Alerts</h1>
             <p className="text-slate-500 text-sm mt-1">
               Customers at 80%+ of their monthly data cap
             </p>

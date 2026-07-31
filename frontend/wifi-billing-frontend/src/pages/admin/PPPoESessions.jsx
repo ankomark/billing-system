@@ -63,7 +63,7 @@ export default function PPPoESessions() {
 
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-slate-800">PPPoE Sessions</h1>
+            <h1 className="text-2xl font-bold text-slate-900 tracking-tight">PPPoE Sessions</h1>
             <p className="text-slate-500 text-sm mt-1">
               Real-time active connections — auto-refreshes every 10s
             </p>
@@ -81,21 +81,21 @@ export default function PPPoESessions() {
             { label: "Active Routers",   value: [...new Set(sessions.map((s) => s.router))].length },
             { label: "Auto-refresh",     value: "10s" },
           ].map((card) => (
-            <div key={card.label} className="bg-white rounded-xl border border-slate-200 p-4">
+            <div key={card.label} className="bg-white rounded-xl border border-slate-200 shadow-sm p-4">
               <p className="text-xs text-slate-500 font-medium">{card.label}</p>
               <p className="text-2xl font-bold text-slate-800 mt-1">{card.value}</p>
             </div>
           ))}
         </div>
 
-        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
           {isLoading ? (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead className="bg-slate-50 border-b border-slate-200">
                   <tr>
                     {["Customer", "Username", "IP Address", "Uptime", "Download", "Upload", "Router", "Action"].map((h) => (
-                      <th key={h} className="px-5 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">{h}</th>
+                      <th key={h} className="px-5 py-3 text-left text-[11px] font-semibold text-slate-500 uppercase tracking-[0.14em]">{h}</th>
                     ))}
                   </tr>
                 </thead>
@@ -114,7 +114,7 @@ export default function PPPoESessions() {
                 <thead className="bg-slate-50 border-b border-slate-200">
                   <tr>
                     {["Customer", "Username", "IP Address", "Uptime", "Download", "Upload", "Router", "Action"].map((h) => (
-                      <th key={h} className="px-5 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider whitespace-nowrap">
+                      <th key={h} className="px-5 py-3 text-left text-[11px] font-semibold text-slate-500 uppercase tracking-[0.14em] whitespace-nowrap">
                         {h}
                       </th>
                     ))}

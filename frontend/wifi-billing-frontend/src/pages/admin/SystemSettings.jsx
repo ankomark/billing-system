@@ -77,7 +77,7 @@ export default function SystemSettings() {
       <AdminLayout>
         <div className="max-w-3xl space-y-4">
           <Skeleton className="h-8 w-48" />
-          <div className="bg-white rounded-xl border border-slate-200 p-6 space-y-4">
+          <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 space-y-4">
             {[...Array(6)].map((_, i) => <Skeleton key={i} className="h-10 w-full" />)}
           </div>
         </div>
@@ -89,7 +89,7 @@ export default function SystemSettings() {
     <AdminLayout>
       <div className="max-w-3xl space-y-6">
         <div>
-          <h1 className="text-2xl font-bold text-slate-800">System Settings</h1>
+          <h1 className="text-2xl font-bold text-slate-900 tracking-tight">System Settings</h1>
           <p className="text-slate-500 text-sm mt-1">
             Configure M-Pesa, SMS, and WhatsApp integrations
           </p>
@@ -144,8 +144,8 @@ export default function SystemSettings() {
 
 function Section({ title, children }) {
   return (
-    <div className="bg-white rounded-xl border border-slate-200 p-6 space-y-4">
-      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">{title}</p>
+    <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 space-y-4">
+      <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-[0.14em]">{title}</p>
       {children}
     </div>
   );

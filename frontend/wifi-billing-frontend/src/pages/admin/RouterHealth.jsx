@@ -32,7 +32,7 @@ export default function RouterHealth() {
       <div className="space-y-8">
         <div className="flex items-start justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-slate-800">Router Health</h1>
+            <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Router Health</h1>
             <p className="text-slate-500 text-sm mt-1">
               Live status and recent failover events — auto-refreshes every 10s
             </p>
@@ -49,14 +49,14 @@ export default function RouterHealth() {
 
         {/* Router status table */}
         <div>
-          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">Router Status</p>
-          <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+          <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-[0.14em] mb-3">Router Status</p>
+          <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead className="bg-slate-50 border-b border-slate-200">
                   <tr>
                     {["Name", "IP / Port", "Priority", "Status", "Last Seen", "Last Error"].map((h) => (
-                      <th key={h} className="px-5 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider whitespace-nowrap">
+                      <th key={h} className="px-5 py-3 text-left text-[11px] font-semibold text-slate-500 uppercase tracking-[0.14em] whitespace-nowrap">
                         {h}
                       </th>
                     ))}
@@ -110,12 +110,12 @@ export default function RouterHealth() {
             an operator with two towns is asking "is Kilifi up". */}
         {events?.stations?.length > 1 && (
           <div>
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">
+            <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-[0.14em] mb-3">
               By station — last {events.days} days
             </p>
             <div className="grid gap-4 sm:grid-cols-3">
               {events.stations.map((st) => (
-                <div key={st.id ?? "none"} className="bg-white rounded-xl border border-slate-200 p-4">
+                <div key={st.id ?? "none"} className="bg-white rounded-xl border border-slate-200 shadow-sm p-4">
                   <p className="font-medium text-slate-800">
                     {st.name || <span className="text-slate-400">No station</span>}
                   </p>
@@ -145,12 +145,12 @@ export default function RouterHealth() {
         {/* Availability over the last week */}
         {events?.routers?.length > 0 && (
           <div>
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">
+            <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-[0.14em] mb-3">
               Availability — last {events.days} days
             </p>
             <div className="grid gap-4 sm:grid-cols-2">
               {events.routers.map((r) => (
-                <div key={r.id} className="bg-white rounded-xl border border-slate-200 p-4">
+                <div key={r.id} className="bg-white rounded-xl border border-slate-200 shadow-sm p-4">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <p className="font-medium text-slate-800 truncate">{r.name}</p>
@@ -223,14 +223,14 @@ export default function RouterHealth() {
 
         {/* Recent failovers */}
         <div>
-          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">Recent Failovers</p>
-          <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+          <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-[0.14em] mb-3">Recent Failovers</p>
+          <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead className="bg-slate-50 border-b border-slate-200">
                   <tr>
                     {["Customer", "Phone", "From", "To", "Reason", "Time"].map((h) => (
-                      <th key={h} className="px-5 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider whitespace-nowrap">
+                      <th key={h} className="px-5 py-3 text-left text-[11px] font-semibold text-slate-500 uppercase tracking-[0.14em] whitespace-nowrap">
                         {h}
                       </th>
                     ))}

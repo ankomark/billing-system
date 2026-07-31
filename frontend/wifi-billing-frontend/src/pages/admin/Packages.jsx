@@ -51,7 +51,7 @@ export default function Packages() {
 
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
-            <h1 className="text-2xl font-bold text-slate-800">Packages</h1>
+            <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Packages</h1>
             {!isLoading && (
               <p className="text-slate-500 text-sm mt-0.5">
                 {count.toLocaleString()} package{count !== 1 ? "s" : ""} total
@@ -83,13 +83,13 @@ export default function Packages() {
           </div>
         )}
 
-        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-slate-50 border-b border-slate-200">
                 <tr>
                   {["Name", "Speed", "Duration", "Price (KES)", "Actions"].map((h) => (
-                    <th key={h} className="px-6 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider whitespace-nowrap">
+                    <th key={h} className="px-5 py-3 text-left text-[11px] font-semibold text-slate-500 uppercase tracking-wider whitespace-nowrap">
                       {h}
                     </th>
                   ))}

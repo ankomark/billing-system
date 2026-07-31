@@ -77,7 +77,7 @@ export default function Stations() {
       <div className="max-w-4xl space-y-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h1 className="text-2xl font-bold text-slate-800">Stations</h1>
+            <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Stations</h1>
             <p className="text-slate-500 text-sm mt-1">
               Your sites. Group the routers at each place so you can watch them
               separately.
@@ -110,7 +110,7 @@ export default function Stations() {
               e.preventDefault();
               create.mutate(form);
             }}
-            className="bg-white rounded-xl border border-slate-200 p-5 space-y-4"
+            className="bg-white rounded-xl border border-slate-200 shadow-sm p-5 space-y-4"
           >
             <div className="grid sm:grid-cols-3 gap-4">
               <label className="block sm:col-span-2">
@@ -173,7 +173,7 @@ export default function Stations() {
             {stations.map((s) => (
               <div
                 key={s.id}
-                className="bg-white rounded-xl border border-slate-200 p-5"
+                className="bg-white rounded-xl border border-slate-200 shadow-sm p-5"
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">

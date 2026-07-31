@@ -62,7 +62,7 @@ export default function MyAccount() {
     <AdminLayout>
       <div className="max-w-2xl space-y-6">
         <div>
-          <h1 className="text-2xl font-bold text-slate-800">My account</h1>
+          <h1 className="text-2xl font-bold text-slate-900 tracking-tight">My account</h1>
           <p className="text-slate-500 text-sm mt-1">
             Your sign-in details. Your operator's business details are under
             Settings.
@@ -78,11 +78,11 @@ export default function MyAccount() {
                 e.preventDefault();
                 mutation.mutate({ username: username.trim(), email: email.trim() });
               }}
-              className="bg-white rounded-xl border border-slate-200 p-5 space-y-4"
+              className="bg-white rounded-xl border border-slate-200 shadow-sm p-5 space-y-4"
             >
               <div className="flex items-center gap-2">
                 <UserIcon size={16} className="text-slate-400" aria-hidden="true" />
-                <h2 className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                <h2 className="text-[11px] font-semibold text-slate-500 uppercase tracking-[0.14em]">
                   Sign-in details
                 </h2>
               </div>
@@ -124,16 +124,16 @@ export default function MyAccount() {
               <button
                 type="submit"
                 disabled={mutation.isPending}
-                className="bg-teal-600 hover:bg-teal-700 disabled:opacity-60 text-white rounded-lg px-4 py-2 text-sm font-semibold transition-colors"
+                className="bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-lg px-4 py-2 text-sm font-semibold transition-colors"
               >
                 {mutation.isPending ? "Saving…" : "Save changes"}
               </button>
             </form>
 
-            <div className="bg-white rounded-xl border border-slate-200 p-5">
+            <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
               <div className="flex items-center gap-2 mb-2">
                 <KeyRound size={16} className="text-slate-400" aria-hidden="true" />
-                <h2 className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                <h2 className="text-[11px] font-semibold text-slate-500 uppercase tracking-[0.14em]">
                   Password
                 </h2>
               </div>
@@ -157,7 +157,7 @@ export default function MyAccount() {
 
 const inputCls = (hasError) =>
   `mt-1 w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 ${
-    hasError ? "border-red-300 focus:ring-red-400" : "border-slate-300 focus:ring-teal-500"
+    hasError ? "border-red-300 focus:ring-red-400" : "border-slate-300 focus:ring-blue-500"
   }`;
 
 const ROLE_LABELS = {

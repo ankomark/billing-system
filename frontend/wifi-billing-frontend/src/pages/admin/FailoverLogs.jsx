@@ -16,7 +16,7 @@ export default function FailoverLogs() {
       <div className="space-y-6">
         <div className="flex items-start justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-slate-800">Failover Logs</h1>
+            <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Failover Logs</h1>
             <p className="text-slate-500 text-sm mt-1">
               History of automatic and manual router migrations
             </p>
@@ -37,13 +37,13 @@ export default function FailoverLogs() {
           </div>
         )}
 
-        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-slate-50 border-b border-slate-200">
                 <tr>
                   {["Customer", "Phone", "From Router", "To Router", "Reason", "Time"].map((h) => (
-                    <th key={h} className="px-6 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider whitespace-nowrap">
+                    <th key={h} className="px-5 py-3 text-left text-[11px] font-semibold text-slate-500 uppercase tracking-wider whitespace-nowrap">
                       {h}
                     </th>
                   ))}

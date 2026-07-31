@@ -59,7 +59,7 @@ export default function Broadcast() {
     <AdminLayout>
       <div className="space-y-6 max-w-3xl">
         <div>
-          <h1 className="text-2xl font-bold text-slate-800">Broadcast Messaging</h1>
+          <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Broadcast Messaging</h1>
           <p className="text-slate-500 text-sm mt-1">
             Send SMS or WhatsApp messages to customers in bulk
           </p>
@@ -77,7 +77,7 @@ export default function Broadcast() {
           </div>
         )}
 
-        <div className="bg-white rounded-xl border border-slate-200 p-6 space-y-5">
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 space-y-5">
           <div className="grid sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1.5">Channel</label>

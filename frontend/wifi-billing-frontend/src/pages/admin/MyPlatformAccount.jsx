@@ -49,7 +49,7 @@ export default function MyPlatformAccount() {
     <AdminLayout>
       <div className="space-y-6 max-w-2xl">
         <div>
-          <h1 className="text-2xl font-bold text-slate-800">Your subscription</h1>
+          <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Your subscription</h1>
           <p className="text-slate-500 text-sm mt-1">{data.operator}</p>
         </div>
 
@@ -79,8 +79,8 @@ export default function MyPlatformAccount() {
           </div>
         )}
 
-        <div className="bg-white rounded-xl border border-slate-200 p-5">
-          <h2 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-4">
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
+          <h2 className="text-[11px] font-semibold text-slate-500 uppercase tracking-[0.14em] mb-4">
             Plan
           </h2>
           {data.subscription ? (
@@ -100,9 +100,9 @@ export default function MyPlatformAccount() {
           )}
         </div>
 
-        <div className="bg-white rounded-xl border border-slate-200 p-5">
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+            <h2 className="text-[11px] font-semibold text-slate-500 uppercase tracking-[0.14em]">
               Outstanding
             </h2>
             <span className="text-lg font-bold text-slate-800">

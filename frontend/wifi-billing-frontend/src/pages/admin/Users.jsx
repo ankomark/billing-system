@@ -78,14 +78,14 @@ export default function Users() {
       <div className="max-w-4xl space-y-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h1 className="text-2xl font-bold text-slate-800">Team</h1>
+            <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Team</h1>
             <p className="text-slate-500 text-sm mt-1">
               People who can sign in to your business
             </p>
           </div>
           <button
             onClick={() => setAdding((v) => !v)}
-            className="inline-flex items-center gap-2 bg-teal-600 hover:bg-teal-700 text-white rounded-lg px-4 py-2 text-sm font-semibold transition-colors"
+            className="inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-4 py-2 text-sm font-semibold transition-colors"
           >
             <Plus size={16} />
             Add someone
@@ -98,7 +98,7 @@ export default function Users() {
               e.preventDefault();
               create.mutate(form);
             }}
-            className="bg-white rounded-xl border border-slate-200 p-5 space-y-4"
+            className="bg-white rounded-xl border border-slate-200 shadow-sm p-5 space-y-4"
           >
             <div className="grid sm:grid-cols-3 gap-4">
               <label className="block">
@@ -161,7 +161,7 @@ export default function Users() {
               <button
                 type="submit"
                 disabled={create.isPending}
-                className="bg-teal-600 hover:bg-teal-700 disabled:opacity-60 text-white rounded-lg px-4 py-2 text-sm font-semibold"
+                className="bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-lg px-4 py-2 text-sm font-semibold"
               >
                 {create.isPending ? "Creating…" : "Create"}
               </button>
@@ -176,7 +176,7 @@ export default function Users() {
           </form>
         )}
 
-        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
           {isLoading ? (
             <div className="px-5 py-10 text-center text-sm text-slate-400">Loading…</div>
           ) : (
@@ -186,7 +186,7 @@ export default function Users() {
                   {["Person", "Role", "Status", ""].map((h) => (
                     <th
                       key={h}
-                      className="px-5 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider"
+                      className="px-5 py-3 text-left text-[11px] font-semibold text-slate-500 uppercase tracking-[0.14em]"
                     >
                       {h}
                     </th>
@@ -208,7 +208,7 @@ export default function Users() {
                       <td className="px-5 py-3.5">
                         <span className="inline-flex items-center gap-1.5 text-slate-600">
                           {u.role === "tenant_admin" && (
-                            <ShieldCheck size={13} className="text-teal-600" aria-hidden="true" />
+                            <ShieldCheck size={13} className="text-blue-600" aria-hidden="true" />
                           )}
                           {u.role === "tenant_admin" ? "Admin" : "Staff"}
                         </span>
@@ -267,5 +267,5 @@ export default function Users() {
 
 const inputCls = (hasError) =>
   `mt-1 w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 ${
-    hasError ? "border-red-300 focus:ring-red-400" : "border-slate-300 focus:ring-teal-500"
+    hasError ? "border-red-300 focus:ring-red-400" : "border-slate-300 focus:ring-blue-500"
   }`;

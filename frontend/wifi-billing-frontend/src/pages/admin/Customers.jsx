@@ -125,7 +125,7 @@ export default function Customers() {
         {/* Page header */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
-            <h1 className="text-2xl font-bold text-slate-800">Customers</h1>
+            <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Customers</h1>
             {data && (
               <p className="text-slate-500 text-sm mt-0.5">
                 {data.count.toLocaleString()} customer{data.count !== 1 ? "s" : ""} total
@@ -192,7 +192,7 @@ export default function Customers() {
         )}
 
         {/* Table */}
-        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-slate-50 border-b border-slate-200">
@@ -201,7 +201,7 @@ export default function Customers() {
                     <th
                       key={field}
                       onClick={() => toggleSort(field)}
-                      className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider cursor-pointer hover:text-slate-700 select-none whitespace-nowrap"
+                      className="px-4 py-3 text-left text-[11px] font-semibold text-slate-500 uppercase tracking-[0.14em] cursor-pointer hover:text-slate-700 select-none whitespace-nowrap"
                     >
                       <span className="inline-flex items-center gap-1.5">
                         {label}
@@ -209,7 +209,7 @@ export default function Customers() {
                       </span>
                     </th>
                   ))}
-                  <th className="px-4 py-3 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                  <th className="px-4 py-3 text-right text-[11px] font-semibold text-slate-500 uppercase tracking-[0.14em]">
                     Actions
                   </th>
                 </tr>

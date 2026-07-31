@@ -1,13 +1,45 @@
 import { useState } from "react";
-import { Menu, Clock, X } from "lucide-react";
+import { Menu, Clock, X, AlertTriangle } from "lucide-react";
 import AdminSidebar from "./AdminSidebar";
 import { getUser } from "../../services/auth";
 import ImpersonationBanner from "../platform/ImpersonationBanner";
 import useSessionTimeout from "../../hooks/useSessionTimeout";
 
+const ROLE_LABELS = {
+  tenant_admin: "Admin",
+  tenant_staff: "Staff",
+  platform_owner: "Platform owner",
+  platform_staff: "Platform staff",
+};
+
+// Copy for an operator whose standing has slipped. Restriction is
+// dashboard-only: their subscribers, their income and new signups are all
+// unaffected, and saying so is the difference between a warning and a scare.
+const STANDING = {
+  past_due: {
+    tone: "bg-amber-50 border-amber-200 text-amber-800",
+    title: "Payment overdue",
+    body: "Settle your platform invoice to avoid losing access to this dashboard. Your customers and your income are not affected.",
+  },
+  restricted: {
+    tone: "bg-red-50 border-red-200 text-red-800",
+    title: "Your dashboard is locked",
+    body: "Settle your platform invoice to restore access. Your customers keep their internet, new customers can still sign up, and payments still reach you.",
+  },
+  cancelled: {
+    tone: "bg-red-50 border-red-200 text-red-800",
+    title: "Your account has been closed",
+    body: "Contact the platform to discuss reopening it. Your customers are not affected.",
+  },
+};
+
 export default function AdminLayout({ children }) {
   const user = getUser();
   const initials = (user?.username || "A").charAt(0).toUpperCase();
+  // Exposed on the profile so the shell could warn without a second request,
+  // and then not used anywhere — an operator only learned they were past due
+  // by visiting the billing page.
+  const standing = STANDING[user?.tenant_status];
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const { showWarning, minutesLeft, dismiss } = useSessionTimeout({ warningMinutes: 5 });
 
@@ -20,6 +52,18 @@ export default function AdminLayout({ children }) {
             operator — the failure it prevents is changing a real business's
             records believing they are your own. */}
         <ImpersonationBanner />
+
+        {standing && (
+          <div className={`border-b px-4 py-2.5 flex items-start gap-2.5 ${standing.tone}`}>
+            <AlertTriangle size={15} className="flex-shrink-0 mt-0.5" aria-hidden="true" />
+            <p className="text-sm">
+              <strong>{standing.title}.</strong> {standing.body}{" "}
+              <a href="/admin/billing" className="underline font-medium whitespace-nowrap">
+                View invoice
+              </a>
+            </p>
+          </div>
+        )}
 
         {/* Session timeout warning banner */}
         {showWarning && (
@@ -56,7 +100,9 @@ export default function AdminLayout({ children }) {
               <p className="text-sm font-semibold text-slate-800 leading-tight">
                 {user?.username || "Admin"}
               </p>
-              <p className="text-xs text-slate-400 capitalize">{user?.role || "admin"}</p>
+              <p className="text-xs text-slate-400">
+                {ROLE_LABELS[user?.role] || user?.role || "Admin"}
+              </p>
             </div>
             <div className="h-8 w-8 rounded-full bg-blue-600 flex items-center justify-center text-white font-bold text-xs flex-shrink-0">
               {initials}
@@ -65,7 +111,7 @@ export default function AdminLayout({ children }) {
         </header>
 
         {/* Page content */}
-        <main className="flex-1 overflow-auto p-4 sm:p-6">
+        <main className="flex-1 overflow-auto p-4 sm:p-6 lg:p-8">
           {children}
         </main>
       </div>

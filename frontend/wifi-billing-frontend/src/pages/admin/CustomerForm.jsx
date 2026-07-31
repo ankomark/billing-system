@@ -174,7 +174,7 @@ export default function CustomerForm() {
       <AdminLayout>
         <div className="max-w-2xl space-y-4">
           <Skeleton className="h-8 w-48" />
-          <div className="bg-white rounded-xl border border-slate-200 p-6 space-y-4">
+          <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 space-y-4">
             {[...Array(6)].map((_, i) => <Skeleton key={i} className="h-10 w-full" />)}
           </div>
         </div>
@@ -194,7 +194,7 @@ export default function CustomerForm() {
             <ArrowLeft size={20} />
           </button>
           <div>
-            <h1 className="text-2xl font-bold text-slate-800">
+            <h1 className="text-2xl font-bold text-slate-900 tracking-tight">
               {isEdit ? "Edit Customer" : "Add Customer"}
             </h1>
             <p className="text-slate-500 text-sm mt-0.5">
@@ -204,11 +204,11 @@ export default function CustomerForm() {
         </div>
 
         <form onSubmit={handleSubmit} noValidate>
-          <div className="bg-white rounded-xl border border-slate-200 p-6 space-y-5">
+          <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 space-y-5">
 
             {/* Basic info */}
             <div className="pb-1">
-              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-4">
+              <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-[0.14em] mb-4">
                 Basic Information
               </p>
               <div className="grid sm:grid-cols-2 gap-4">
@@ -233,7 +233,7 @@ export default function CustomerForm() {
 
             {/* Connection */}
             <div className="border-t border-slate-100 pt-5">
-              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-4">
+              <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-[0.14em] mb-4">
                 Connection
               </p>
               <div className="grid sm:grid-cols-2 gap-4">
@@ -292,7 +292,7 @@ export default function CustomerForm() {
 
             {/* Advanced */}
             <div className="border-t border-slate-100 pt-5">
-              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-4">
+              <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-[0.14em] mb-4">
                 Advanced
               </p>
               <div className="grid sm:grid-cols-2 gap-4">

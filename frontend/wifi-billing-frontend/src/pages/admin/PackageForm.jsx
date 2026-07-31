@@ -84,7 +84,7 @@ export default function PackageForm() {
       <AdminLayout>
         <div className="max-w-xl space-y-4">
           <Skeleton className="h-8 w-48" />
-          <div className="bg-white rounded-xl border border-slate-200 p-6 space-y-4">
+          <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 space-y-4">
             {[...Array(5)].map((_, i) => <Skeleton key={i} className="h-10 w-full" />)}
           </div>
         </div>
@@ -103,7 +103,7 @@ export default function PackageForm() {
             <ArrowLeft size={20} />
           </button>
           <div>
-            <h1 className="text-2xl font-bold text-slate-800">
+            <h1 className="text-2xl font-bold text-slate-900 tracking-tight">
               {isEdit ? "Edit Package" : "New Package"}
             </h1>
             <p className="text-slate-500 text-sm mt-0.5">
@@ -112,7 +112,7 @@ export default function PackageForm() {
           </div>
         </div>
 
-        <form onSubmit={handleSubmit} className="bg-white rounded-xl border border-slate-200 p-6 space-y-5">
+        <form onSubmit={handleSubmit} className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 space-y-5">
           <Field label="Package Name" name="name" value={form.name} onChange={handleChange} placeholder="e.g. Basic 5Mbps" required />
 
           <div className="grid grid-cols-2 gap-4">
@@ -140,7 +140,7 @@ export default function PackageForm() {
           <Field label="Price (KES)" type="number" name="price" value={form.price} onChange={handleChange} placeholder="e.g. 500" required />
 
           <div className="border-t border-slate-100 pt-5 space-y-4">
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Advanced</p>
+            <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-[0.14em]">Advanced</p>
 
             <Field
               label="Monthly Data Cap (GB)"

@@ -92,14 +92,14 @@ export default function AccessLookup() {
 
         {/* Header */}
         <div>
-          <h1 className="text-2xl font-bold text-slate-800">Access Lookup</h1>
+          <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Access Lookup</h1>
           <p className="text-slate-500 text-sm mt-1">
             Search by voucher code, M-Pesa receipt, or customer phone number
           </p>
         </div>
 
         {/* Search */}
-        <div className="bg-white rounded-xl border border-slate-200 p-5">
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
           <div className="flex gap-3">
             <input
               type="text"
@@ -123,7 +123,7 @@ export default function AccessLookup() {
 
         {/* Error / not found */}
         {error && !loading && (
-          <div className="bg-white rounded-xl border border-slate-200 p-8 text-center">
+          <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-8 text-center">
             <p className="text-slate-400 text-4xl mb-3">🔍</p>
             <p className="font-semibold text-slate-700">{error}</p>
             <button
@@ -137,7 +137,7 @@ export default function AccessLookup() {
 
         {/* Results */}
         {result && !loading && (
-          <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+          <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
             {/* Tabs */}
             <div className="border-b border-slate-200 flex overflow-x-auto">
               {tabs.map((tab) => (
