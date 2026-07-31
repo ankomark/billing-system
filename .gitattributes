@@ -1,0 +1,10 @@
+# This repo is developed on Windows (core.autocrlf=true) and runs in Linux
+# containers. Anything the containers execute must keep LF endings: a shell
+# script checked out with CRLF fails at the shebang with a confusing
+# "bad interpreter: /bin/bash^M", and docker/postgres-init/10-app-role.sh is
+# bind-mounted straight from the working tree, so a fresh clone on Windows
+# would have broken it without this.
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.dockerignore text eol=lf
+docker-compose*.yml text eol=lf

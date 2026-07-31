@@ -3,17 +3,28 @@ services:
     image: postgres:16
     environment:
       POSTGRES_DB: wifi_billing
-      POSTGRES_USER: wifi_user
-      POSTGRES_PASSWORD: wifi_pass
+      # Bootstrap superuser, for administration only — never for the app.
+      # Postgres refuses to demote whichever role initdb creates, so this one
+      # cannot be made NOBYPASSRLS and therefore cannot be the role Django uses.
+      POSTGRES_USER: wifi_admin
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:?set POSTGRES_ADMIN_PASSWORD in backend/.env}
+      # The unprivileged role 10-app-role.sh creates for Django. These read the
+      # same two values the app itself reads from .env, so each credential has
+      # one source of truth rather than two that can drift apart.
+      APP_DB_USER: ${POSTGRES_USER:?set POSTGRES_USER in backend/.env}
+      APP_DB_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in backend/.env}
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      # Creates the app role without superuser. Without it the app connects as
+      # a superuser and every RLS policy is bypassed. See the script.
+      - ./docker/postgres-init:/docker-entrypoint-initdb.d:ro
     restart: unless-stopped
     # Without this there is nothing for `condition: service_healthy` to wait on,
     # and dependents race the ~2s postgres takes to accept TCP connections.
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U wifi_user -d wifi_billing"]
+      test: ["CMD-SHELL", "pg_isready -U wifi_admin -d wifi_billing"]
       interval: 5s
       timeout: 5s
       retries: 10
