@@ -43,22 +43,22 @@ export default function OperatorPickerModal({ open, onClose }) {
 
   return (
     <div
-      className="fixed inset-0 z-50 bg-slate-900/60 flex items-center justify-center p-4"
+      className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4"
       role="dialog"
       aria-modal="true"
       aria-label="Open an operator dashboard"
     >
-      <div className="bg-white rounded-xl w-full max-w-lg max-h-[85vh] flex flex-col shadow-xl">
-        <div className="flex items-start justify-between gap-3 px-5 py-4 border-b border-slate-200">
+      <div className="rounded-xl w-full max-w-lg max-h-[85vh] flex flex-col border border-white/10 bg-slate-900 shadow-2xl">
+        <div className="flex items-start justify-between gap-3 px-5 py-4 border-b border-white/10">
           <div>
-            <h2 className="font-bold text-slate-800">Open an operator dashboard</h2>
-            <p className="text-slate-500 text-sm mt-0.5">
+            <h2 className="font-bold text-white">Open an operator dashboard</h2>
+            <p className="text-slate-400 text-sm mt-0.5">
               You'll see exactly what they see. Every request is logged.
             </p>
           </div>
           <button
             onClick={onClose}
-            className="text-slate-400 hover:text-slate-700"
+            className="text-slate-500 hover:text-white transition-colors"
             aria-label="Close"
           >
             <X size={18} />
@@ -84,13 +84,13 @@ export default function OperatorPickerModal({ open, onClose }) {
                       aria-pressed={active}
                       className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border text-left transition-colors ${
                         active
-                          ? "border-teal-500 bg-teal-50"
-                          : "border-slate-200 hover:bg-slate-50"
+                          ? "border-teal-500/50 bg-teal-500/10"
+                          : "border-white/10 hover:bg-white/5"
                       }`}
                     >
                       <Building2 size={16} className="text-slate-400 flex-shrink-0" />
                       <span className="flex-1 min-w-0">
-                        <span className="block text-sm font-medium text-slate-800 truncate">
+                        <span className="block text-sm font-medium text-slate-100 truncate">
                           {op.name}
                         </span>
                         <span className="block text-xs text-slate-500 capitalize">
@@ -106,28 +106,28 @@ export default function OperatorPickerModal({ open, onClose }) {
           )}
         </div>
 
-        <div className="px-5 py-4 border-t border-slate-200 space-y-3">
+        <div className="px-5 py-4 border-t border-white/10 space-y-3">
           <label className="block">
-            <span className="text-sm font-medium text-slate-700">
+            <span className="text-sm font-medium text-slate-300">
               Why are you opening this account?
             </span>
             <input
               value={reason}
               onChange={(e) => setReason(e.target.value)}
               placeholder="Support ticket 412 — customer reports no connection"
-              className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+              className="mt-1 w-full rounded-lg border border-white/15 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-teal-500"
             />
           </label>
           <div className="flex items-center gap-3">
             <button
               onClick={go}
-              className="bg-teal-600 hover:bg-teal-700 text-white rounded-lg px-4 py-2 text-sm font-semibold transition-colors"
+              className="bg-teal-500 hover:bg-teal-400 text-slate-950 rounded-lg px-4 py-2 text-sm font-semibold transition-colors"
             >
               Open dashboard
             </button>
             <button
               onClick={onClose}
-              className="text-slate-500 hover:text-slate-800 text-sm font-medium"
+              className="text-slate-400 hover:text-white text-sm font-medium transition-colors"
             >
               Cancel
             </button>

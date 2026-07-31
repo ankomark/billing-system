@@ -84,14 +84,14 @@ export default function NewOperator() {
           <button
             type="button"
             onClick={() => navigate("/platform/operators")}
-            className="text-slate-400 hover:text-slate-700"
+            className="text-slate-500 hover:text-white transition-colors"
             aria-label="Back to operators"
           >
             <ArrowLeft size={20} />
           </button>
           <div>
-            <h1 className="text-2xl font-bold text-slate-800">New operator</h1>
-            <p className="text-slate-500 text-sm mt-0.5">
+            <h1 className="text-2xl font-bold text-white">New operator</h1>
+            <p className="text-slate-400 text-sm mt-0.5">
               Creates the business and its first admin login
             </p>
           </div>
@@ -214,7 +214,7 @@ export default function NewOperator() {
           <button
             type="submit"
             disabled={mutation.isPending}
-            className="inline-flex items-center gap-2 bg-teal-600 hover:bg-teal-700 disabled:opacity-60 text-white rounded-lg px-5 py-2.5 text-sm font-semibold transition-colors"
+            className="inline-flex items-center gap-2 bg-teal-500 hover:bg-teal-400 disabled:opacity-60 text-slate-950 rounded-lg px-5 py-2.5 text-sm font-semibold transition-colors"
           >
             <Building2 size={16} />
             {mutation.isPending ? "Creating…" : "Create operator"}
@@ -222,7 +222,7 @@ export default function NewOperator() {
           <button
             type="button"
             onClick={() => navigate("/platform/operators")}
-            className="text-slate-500 hover:text-slate-800 text-sm font-medium"
+            className="text-slate-400 hover:text-white text-sm font-medium transition-colors"
           >
             Cancel
           </button>
@@ -233,16 +233,16 @@ export default function NewOperator() {
 }
 
 const input = (hasError) =>
-  `w-full border rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 ${
+  `w-full rounded-lg border px-3 py-2 text-sm bg-slate-950 text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-2 ${
     hasError
-      ? "border-red-300 focus:ring-red-400"
-      : "border-slate-300 focus:ring-teal-500"
+      ? "border-red-500/40 focus:ring-red-400"
+      : "border-white/15 focus:ring-teal-500"
   }`;
 
 function Section({ title, children }) {
   return (
-    <div className="bg-white rounded-xl border border-slate-200 p-5">
-      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-4">
+    <div className="rounded-xl border border-white/10 bg-slate-900/80 p-5">
+      <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-[0.14em] mb-4">
         {title}
       </p>
       <div className="grid sm:grid-cols-2 gap-4">{children}</div>
@@ -253,18 +253,18 @@ function Section({ title, children }) {
 function Field({ label, hint, required, error, children }) {
   return (
     <label className="block">
-      <span className="text-sm font-medium text-slate-700">
+      <span className="text-sm font-medium text-slate-300">
         {label}
         {required && <span className="text-red-500"> *</span>}
       </span>
       <div className="mt-1">{children}</div>
       {error && (
-        <span className="text-xs text-red-600 mt-1 block">
+        <span className="text-xs text-red-300 mt-1 block">
           {Array.isArray(error) ? error.join(" ") : String(error)}
         </span>
       )}
       {!error && hint && (
-        <span className="text-xs text-slate-400 mt-1 block">{hint}</span>
+        <span className="text-xs text-slate-500 mt-1 block">{hint}</span>
       )}
     </label>
   );

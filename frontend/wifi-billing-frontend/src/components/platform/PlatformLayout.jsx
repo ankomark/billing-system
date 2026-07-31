@@ -59,7 +59,12 @@ export default function PlatformLayout({ children }) {
 
       <div className="flex-1 min-w-0 flex flex-col">
         <ImpersonationBanner />
-        <main className="flex-1 overflow-auto p-6 bg-slate-100">{children}</main>
+        {/* The console is dark throughout, not a dark rail around a light page.
+            The operator console stays light, which is the whole point: someone
+            with both kinds of access can tell at a glance whose data this is. */}
+        <main className="flex-1 overflow-auto p-6 lg:p-8 bg-slate-950">
+          {children}
+        </main>
       </div>
     </div>
   );
