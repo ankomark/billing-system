@@ -1,10 +1,12 @@
 from django.contrib.auth.password_validation import validate_password
 from django.utils.text import slugify
 from rest_framework import serializers
+from .tenancy import get_current_tenant_id
 from .models import (
     Customer, Package, Subscription, Invoice, Payment,
     MpesaTransaction, User, SystemSetting, Voucher, RouterDevice,
     PlatformPlan, Tenant, TenantSubscription, TenantInvoice, TenantPayment,
+    Station,
 )
 
 
@@ -362,14 +364,68 @@ class AccessLookupSerializer(serializers.Serializer):
     voucher      = serializers.DictField(allow_null=True)
 
 
+class StationSerializer(serializers.ModelSerializer):
+    """
+    One of an operator's sites. Tenant comes from the request, never the body.
+    """
+
+    routers = serializers.IntegerField(source="routers.count", read_only=True)
+    routers_offline = serializers.SerializerMethodField()
+    subscribers = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Station
+        fields = ("id", "name", "code", "notes", "is_active",
+                  "routers", "routers_offline", "subscribers", "created_at")
+        read_only_fields = ("id", "created_at")
+
+    def get_routers_offline(self, obj):
+        return obj.routers.filter(is_active=True, is_online=False).count()
+
+    def get_subscribers(self, obj):
+        # Derived through the router, because that is what actually decides
+        # which site serves a subscriber.
+        return Customer.objects.filter(router__station=obj).count()
+
+    def validate_name(self, value):
+        """
+        Enforce (tenant, name) uniqueness here, not only in the database.
+
+        DRF derives a validator from a model UniqueConstraint only when every
+        field of the constraint is exposed by the serializer. `tenant` is not —
+        deliberately, since it comes from the request rather than the body — so
+        no validator is generated and a duplicate would escape as an
+        IntegrityError and a 500. Same trap as hotspot_username on
+        CustomerSerializer, which carries the same note.
+        """
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError("A station needs a name.")
+
+        tenant_id = get_current_tenant_id()
+        clash = Station.objects.all_tenants().filter(name__iexact=value)
+        if tenant_id is not None:
+            clash = clash.filter(tenant_id=tenant_id)
+        if self.instance is not None:
+            clash = clash.exclude(pk=self.instance.pk)
+        if clash.exists():
+            raise serializers.ValidationError(
+                "You already have a station with that name."
+            )
+        return value
+
+
 class RouterSerializer(serializers.ModelSerializer):
+    station_name = serializers.CharField(
+        source="station.name", read_only=True, default=None)
+
     class Meta:
         model = RouterDevice
         fields = [
             "id", "name", "ip_address", "username",
             "api_port", "priority", "is_active",
             "is_online", "last_seen", "last_error",
-            "max_pppoe_sessions",
+            "max_pppoe_sessions", "station", "station_name",
         ]
         extra_kwargs = {
             "password": {"write_only": True},

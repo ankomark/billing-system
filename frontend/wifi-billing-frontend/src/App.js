@@ -23,6 +23,7 @@ const UnpaidInvoices   = lazy(() => import("./pages/admin/UnpaidInvoices"));
 const FailedMpesa      = lazy(() => import("./pages/admin/FailedMpesa"));
 const PPPoESessions    = lazy(() => import("./pages/admin/PPPoESessions"));
 const Routers          = lazy(() => import("./pages/admin/Routers"));
+const Stations         = lazy(() => import("./pages/admin/Stations"));
 const RouterHealth     = lazy(() => import("./pages/admin/RouterHealth"));
 const FailoverLogs     = lazy(() => import("./pages/admin/FailoverLogs"));
 const UsageAlerts      = lazy(() => import("./pages/admin/UsageAlerts"));
@@ -132,6 +133,7 @@ export default function App() {
         {/* Admin — network */}
         <Route path="/admin/pppoe/sessions"         element={<Admin><PPPoESessions /></Admin>} />
         <Route path="/admin/routers"                element={<Admin><Routers /></Admin>} />
+        <Route path="/admin/stations"               element={<Admin roles={SUPER_ROLES}><Stations /></Admin>} />
         <Route path="/admin/router-health"          element={<Admin><RouterHealth /></Admin>} />
         <Route path="/admin/failover-logs"          element={<Admin roles={SUPER_ROLES}><FailoverLogs /></Admin>} />
         <Route path="/admin/usage-alerts"           element={<Admin><UsageAlerts /></Admin>} />

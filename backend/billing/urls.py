@@ -12,6 +12,7 @@ from .views import (
     OperatorPasswordResetView,
     OperatorWarningView,
     RouterEventsView,
+    StationViewSet,
     PlatformHealthView,
     PlatformAnalyticsView,
 
@@ -112,6 +113,9 @@ router.register("platform/plans", PlatformPlanViewSet, basename="platform-plan")
 # An operator admin managing their own staff. Scoped to their tenant by the
 # viewset, not by the URL.
 router.register("users",         TenantUserViewSet,   basename="user")
+# An operator's physical sites. Grouping only — no separate billing,
+# packages or credentials hang off a station.
+router.register("stations",      StationViewSet,      basename="station")
 
 urlpatterns = [
     # ─── Root ────────────────────────────────────────────────────────────────

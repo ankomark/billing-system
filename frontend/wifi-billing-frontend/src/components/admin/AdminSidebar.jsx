@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Users, Package, FileText, AlertCircle,
   Settings, MessageSquare, LogOut, Activity, Router,
   RefreshCw, Search, Wifi, ShieldAlert, HeartPulse, X,
-  UserPlus, CreditCard, UserCog,
+  UserPlus, CreditCard, UserCog, MapPin,
 } from "lucide-react";
 
 export default function AdminSidebar({ open, onClose }) {
@@ -80,6 +80,7 @@ export default function AdminSidebar({ open, onClose }) {
           <SectionLabel label="Network" />
           <NavItem to="/admin/pppoe/sessions"  icon={Activity}      label="PPPoE Sessions"  onClick={onClose} />
           <NavItem to="/admin/routers"         icon={Router}        label="Routers"         onClick={onClose} />
+          <NavItem to="/admin/stations"        icon={MapPin}        label="Stations"        onClick={onClose} />
           <NavItem to="/admin/router-health"   icon={HeartPulse}    label="Router Health"   onClick={onClose} />
           <NavItem to="/admin/failover-logs"   icon={RefreshCw}     label="Failover Logs"   onClick={onClose} />
           <NavItem to="/admin/usage-alerts"    icon={ShieldAlert}   label="Usage Alerts"    onClick={onClose} />

@@ -49,6 +49,10 @@ from billing.tasks.platform_billing_tasks import (
     send_platform_billing_reminders,
 )
 from billing.tasks.router_health import prune_router_events_task
+from billing.router_service import (
+    _station_of, _tenant_routers, pick_best_router_for_new_customer,
+    pick_failover_router, pick_working_router,
+)
 from billing.tasks.subscription_tasks import enforce_subscription_expiry
 from billing.router_service import (
     pick_best_router_for_new_customer,
@@ -63,7 +67,7 @@ from billing.models import (
     SystemSetting, PPPoEUsageSnapshot, PPPoEUsageState, PPPoEUsageRecord,
     HotspotUsageState, HotspotUsageRecord, UsageRecord,
     PlatformPlan, PlatformSetting, TenantSubscription, TenantInvoice, TenantPayment,
-    TenantStatusChange, ImpersonationLog, AdminActionLog, RouterEvent,
+    TenantStatusChange, ImpersonationLog, AdminActionLog, RouterEvent, Station,
     set_tenant_status, router_uptime,
 )
 from billing.fields import ENCRYPTED_PREFIX
@@ -4082,3 +4086,210 @@ class PlatformAnalyticsTests(PlatformBillingMixin, TestCase):
             self.auth(self.owner).get(self.URL, {"days": 30})
 
         self.assertEqual(len(before.captured_queries), len(after.captured_queries))
+
+
+# =====================================================
+# 22. Phase 5 — stations
+# =====================================================
+
+class StationScopingTests(TwoOperatorMixin, TestCase):
+    """
+    Router selection must never leave the subscriber's own site.
+
+    This is the same shape as the cross-tenant provisioning bug the expansion
+    plan calls out as having physical consequences: a router in another town
+    cannot carry this subscriber, so moving them there does not fail over — it
+    takes them offline while reporting success.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+
+        with tenant_context(self.t1):
+            self.kilifi = Station.objects.create(tenant=self.t1, name="Kilifi Town")
+            self.mtwapa = Station.objects.create(tenant=self.t1, name="Mtwapa")
+
+            self.k1 = RouterDevice.objects.create(
+                tenant=self.t1, name="kilifi-1", ip_address="10.1.0.1",
+                username="a", password="p", priority=1, station=self.kilifi)
+            self.k2 = RouterDevice.objects.create(
+                tenant=self.t1, name="kilifi-2", ip_address="10.1.0.2",
+                username="a", password="p", priority=2, station=self.kilifi)
+            self.m1 = RouterDevice.objects.create(
+                tenant=self.t1, name="mtwapa-1", ip_address="10.2.0.1",
+                username="a", password="p", priority=1, station=self.mtwapa)
+
+            self.customer = Customer.objects.create(
+                tenant=self.t1, full_name="Kilifi Person", phone="254700900001",
+                connection_type="pppoe", router=self.k1)
+
+    def test_only_same_station_routers_are_considered(self):
+        routers = list(_tenant_routers(self.t1.id, self.kilifi.id))
+        self.assertEqual({r.name for r in routers}, {"kilifi-1", "kilifi-2"})
+
+    def test_a_subscribers_station_comes_from_their_router(self):
+        self.assertEqual(_station_of(self.customer), self.kilifi.id)
+
+    def test_no_router_means_no_narrowing(self):
+        stray = Customer.objects.create(
+            tenant=self.t1, full_name="Unassigned", phone="254700900002",
+            connection_type="pppoe")
+        self.assertIsNone(_station_of(stray))
+
+    @patch("billing.router_service.safe_connect_router")
+    def test_failover_stays_at_the_subscribers_station(self, connect):
+        """The whole point: Kilifi must fail over to Kilifi, never to Mtwapa."""
+        connect.side_effect = lambda r: object() if r.name == "kilifi-2" else None
+
+        router, api = pick_failover_router(
+            exclude_router_id=self.k1.id, customer=self.customer)
+
+        self.assertIsNotNone(router)
+        self.assertEqual(router.name, "kilifi-2")
+
+    @patch("billing.router_service.safe_connect_router")
+    def test_failover_refuses_rather_than_cross_a_station(self, connect):
+        """
+        Every Kilifi router is down and Mtwapa is up. The correct answer is
+        None. Returning the Mtwapa router would look like a successful
+        failover and leave the subscriber with no connection.
+        """
+        connect.side_effect = lambda r: object() if r.station_id == self.mtwapa.id else None
+
+        router, api = pick_failover_router(
+            exclude_router_id=self.k1.id, customer=self.customer)
+
+        self.assertIsNone(router, "failover crossed into another station")
+
+    @patch("billing.router_service.safe_connect_router")
+    def test_a_working_router_is_chosen_from_the_right_station(self, connect):
+        connect.side_effect = lambda r: object() if r.station_id == self.kilifi.id else None
+        router, api = pick_working_router(customer=self.customer)
+        self.assertEqual(router.station_id, self.kilifi.id)
+
+    @patch("billing.router_service.safe_connect_router")
+    def test_an_operator_without_stations_is_unaffected(self, connect):
+        """
+        The single-site case, which is most operators. Nothing about their
+        behaviour changes because they never made a station.
+        """
+        plain = self.data["t2"]["customer"]
+        connect.side_effect = lambda r: object()
+        router, api = pick_working_router(customer=plain)
+        self.assertIsNotNone(router)
+        self.assertEqual(router.tenant_id, self.t2.id)
+
+    @patch("billing.router_service.safe_connect_router")
+    def test_station_never_widens_past_the_operator(self, connect):
+        """Station narrows within a tenant; it must not become a way out of one."""
+        connect.side_effect = lambda r: object()
+        routers = list(_tenant_routers(self.t1.id, self.kilifi.id))
+        self.assertTrue(all(r.tenant_id == self.t1.id for r in routers))
+
+    @patch("billing.router_service.safe_connect_router")
+    def test_a_new_subscriber_can_be_steered_to_a_station(self, connect):
+        connect.side_effect = lambda r: object()
+        with patch("billing.router_service.count_pppoe_sessions", return_value=0):
+            router, api = pick_best_router_for_new_customer(
+                tenant_id=self.t1.id, station_id=self.mtwapa.id)
+        self.assertIsNotNone(router)
+        self.assertEqual(router.station_id, self.mtwapa.id)
+
+    @patch("billing.router_service.safe_connect_router")
+    def test_an_existing_subscribers_station_beats_the_argument(self, connect):
+        """
+        Re-homing must not move somebody towns because a caller passed the
+        wrong station.
+        """
+        connect.side_effect = lambda r: object()
+        with patch("billing.router_service.count_pppoe_sessions", return_value=0):
+            router, api = pick_best_router_for_new_customer(
+                customer=self.customer, station_id=self.mtwapa.id)
+        self.assertEqual(router.station_id, self.kilifi.id)
+
+
+class StationApiTests(TwoOperatorMixin, TestCase):
+    URL = "/api/stations/"
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        with tenant_context(self.t1):
+            self.kilifi = Station.objects.create(tenant=self.t1, name="Kilifi Town")
+        with tenant_context(self.t2):
+            self.theirs = Station.objects.create(tenant=self.t2, name="Their Site")
+
+    def test_lists_only_this_operators_stations(self):
+        resp = self.auth(self.admin1).get(self.URL)
+        self.assertEqual(resp.status_code, 200)
+        names = {s["name"] for s in resp.data["results"]}
+        self.assertIn("Kilifi Town", names)
+        self.assertNotIn("Their Site", names)
+
+    def test_creating_a_station_attaches_it_to_the_caller(self):
+        resp = self.auth(self.admin1).post(
+            self.URL, {"name": "Mtwapa", "code": "MTW"}, format="json")
+        self.assertEqual(resp.status_code, 201, resp.data)
+        created = Station.objects.all_tenants().get(name="Mtwapa")
+        self.assertEqual(created.tenant, self.t1)
+
+    def test_a_supplied_tenant_is_ignored(self):
+        self.auth(self.admin1).post(
+            self.URL, {"name": "Planted", "tenant": self.t2.id}, format="json")
+        self.assertEqual(
+            Station.objects.all_tenants().get(name="Planted").tenant, self.t1)
+
+    def test_cannot_reach_another_operators_station(self):
+        resp = self.auth(self.admin1).patch(
+            f"{self.URL}{self.theirs.id}/", {"name": "Hijacked"}, format="json")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_duplicate_name_within_an_operator_is_rejected(self):
+        resp = self.auth(self.admin1).post(
+            self.URL, {"name": "Kilifi Town"}, format="json")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_two_operators_may_each_have_a_kilifi(self):
+        resp = self.auth(self.admin2).post(
+            self.URL, {"name": "Kilifi Town"}, format="json")
+        self.assertEqual(resp.status_code, 201, resp.data)
+
+    def test_a_station_with_routers_cannot_be_deleted(self):
+        with tenant_context(self.t1):
+            RouterDevice.objects.create(
+                tenant=self.t1, name="at-kilifi", ip_address="10.9.0.1",
+                username="a", password="p", station=self.kilifi)
+
+        resp = self.auth(self.admin1).delete(f"{self.URL}{self.kilifi.id}/")
+        self.assertEqual(resp.status_code, 400)
+        self.assertTrue(Station.objects.all_tenants().filter(pk=self.kilifi.pk).exists())
+
+    def test_an_empty_station_can_be_deleted(self):
+        resp = self.auth(self.admin1).delete(f"{self.URL}{self.kilifi.id}/")
+        self.assertEqual(resp.status_code, 204)
+
+    def test_counts_are_reported_per_station(self):
+        with tenant_context(self.t1):
+            router = RouterDevice.objects.create(
+                tenant=self.t1, name="counted", ip_address="10.9.0.2",
+                username="a", password="p", station=self.kilifi, is_online=False)
+            Customer.objects.create(
+                tenant=self.t1, full_name="Counted", phone="254700900009",
+                connection_type="pppoe", router=router)
+
+        resp = self.auth(self.admin1).get(self.URL)
+        row = next(s for s in resp.data["results"] if s["id"] == self.kilifi.id)
+        self.assertEqual(row["routers"], 1)
+        self.assertEqual(row["routers_offline"], 1)
+        self.assertEqual(row["subscribers"], 1)
+
+    def test_deleting_a_station_never_deletes_its_routers(self):
+        """SET_NULL, not CASCADE — a site is a label, not an owner of hardware."""
+        with tenant_context(self.t1):
+            router = RouterDevice.objects.create(
+                tenant=self.t1, name="survivor", ip_address="10.9.0.3",
+                username="a", password="p", station=self.kilifi)
+        self.kilifi.delete()
+        router.refresh_from_db()
+        self.assertIsNone(router.station_id)

@@ -62,6 +62,7 @@ const ADMIN_PAGES = [
   ["MyPlatformAccount", () => require("../pages/admin/MyPlatformAccount").default, /Skylink WiFi/i],
   ["MyAccount", () => require("../pages/admin/MyAccount").default, /Operator admin/i],
   ["Users", () => require("../pages/admin/Users").default, /skyadmin/i],
+  ["Stations", () => require("../pages/admin/Stations").default, /Stations/i],
 ];
 
 /** Log in for real. Retries because the login endpoint is rate-limited. */
@@ -328,6 +329,57 @@ describe("creating an operator against the live backend", () => {
       })
     ).rejects.toMatchObject({ response: { status: 403 } });
   }, 60000);
+});
+
+describe("stations against the live backend", () => {
+  const NAME = `Livetest Site ${Date.now().toString().slice(-6)}`;
+  let created;
+
+  test("an operator can add a site to their existing account", async () => {
+    authAs(adminTokens);
+    const { createStation, fetchStations } = require("../services/routers");
+
+    created = await createStation({ name: NAME, code: "LT" });
+    expect(created.id).toBeGreaterThan(0);
+    // A station is grouping only — no separate account, no separate billing.
+    expect(created).not.toHaveProperty("tenant_subscription");
+
+    const all = await fetchStations();
+    expect(all.map((s) => s.name)).toContain(NAME);
+  }, 40000);
+
+  test("a duplicate name is a field error, not a crash", async () => {
+    authAs(adminTokens);
+    const { createStation } = require("../services/routers");
+    await expect(createStation({ name: NAME })).rejects.toMatchObject({
+      response: { status: 400 },
+    });
+  }, 40000);
+
+  test("the other operator never sees it", async () => {
+    authAs(adminTokens);
+    const { fetchStations } = require("../services/routers");
+    const mine = await fetchStations();
+    expect(mine.map((s) => s.name)).toContain(NAME);
+
+    // blueadmin belongs to the second operator.
+    const blue = await axios.post(`${API}auth/login/`, {
+      username: "blueadmin", password: "devpass123",
+    });
+    const theirs = await axios.get(`${API}stations/`, {
+      headers: { Authorization: `Bearer ${blue.data.access}` },
+    });
+    const names = (theirs.data.results ?? theirs.data).map((s) => s.name);
+    expect(names).not.toContain(NAME);
+  }, 60000);
+
+  test("an empty station can be removed again", async () => {
+    authAs(adminTokens);
+    const { deleteStation, fetchStations } = require("../services/routers");
+    await deleteStation(created.id);
+    const all = await fetchStations();
+    expect(all.map((s) => s.name)).not.toContain(NAME);
+  }, 40000);
 });
 
 describe("analytics against the live backend", () => {

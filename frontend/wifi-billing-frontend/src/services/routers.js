@@ -25,3 +25,27 @@ export const fetchRouterEvents = async (days = 7) => {
   const res = await api.get("admin/routers/events/", { params: { days } });
   return res.data;
 };
+
+// ─── Stations ───────────────────────────────────────────────────────────────
+// An operator's physical sites. Grouping only — one login, one bill, one till,
+// whether they run one site or five.
+
+export const fetchStations = async () => {
+  const res = await api.get("stations/");
+  return Array.isArray(res.data) ? res.data : res.data?.results ?? [];
+};
+
+export const createStation = async (payload) => {
+  const res = await api.post("stations/", payload);
+  return res.data;
+};
+
+export const updateStation = async (id, payload) => {
+  const res = await api.patch(`stations/${id}/`, payload);
+  return res.data;
+};
+
+/** Refused by the backend while routers are still assigned to it. */
+export const deleteStation = async (id) => {
+  await api.delete(`stations/${id}/`);
+};

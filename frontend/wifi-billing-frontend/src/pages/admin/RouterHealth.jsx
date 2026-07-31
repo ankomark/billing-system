@@ -118,7 +118,12 @@ export default function RouterHealth() {
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <p className="font-medium text-slate-800 truncate">{r.name}</p>
-                      <p className="text-xs text-slate-400">{r.ip_address}</p>
+                      <p className="text-xs text-slate-400">
+                        {r.ip_address}
+                        {r.station_name && (
+                          <span className="text-slate-500"> · {r.station_name}</span>
+                        )}
+                      </p>
                     </div>
                     <div className="text-right">
                       <p className={`text-xl font-bold tabular-nums ${

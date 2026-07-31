@@ -277,7 +277,13 @@ def safe_connect_router(router):
         return None
 
 
-def _tenant_routers(tenant_id):
+# Distinguishes "no station given" from "explicitly no station", which matter
+# differently: the first means do not narrow, the second would mean narrow to
+# routers with no station at all.
+_UNSET = object()
+
+
+def _tenant_routers(tenant_id, station_id=_UNSET):
     """
     Active routers belonging to one operator, best priority first.
 
@@ -285,6 +291,15 @@ def _tenant_routers(tenant_id):
     context: these functions run from Celery tasks and management commands
     where no middleware has set it, and an unscoped result would provision a
     subscriber onto another operator's hardware.
+
+    `station_id` narrows further to one site. Left unset it means "anywhere in
+    this operator", which is the behaviour for every operator who has not
+    divided their estate into sites.
+
+    Passing a station id is not a preference — it is a hard filter. A router in
+    Mtwapa cannot carry a subscriber in Kilifi; there is no physical path
+    between them. Moving one there does not fail over, it takes the subscriber
+    offline while reporting success, which is worse than doing nothing.
     """
     from .models import RouterDevice
 
@@ -294,12 +309,33 @@ def _tenant_routers(tenant_id):
             "Router selection requires a tenant. Pass a customer or tenant_id — "
             "an unscoped selection can provision onto another operator's router."
         )
-    return qs.filter(tenant_id=tenant_id).order_by("priority")
+    qs = qs.filter(tenant_id=tenant_id)
+    if station_id is not _UNSET and station_id is not None:
+        qs = qs.filter(station_id=station_id)
+    return qs.order_by("priority")
+
+
+def _station_of(customer):
+    """
+    Which site a subscriber is served from — the site of the router they are on.
+
+    Derived rather than stored. A second column would be a second source of
+    truth that could disagree with the router the subscriber is actually
+    provisioned on, and the router is the one that decides whether their
+    connection works.
+
+    None means either no router yet or a router with no site, and both mean the
+    same thing to the pickers: no narrowing.
+    """
+    router = getattr(customer, "router", None) if customer else None
+    return getattr(router, "station_id", None) if router else None
 
 
 def pick_working_router(customer=None, tenant_id=None):
     tenant_id = tenant_id or getattr(customer, "tenant_id", None)
-    routers = list(_tenant_routers(tenant_id))
+    # Stay at the subscriber's own site. Falls back to the whole operator only
+    # when they have no site, which is the single-location case.
+    routers = list(_tenant_routers(tenant_id, _station_of(customer)))
     # Try assigned router first
     if customer and getattr(customer, "router_id", None):
         assigned = next((r for r in routers if r.id == customer.router_id), None)
@@ -318,7 +354,7 @@ def pick_working_router(customer=None, tenant_id=None):
 def pick_failover_router(exclude_router_id=None, customer=None, tenant_id=None):
 
     tenant_id = tenant_id or getattr(customer, "tenant_id", None)
-    qs = _tenant_routers(tenant_id)
+    qs = _tenant_routers(tenant_id, _station_of(customer))
     if exclude_router_id:
         qs = qs.exclude(id=exclude_router_id)
 
@@ -344,10 +380,24 @@ def count_pppoe_sessions(api) -> int:
     active = api.path("ppp", "active")
     return sum(1 for _ in active)
 
-def pick_best_router_for_new_customer(customer=None, tenant_id=None):
+def pick_best_router_for_new_customer(customer=None, tenant_id=None, station_id=None):
+    """
+    Least-loaded router for a subscriber who does not have one yet.
 
+    `station_id` steers a new subscriber onto the right site. An admin adding a
+    customer in Mtwapa passes it; a walk-up at a captive portal usually cannot,
+    because the portal request carries only the operator token — so absent a
+    station this behaves exactly as it always has and considers the whole
+    estate.
+
+    When the customer already has a router, their existing site wins over the
+    argument: re-homing an existing subscriber must not move them towns.
+    """
     tenant_id = tenant_id or getattr(customer, "tenant_id", None)
-    routers = list(_tenant_routers(tenant_id))
+    station = _station_of(customer)
+    if station is None and station_id is not None:
+        station = station_id
+    routers = list(_tenant_routers(tenant_id, station))
     candidates = []
 
     for r in routers:

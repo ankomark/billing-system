@@ -518,6 +518,42 @@ class User(AbstractUser):
 # ROUTER
 # =====================================================
 
+class Station(TenantScopedModel):
+    """
+    One physical site belonging to an operator.
+
+    An operator with a site in two towns is still one business: one login, one
+    bill, one M-Pesa till, one set of packages. A station groups the hardware at
+    a place so they can be told apart when monitoring them — it is not a
+    second account and deliberately owns none of the commercial concerns.
+
+    Optional throughout. An operator with a single site never creates one, and
+    a router with no station behaves exactly as it did before stations existed.
+    Nothing backfills a "Main Station" onto operators who did not ask for one.
+    """
+
+    name = models.CharField(max_length=100)
+    # Short label for lists and generated names, e.g. KLF for Kilifi Town.
+    code = models.CharField(max_length=12, blank=True)
+    notes = models.TextField(blank=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["name"]
+        constraints = [
+            # Two sites called "Kilifi" within one operator would make the
+            # grouping useless. Scoped to the tenant, so different operators may
+            # each have a Kilifi.
+            models.UniqueConstraint(
+                fields=["tenant", "name"], name="unique_station_name_per_tenant"
+            ),
+        ]
+
+    def __str__(self):
+        return self.name
+
+
 class RouterDevice(TenantScopedModel):
     name = models.CharField(max_length=100)
     ip_address = models.GenericIPAddressField()
@@ -534,6 +570,17 @@ class RouterDevice(TenantScopedModel):
     last_seen = models.DateTimeField(null=True, blank=True)
     last_error = models.TextField(blank=True, default="")
     max_pppoe_sessions = models.PositiveIntegerField(default=0)  # 0 = unlimited
+
+    # Which site this box is at. NULL means the operator has not divided their
+    # estate into sites, which is the normal case for a single-location
+    # business — router selection then behaves exactly as it always has.
+    #
+    # SET_NULL rather than CASCADE: deleting a site must never delete the
+    # routers standing in it, along with every customer attached to them.
+    station = models.ForeignKey(
+        Station, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="routers",
+    )
 
     def __str__(self):
         return self.name

@@ -44,16 +44,17 @@ export default function Routers() {
               <tr>
                 <th className="px-6 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Name</th>
                 <th className="px-6 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">IP Address</th>
+                <th className="px-6 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Station</th>
                 <th className="px-6 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Priority</th>
                 <th className="px-6 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Status</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {isLoading ? (
-                <SkeletonTable rows={4} cols={4} />
+                <SkeletonTable rows={4} cols={5} />
               ) : routers.length === 0 ? (
                 <tr>
-                  <td colSpan="4" className="px-6 py-10 text-center text-slate-400 text-sm">
+                  <td colSpan="5" className="px-6 py-10 text-center text-slate-400 text-sm">
                     No routers configured
                   </td>
                 </tr>
@@ -62,6 +63,10 @@ export default function Routers() {
                   <tr key={router.id} className="hover:bg-slate-50 transition-colors">
                     <td className="px-6 py-4 font-medium text-slate-800">{router.name}</td>
                     <td className="px-6 py-4 font-mono text-xs text-slate-600">{router.ip_address}</td>
+                    <td className="px-6 py-4 text-slate-600">
+                      {/* Blank is the normal single-site case, not missing data. */}
+                      {router.station_name || <span className="text-slate-300">—</span>}
+                    </td>
                     <td className="px-6 py-4">
                       <span className="inline-flex items-center px-2.5 py-0.5 rounded-md text-xs font-medium bg-blue-50 text-blue-700 border border-blue-100">
                         Priority {router.priority}

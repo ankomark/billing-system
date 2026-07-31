@@ -36,7 +36,7 @@ from django.utils import timezone
 from rest_framework import viewsets
 from .models import Customer, Package, Subscription,Invoice, Payment,MpesaTransaction,SystemSetting,RouterFailoverLog, HotspotUsageRecord, AccessAuditLog, Tenant
 from .models import PlatformPlan, TenantSubscription, TenantInvoice, TenantPayment, TenantStatusChange
-from .models import RouterEvent, router_uptime
+from .models import RouterEvent, Station, router_uptime
 from .models import ImpersonationLog
 from .models import User, AdminActionLog, record_admin_action
 from .tenancy import tenant_context, get_current_tenant_id
@@ -46,7 +46,8 @@ logger = logging.getLogger(__name__)
 from .serializers import (PlatformPlanSerializer, TenantSubscriptionSerializer,
                           TenantInvoiceSerializer, TenantPaymentSerializer,
                           OperatorCreateSerializer, OperatorUpdateSerializer,
-                          ChangePasswordSerializer, TenantUserSerializer,)
+                          ChangePasswordSerializer, TenantUserSerializer,
+                          StationSerializer,)
 from .serializers import (CustomerSerializer,CustomerDetailSerializer,PackageSerializer,SubscriptionSerializer,InvoiceSerializer,  PaymentSerializer,SystemSettingSerializer,)
 from billing.tasks.notification_tasks import notify_customer_task,send_sms_task, send_whatsapp_task
 from .config import get_setting
@@ -2743,6 +2744,38 @@ class PlatformOperatorListView(APIView):
         ])
 
 
+class StationViewSet(viewsets.ModelViewSet):
+    """
+    An operator's sites.
+
+    Scoped to the caller's operator by the default manager, and the tenant is
+    taken from context on write rather than from the request body — the same
+    two-sided scoping as the user endpoint, for the same reason.
+    """
+
+    serializer_class = StationSerializer
+    permission_classes = [IsTenantAdmin]
+
+    def get_queryset(self):
+        return Station.objects.all().order_by("name")
+
+    def perform_destroy(self, instance):
+        """
+        Refuse to delete a site that still has hardware in it.
+
+        SET_NULL on the router would quietly ungroup every box at the site
+        instead, and the first anyone would notice is failover no longer being
+        held to a location.
+        """
+        count = instance.routers.count()
+        if count:
+            raise ValidationError(
+                f"{instance.name} still has {count} router(s). Move them to "
+                "another station first."
+            )
+        instance.delete()
+
+
 class RouterEventsView(APIView):
     """
     One router's history of going down and coming back, with availability.
@@ -2758,7 +2791,10 @@ class RouterEventsView(APIView):
         days = max(1, min(int(request.query_params.get("days", 7) or 7), 90))
         since = timezone.now() - timezone.timedelta(days=days)
 
-        routers = list(RouterDevice.objects.filter(is_active=True).order_by("priority"))
+        routers = list(
+            RouterDevice.objects.filter(is_active=True)
+            .select_related("station").order_by("station__name", "priority")
+        )
         router_id = request.query_params.get("router")
         if router_id:
             routers = [r for r in routers if str(r.id) == str(router_id)]
@@ -2779,6 +2815,8 @@ class RouterEventsView(APIView):
                 {
                     "id": r.id,
                     "name": r.name,
+                    "station": r.station_id,
+                    "station_name": r.station.name if r.station_id else None,
                     "ip_address": r.ip_address,
                     "is_online": r.is_online,
                     "last_seen": r.last_seen,
