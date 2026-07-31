@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { RefreshCw } from "lucide-react";
 import AdminLayout from "../../components/admin/AdminLayout";
 import AdminUsageGraph from "../../components/usage/AdminUsageGraph";
+import AnalyticsPanels from "../../components/admin/AnalyticsPanels";
 import {
   Card, CardHeader, Note, PageHeader, Section, StatTile, KES, num,
 } from "../../components/admin/ui";
@@ -127,6 +128,12 @@ export default function Dashboard() {
           />
           <AdminUsageGraph />
         </Card>
+
+        {/* The same panels as the Analytics page, in compact form — the pulse
+            and totals tiles are dropped because the figures above already say
+            those, and the same number twice on one screen makes a reader stop
+            to check whether they disagree. */}
+        <AnalyticsPanels compact defaultDays={30} />
       </div>
     </AdminLayout>
   );
