@@ -43,6 +43,8 @@ const PLATFORM_PAGES = [
   ["PlatformInvoices", () => require("../pages/platform/PlatformInvoices").default, /PINV-0002/i],
   ["NewOperator", () => require("../pages/platform/NewOperator").default, /New operator/i],
   ["PlatformHealth", () => require("../pages/platform/PlatformHealth").default, /Routers offline/i],
+  ["PlatformPlans", () => require("../pages/platform/PlatformPlans").default, /Starter/i],
+  ["PlatformAudit", () => require("../pages/platform/PlatformAudit").default, /Audit log/i],
 ];
 
 const ADMIN_PAGES = [
@@ -329,6 +331,72 @@ describe("creating an operator against the live backend", () => {
       })
     ).rejects.toMatchObject({ response: { status: 403 } });
   }, 60000);
+});
+
+describe("the four gaps, against the live backend", () => {
+  test("the audit log is actually readable now", async () => {
+    authAs(ownerTokens);
+    const { fetchAuditLog } = require("../services/platform");
+    const rows = await fetchAuditLog({ limit: 50 });
+    expect(Array.isArray(rows)).toBe(true);
+    // Earlier tests in this file reset a password and wrote credentials, so
+    // there is real history to read rather than an empty list proving nothing.
+    if (rows.length) {
+      expect(rows[0]).toHaveProperty("action");
+      expect(rows[0]).toHaveProperty("at");
+    }
+  }, 40000);
+
+  test("an operator sees only actions against their own business", async () => {
+    authAs(adminTokens);
+    const { fetchAuditLog } = require("../services/platform");
+    const rows = await fetchAuditLog({ limit: 50 });
+    const operators = new Set(rows.map((r) => r.operator_id));
+    for (const id of operators) expect(id).toBe(1);
+  }, 40000);
+
+  test("plans can be read and an operator moved onto one", async () => {
+    authAs(ownerTokens);
+    const { fetchPlatformPlans, setOperatorPlan } = require("../services/platform");
+    const plans = await fetchPlatformPlans();
+    expect(plans.length).toBeGreaterThan(0);
+
+    const res = await setOperatorPlan(2, plans[0].slug);
+    expect(res.plan).toBe(plans[0].name);
+    // The current period is deliberately untouched.
+    expect(res.note).toMatch(/current period is unchanged/i);
+  }, 40000);
+
+  test("an operator cannot change their own plan", async () => {
+    authAs(adminTokens);
+    const { setOperatorPlan } = require("../services/platform");
+    await expect(setOperatorPlan(1, "starter")).rejects.toMatchObject({
+      response: { status: 403 },
+    });
+  }, 40000);
+
+  test("router health is rolled up per station", async () => {
+    authAs(adminTokens);
+    const { fetchRouterEvents } = require("../services/routers");
+    const data = await fetchRouterEvents(7);
+    expect(Array.isArray(data.stations)).toBe(true);
+    for (const st of data.stations) {
+      expect(st).toHaveProperty("uptime_percent");
+      expect(st).toHaveProperty("routers_offline");
+    }
+  }, 40000);
+
+  test("analytics breaks down by station for one operator only", async () => {
+    authAs(ownerTokens);
+    const { fetchPlatformAnalytics } = require("../services/platform");
+    const one = await fetchPlatformAnalytics({ days: 30, tenant: 1 });
+    const all = await fetchPlatformAnalytics({ days: 30 });
+
+    expect(Array.isArray(one.stations)).toBe(true);
+    // Every site of every business answers nothing, so the platform-wide view
+    // carries none.
+    expect(all.stations).toEqual([]);
+  }, 40000);
 });
 
 describe("helping an operator get paid, against the live backend", () => {

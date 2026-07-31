@@ -106,6 +106,42 @@ export default function RouterHealth() {
           </div>
         </div>
 
+        {/* Per-site rollup. A router-by-router list answers "is this box up";
+            an operator with two towns is asking "is Kilifi up". */}
+        {events?.stations?.length > 1 && (
+          <div>
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">
+              By station — last {events.days} days
+            </p>
+            <div className="grid gap-4 sm:grid-cols-3">
+              {events.stations.map((st) => (
+                <div key={st.id ?? "none"} className="bg-white rounded-xl border border-slate-200 p-4">
+                  <p className="font-medium text-slate-800">
+                    {st.name || <span className="text-slate-400">No station</span>}
+                  </p>
+                  <p className={`text-2xl font-bold tabular-nums mt-1 ${
+                    st.uptime_percent >= 99 ? "text-emerald-600"
+                    : st.uptime_percent >= 95 ? "text-amber-600" : "text-red-600"
+                  }`}>
+                    {st.uptime_percent}%
+                  </p>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    {st.routers} router{st.routers === 1 ? "" : "s"}
+                    {st.routers_offline > 0 && (
+                      <span className="text-red-600 font-medium">
+                        {" "}· {st.routers_offline} offline now
+                      </span>
+                    )}
+                  </p>
+                  <p className="text-xs text-slate-400">
+                    {st.outages} outage{st.outages === 1 ? "" : "s"} in the period
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Availability over the last week */}
         {events?.routers?.length > 0 && (
           <div>

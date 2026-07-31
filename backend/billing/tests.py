@@ -4509,3 +4509,225 @@ class OperatorOnboardingWithMpesaTests(PlatformBillingMixin, TestCase):
         }, format="json")
         self.assertNotIn("never-echo-this", str(resp.data))
         self.assertNotIn("nor-this", str(resp.data))
+
+
+# =====================================================
+# 24. Making the audit log readable, plans changeable,
+#     and the station rollups that phase 5 skipped
+# =====================================================
+
+class AuditLogReadTests(PlatformBillingMixin, TestCase):
+    """
+    The log was written from the start and readable nowhere.
+
+    Same defect this codebase already had once, with the operator status
+    history: recorded faithfully, surfaced never.
+    """
+
+    URL = "/api/platform/audit/"
+
+    def setUp(self):
+        cache.clear()
+        self.build_billing()
+        self.owner = make_platform_owner()
+        # Something to read: a reset against operator one.
+        self.auth(self.owner).post(
+            f"/api/platform/operators/{self.t1.id}/reset-password/",
+            {"reason": "audit fixture"}, format="json")
+        # That reset bumped their token_version, and this in-memory copy still
+        # holds the old one — a token minted from it would be rejected, which
+        # is the invalidation doing its job.
+        self.admin1.refresh_from_db()
+
+    def test_platform_staff_see_every_operator(self):
+        resp = self.auth(self.owner).get(self.URL)
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.data["actions"])
+
+    def test_an_operator_sees_only_actions_against_their_own_business(self):
+        """
+        Including ones a platform account took on them — that is the part they
+        have a right to see.
+        """
+        self.auth(self.owner).post(
+            f"/api/platform/operators/{self.t2.id}/reset-password/",
+            {"reason": "other operator"}, format="json")
+
+        resp = self.auth(self.admin1).get(self.URL)
+        self.assertEqual(resp.status_code, 200)
+        operators = {a["operator_id"] for a in resp.data["actions"]}
+        self.assertEqual(operators, {self.t1.id})
+
+    def test_the_reset_on_them_is_visible_to_them(self):
+        resp = self.auth(self.admin1).get(self.URL)
+        actions = {a["action"] for a in resp.data["actions"]}
+        self.assertIn(AdminActionLog.RESET_PASSWORD, actions)
+
+    def test_rows_say_who_did_it_and_why(self):
+        resp = self.auth(self.owner).get(self.URL)
+        row = next(a for a in resp.data["actions"]
+                   if a["action"] == AdminActionLog.RESET_PASSWORD)
+        self.assertEqual(row["by"], self.owner.username)
+        self.assertTrue(row["by_platform"])
+        self.assertEqual(row["detail"], "audit fixture")
+
+    def test_can_be_filtered_to_one_operator(self):
+        self.auth(self.owner).post(
+            f"/api/platform/operators/{self.t2.id}/reset-password/",
+            {"reason": "other"}, format="json")
+        resp = self.auth(self.owner).get(self.URL, {"tenant": self.t2.id})
+        operators = {a["operator_id"] for a in resp.data["actions"]}
+        self.assertEqual(operators, {self.t2.id})
+
+    def test_limit_is_clamped(self):
+        resp = self.auth(self.owner).get(self.URL, {"limit": 99999})
+        self.assertLessEqual(len(resp.data["actions"]), 500)
+
+    def test_a_subscriber_cannot_read_it(self):
+        customer = User.objects.create_user(
+            username="just_a_customer", password="x",
+            role=User.CUSTOMER, tenant=self.t1)
+        self.assertEqual(self.auth(customer).get(self.URL).status_code, 403)
+
+
+class OperatorPlanChangeTests(PlatformBillingMixin, TestCase):
+    """A plan could only be chosen at onboarding and never changed after."""
+
+    def setUp(self):
+        cache.clear()
+        self.build_billing()
+        self.owner = make_platform_owner()
+        self.bigger = PlatformPlan.objects.create(
+            name="Growth", slug="growth", price=Decimal("5000.00"),
+            billing_period_days=30, max_customers=1000, max_routers=20)
+
+    def url(self, tenant):
+        return f"/api/platform/operators/{tenant.id}/plan/"
+
+    def test_operator_cannot_change_their_own_plan(self):
+        resp = self.auth(self.admin1).post(
+            self.url(self.t1), {"plan": "growth"}, format="json")
+        self.assertEqual(resp.status_code, 403)
+
+    def test_platform_staff_cannot_change_a_plan(self):
+        """It decides what they are billed."""
+        staff = User.objects.create_user(
+            username="pstaff_plan", password="x",
+            role=User.PLATFORM_STAFF, tenant=None)
+        resp = self.auth(staff).post(
+            self.url(self.t1), {"plan": "growth"}, format="json")
+        self.assertEqual(resp.status_code, 403)
+
+    def test_owner_moves_an_operator_onto_another_plan(self):
+        resp = self.auth(self.owner).post(
+            self.url(self.t1), {"plan": "growth"}, format="json")
+        self.assertEqual(resp.status_code, 200, resp.data)
+
+        sub = TenantSubscription.objects.all_tenants().get(tenant=self.t1)
+        self.assertEqual(sub.plan, self.bigger)
+        self.assertEqual(resp.data["previous"], "Starter")
+
+    def test_the_current_period_is_not_re_dated(self):
+        """
+        Re-dating would either bill them twice for the same days or hand them a
+        free period, depending which way they moved.
+        """
+        sub = TenantSubscription.objects.all_tenants().get(tenant=self.t1)
+        before_start, before_end = sub.current_period_start, sub.current_period_end
+
+        self.auth(self.owner).post(self.url(self.t1), {"plan": "growth"}, format="json")
+
+        sub.refresh_from_db()
+        self.assertEqual(sub.current_period_start, before_start)
+        self.assertEqual(sub.current_period_end, before_end)
+
+    def test_an_operator_with_no_plan_gets_one(self):
+        fresh = Tenant.objects.create(name="Planless", slug="planless")
+        resp = self.auth(self.owner).post(self.url(fresh), {"plan": "growth"}, format="json")
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertTrue(
+            TenantSubscription.objects.all_tenants().filter(tenant=fresh).exists())
+
+    def test_an_unknown_plan_is_rejected(self):
+        resp = self.auth(self.owner).post(
+            self.url(self.t1), {"plan": "no-such-plan"}, format="json")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_an_inactive_plan_cannot_be_assigned(self):
+        self.bigger.is_active = False
+        self.bigger.save(update_fields=["is_active"])
+        resp = self.auth(self.owner).post(
+            self.url(self.t1), {"plan": "growth"}, format="json")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_the_change_is_audited(self):
+        self.auth(self.owner).post(self.url(self.t1), {"plan": "growth"}, format="json")
+        log = AdminActionLog.objects.filter(action=AdminActionLog.CHANGE_PLAN).first()
+        self.assertIsNotNone(log)
+        self.assertIn("Growth", log.detail)
+        self.assertEqual(log.target_tenant, self.t1)
+
+
+class StationRollupTests(TwoOperatorMixin, TestCase):
+    """
+    The part of phase 5 that was planned and then not done: a router-by-router
+    list answers "is this box up", while an operator with two towns is asking
+    "is Kilifi up".
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        with tenant_context(self.t1):
+            self.kilifi = Station.objects.create(tenant=self.t1, name="Kilifi Town")
+            self.mtwapa = Station.objects.create(tenant=self.t1, name="Mtwapa")
+            self.k1 = RouterDevice.objects.create(
+                tenant=self.t1, name="k1", ip_address="10.1.0.1",
+                username="a", password="p", station=self.kilifi, is_online=True)
+            self.m1 = RouterDevice.objects.create(
+                tenant=self.t1, name="m1", ip_address="10.2.0.1",
+                username="a", password="p", station=self.mtwapa, is_online=True)
+
+    def test_health_is_reported_per_station(self):
+        resp = self.auth(self.admin1).get("/api/admin/routers/events/")
+        self.assertEqual(resp.status_code, 200)
+        names = {s["name"] for s in resp.data["stations"]}
+        self.assertIn("Kilifi Town", names)
+        self.assertIn("Mtwapa", names)
+
+    def test_an_offline_router_shows_against_its_own_station(self):
+        self.m1.record_health(False, error="down")
+
+        resp = self.auth(self.admin1).get("/api/admin/routers/events/")
+        by_name = {s["name"]: s for s in resp.data["stations"]}
+        self.assertEqual(by_name["Mtwapa"]["routers_offline"], 1)
+        self.assertEqual(by_name["Kilifi Town"]["routers_offline"], 0)
+
+    def test_routers_with_no_station_are_still_reported(self):
+        """The single-site case must not vanish from its own health page."""
+        resp = self.auth(self.admin1).get("/api/admin/routers/events/")
+        unnamed = [s for s in resp.data["stations"] if s["name"] is None]
+        self.assertTrue(unnamed, "routers without a station disappeared")
+
+    def test_analytics_breaks_subscribers_down_by_station(self):
+        with tenant_context(self.t1):
+            Customer.objects.create(
+                tenant=self.t1, full_name="At Kilifi", phone="254700800001",
+                connection_type="pppoe", router=self.k1)
+            Customer.objects.create(
+                tenant=self.t1, full_name="At Mtwapa", phone="254700800002",
+                connection_type="pppoe", router=self.m1)
+
+        owner = make_platform_owner()
+        resp = self.auth(owner).get(
+            "/api/platform/analytics/", {"days": 7, "tenant": self.t1.id})
+
+        by_name = {s["name"]: s["subscribers"] for s in resp.data["stations"]}
+        self.assertEqual(by_name.get("Kilifi Town"), 1)
+        self.assertEqual(by_name.get("Mtwapa"), 1)
+
+    def test_the_platform_wide_view_has_no_station_list(self):
+        """Every site of every business answers nothing."""
+        owner = make_platform_owner()
+        resp = self.auth(owner).get("/api/platform/analytics/", {"days": 7})
+        self.assertEqual(resp.data["stations"], [])

@@ -46,6 +46,33 @@ export const testOperatorMpesa = async (id) => {
   return res.data;
 };
 
+// ─── Audit log ──────────────────────────────────────────────────────────────
+// Scoped by the backend: platform staff see every operator, an operator admin
+// sees only actions against their own business — including ones taken on them.
+export const fetchAuditLog = async ({ tenant, action, limit = 100 } = {}) => {
+  const res = await api.get("platform/audit/", {
+    params: { limit, ...(tenant ? { tenant } : {}), ...(action ? { action } : {}) },
+  });
+  return res.data.actions ?? [];
+};
+
+// ─── Plans ──────────────────────────────────────────────────────────────────
+export const createPlan = async (payload) => {
+  const res = await api.post("platform/plans/", payload);
+  return res.data;
+};
+
+export const updatePlan = async (id, payload) => {
+  const res = await api.patch(`platform/plans/${id}/`, payload);
+  return res.data;
+};
+
+/** Moves an operator onto a plan. Owner-only — it decides what they are billed. */
+export const setOperatorPlan = async (id, plan) => {
+  const res = await api.post(`platform/operators/${id}/plan/`, { plan });
+  return res.data;
+};
+
 export const fetchPlatformHealth = async () => {
   const res = await api.get("platform/health/");
   return res.data;

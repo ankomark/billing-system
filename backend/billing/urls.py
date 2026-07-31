@@ -13,6 +13,8 @@ from .views import (
     OperatorWarningView,
     OperatorMpesaSetupView,
     OperatorMpesaTestView,
+    OperatorPlanView,
+    AdminActionLogView,
     RouterEventsView,
     StationViewSet,
     PlatformHealthView,
@@ -241,6 +243,8 @@ urlpatterns = [
     path("api/platform/operators/<int:tenant_id>/status/", TenantStatusView.as_view(), name="platform-tenant-status"),
     path("api/platform/operators/<int:tenant_id>/reset-password/", OperatorPasswordResetView.as_view(), name="platform-operator-reset-password"),
     path("api/platform/operators/<int:tenant_id>/warn/", OperatorWarningView.as_view(), name="platform-operator-warn"),
+    path("api/platform/operators/<int:tenant_id>/plan/", OperatorPlanView.as_view(), name="platform-operator-plan"),
+    path("api/platform/audit/", AdminActionLogView.as_view(), name="admin-audit-log"),
     path("api/platform/operators/<int:tenant_id>/mpesa/", OperatorMpesaSetupView.as_view(), name="platform-operator-mpesa"),
     path("api/platform/operators/<int:tenant_id>/mpesa/test/", OperatorMpesaTestView.as_view(), name="platform-operator-mpesa-test"),
 

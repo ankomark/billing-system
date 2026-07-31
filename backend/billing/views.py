@@ -2832,8 +2832,41 @@ class RouterEventsView(APIView):
         for e in events:
             by_router.setdefault(e.router_id, []).append(e)
 
+        # Rolled up per site. A router-by-router list answers "is this box up";
+        # an operator with two towns is usually asking "is Kilifi up", which is
+        # a different question and was not answerable before.
+        stations = {}
+        for r in routers:
+            key = r.station_id
+            bucket = stations.setdefault(key, {
+                "id": key,
+                "name": r.station.name if r.station_id else None,
+                "routers": 0,
+                "routers_offline": 0,
+                "downtime_seconds": 0,
+                "outages": 0,
+                "_uptimes": [],
+            })
+            availability = router_uptime(r, since)
+            bucket["routers"] += 1
+            bucket["routers_offline"] += 0 if r.is_online else 1
+            bucket["downtime_seconds"] += availability["downtime_seconds"]
+            bucket["outages"] += availability["outages"]
+            bucket["_uptimes"].append(availability["uptime_percent"])
+
+        station_rows = []
+        for bucket in stations.values():
+            ups = bucket.pop("_uptimes")
+            # Mean across the site's routers. Not a claim about the site being
+            # reachable — two routers half down is not the same as one fully
+            # down — so outages and offline counts are reported beside it.
+            bucket["uptime_percent"] = round(sum(ups) / len(ups), 2) if ups else 100.0
+            station_rows.append(bucket)
+        station_rows.sort(key=lambda b: (b["name"] is None, b["name"] or ""))
+
         return Response({
             "days": days,
+            "stations": station_rows,
             "routers": [
                 {
                     "id": r.id,
@@ -2936,9 +2969,31 @@ class PlatformAnalyticsView(APIView):
                 "operators": running,
             })
 
+        # Per-site breakdown, only when looking at one operator — across the
+        # whole platform it would be a list of every site of every business,
+        # which answers nothing.
+        stations = []
+        if tenant is not None:
+            station_rows = (
+                Customer.objects.all_tenants()
+                .filter(tenant=tenant, router__station__isnull=False)
+                .values("router__station__id", "router__station__name")
+                .annotate(subscribers=Count("id"))
+                .order_by("-subscribers")
+            )
+            stations = [
+                {
+                    "id": r["router__station__id"],
+                    "name": r["router__station__name"],
+                    "subscribers": r["subscribers"],
+                }
+                for r in station_rows
+            ]
+
         return Response({
             "days": days,
             "operator": tenant.business_name or tenant.name if tenant else None,
+            "stations": stations,
             "series": series,
             "totals": {
                 "platform_revenue": sum(p["platform_revenue"] for p in series),
@@ -3067,6 +3122,128 @@ class OperatorWarningView(APIView):
                 else "No contact phone on file for this operator"
                 if not tenant.contact_phone else "Sending failed"
             ),
+        })
+
+
+class AdminActionLogView(APIView):
+    """
+    Who did what to which account.
+
+    The log has been written since accounts management landed and was readable
+    nowhere — the same defect this codebase already had with the operator status
+    history: recorded faithfully, surfaced never. An audit trail nobody can read
+    is a cost with no benefit.
+
+    Scoped by who is asking. Platform staff see every operator, because acting
+    across operators is their job. An operator admin sees only actions against
+    their own business — including ones a platform account took on them, which
+    is exactly the part they have a right to see.
+    """
+
+    permission_classes = [IsTenantAdmin]
+
+    def get(self, request):
+        user = request.user
+        qs = (
+            AdminActionLog.objects
+            .select_related("actor", "target_user", "target_tenant")
+            .all()
+        )
+
+        if not user.is_platform_staff:
+            # Their own business only. Rows with no target_tenant are platform
+            # housekeeping and belong to nobody here.
+            qs = qs.filter(target_tenant_id=user.tenant_id)
+        else:
+            tenant_id = request.query_params.get("tenant")
+            if tenant_id:
+                qs = qs.filter(target_tenant_id=tenant_id)
+
+        action = request.query_params.get("action")
+        if action:
+            qs = qs.filter(action=action)
+
+        limit = max(1, min(int(request.query_params.get("limit", 100) or 100), 500))
+
+        return Response({
+            "actions": [
+                {
+                    "id": row.id,
+                    "action": row.action,
+                    "label": row.get_action_display(),
+                    "by": row.actor.username if row.actor_id else None,
+                    "by_platform": bool(row.actor_id and row.actor.is_platform_staff),
+                    "target": row.target_label or (
+                        row.target_user.username if row.target_user_id else None),
+                    "operator": (
+                        row.target_tenant.business_name or row.target_tenant.name
+                        if row.target_tenant_id else None
+                    ),
+                    "operator_id": row.target_tenant_id,
+                    "detail": row.detail,
+                    "at": row.created_at,
+                }
+                for row in qs[:limit]
+            ],
+        })
+
+
+class OperatorPlanView(APIView):
+    """
+    Move an operator onto a plan, or change the one they are on.
+
+    A plan could only be chosen during onboarding, so an operator who grew out
+    of theirs — or was created without one — could not be moved without going
+    into the database. Owner-only: this decides what they are billed.
+    """
+
+    permission_classes = [IsPlatformOwner]
+
+    def post(self, request, tenant_id):
+        tenant = Tenant.objects.filter(id=tenant_id).first()
+        if tenant is None:
+            return Response({"detail": "Operator not found"}, status=404)
+
+        slug = (request.data.get("plan") or "").strip()
+        if not slug:
+            return Response({"plan": ["Choose a plan."]}, status=400)
+
+        plan = PlatformPlan.objects.filter(slug=slug, is_active=True).first()
+        if plan is None:
+            return Response({"plan": ["No active plan with that slug."]}, status=400)
+
+        with tenant_context(tenant):
+            subscription = (
+                TenantSubscription.objects.all_tenants().filter(tenant=tenant).first()
+            )
+            now = timezone.now()
+            if subscription is None:
+                subscription = TenantSubscription.objects.create(
+                    tenant=tenant, plan=plan, status="trialing",
+                    current_period_start=now,
+                    current_period_end=now + timezone.timedelta(
+                        days=plan.billing_period_days),
+                )
+                was = None
+            else:
+                was = subscription.plan.name
+                # The current period is left alone deliberately. Re-dating it
+                # would either bill them twice for the same days or hand them a
+                # free period, depending on which direction they moved.
+                subscription.plan = plan
+                subscription.save(update_fields=["plan"])
+
+        record_admin_action(
+            request.user, AdminActionLog.CHANGE_PLAN,
+            target_tenant=tenant,
+            detail=f"{was or 'no plan'} -> {plan.name}",
+        )
+
+        return Response({
+            "detail": f"{tenant.business_name or tenant.name} is now on {plan.name}.",
+            "plan": plan.name,
+            "previous": was,
+            "note": "Takes effect from their next invoice; the current period is unchanged.",
         })
 
 

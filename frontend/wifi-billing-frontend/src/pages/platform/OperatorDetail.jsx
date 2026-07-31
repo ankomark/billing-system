@@ -7,6 +7,8 @@ import PlatformLayout from "../../components/platform/PlatformLayout";
 import ResetPasswordModal from "../../components/platform/ResetPasswordModal";
 import AnalyticsPanel from "../../components/platform/AnalyticsPanel";
 import MpesaSetupPanel from "../../components/platform/MpesaSetupPanel";
+import AuditTrail from "../../components/platform/AuditTrail";
+import OperatorPlanPanel from "../../components/platform/OperatorPlanPanel";
 import { Skeleton } from "../../components/ui/Skeleton";
 import { getUser, startImpersonating } from "../../services/auth";
 import { PLATFORM_OWNER } from "../../constants/roles";
@@ -161,6 +163,8 @@ export default function OperatorDetail() {
           <Card label="Routers" value={op.network.routers} />
           <Card label="Their revenue" value={KES(op.network.subscriber_revenue)} />
         </div>
+
+        <OperatorPlanPanel operator={op} canEdit={isOwner} />
 
         <MpesaSetupPanel operatorId={op.id} canEdit={isOwner} />
 
@@ -354,6 +358,10 @@ export default function OperatorDetail() {
               ))}
             </ul>
           )}
+        </Panel>
+
+        <Panel title="Account changes">
+          <AuditTrail tenant={op.id} compact />
         </Panel>
 
         <Panel title="Recent support access">

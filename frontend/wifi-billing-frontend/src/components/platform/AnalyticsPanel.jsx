@@ -142,6 +142,23 @@ export default function AnalyticsPanel({ tenant, title = "Trends" }) {
             />
           </Card>
 
+          {tenant && data.stations?.length > 0 && (
+            <Card>
+              <CardHeader
+                title="Subscribers by station"
+                subtitle="Where this operator's customers are served from"
+              />
+              <Chart
+                kind="bar"
+                data={data.stations}
+                xKey="name"
+                series={[{ key: "subscribers", label: "Subscribers" }]}
+                valueFormatter={(v) => num(v)}
+                empty="No subscribers attached to a station yet"
+              />
+            </Card>
+          )}
+
           {!tenant && (
             <Card>
               <CardHeader
