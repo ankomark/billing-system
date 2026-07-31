@@ -84,7 +84,7 @@ export default function PackageForm() {
       <AdminLayout>
         <div className="max-w-xl space-y-4">
           <Skeleton className="h-8 w-48" />
-          <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 space-y-4">
+          <div className="rounded-xl border border-white/10 bg-slate-900/80 shadow-lg shadow-black/20 p-6 space-y-4">
             {[...Array(5)].map((_, i) => <Skeleton key={i} className="h-10 w-full" />)}
           </div>
         </div>
@@ -98,21 +98,21 @@ export default function PackageForm() {
         <div className="flex items-center gap-3">
           <button
             onClick={() => navigate("/admin/packages")}
-            className="text-slate-400 hover:text-slate-700 transition-colors"
+            className="text-slate-500 hover:text-slate-300 transition-colors"
           >
             <ArrowLeft size={20} />
           </button>
           <div>
-            <h1 className="text-2xl font-bold text-slate-900 tracking-tight">
+            <h1 className="text-2xl font-bold text-white tracking-tight">
               {isEdit ? "Edit Package" : "New Package"}
             </h1>
-            <p className="text-slate-500 text-sm mt-0.5">
+            <p className="text-slate-400 text-sm mt-0.5">
               {isEdit ? `Editing ${existing?.name}` : "Fill in the details for the new package"}
             </p>
           </div>
         </div>
 
-        <form onSubmit={handleSubmit} className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 space-y-5">
+        <form onSubmit={handleSubmit} className="rounded-xl border border-white/10 bg-slate-900/80 shadow-lg shadow-black/20 p-6 space-y-5">
           <Field label="Package Name" name="name" value={form.name} onChange={handleChange} placeholder="e.g. Basic 5Mbps" required />
 
           <div className="grid grid-cols-2 gap-4">
@@ -123,12 +123,12 @@ export default function PackageForm() {
           <div className="grid grid-cols-2 gap-4">
             <Field label="Duration" type="number" name="duration_value" value={form.duration_value} onChange={handleChange} placeholder="e.g. 30" required />
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1.5">Unit</label>
+              <label className="block text-sm font-medium text-slate-300 mb-1.5">Unit</label>
               <select
                 name="duration_unit"
                 value={form.duration_unit}
                 onChange={handleChange}
-                className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full border border-white/15 bg-slate-950 text-slate-100 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
                 {DURATION_UNITS.map((u) => (
                   <option key={u.value} value={u.value}>{u.label}</option>
@@ -139,8 +139,8 @@ export default function PackageForm() {
 
           <Field label="Price (KES)" type="number" name="price" value={form.price} onChange={handleChange} placeholder="e.g. 500" required />
 
-          <div className="border-t border-slate-100 pt-5 space-y-4">
-            <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-[0.14em]">Advanced</p>
+          <div className="border-t border-white/5 pt-5 space-y-4">
+            <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-[0.14em]">Advanced</p>
 
             <Field
               label="Monthly Data Cap (GB)"
@@ -162,11 +162,11 @@ export default function PackageForm() {
                   className="sr-only peer"
                 />
                 <div className="w-10 h-6 bg-slate-200 rounded-full peer-checked:bg-blue-600 transition-colors" />
-                <div className="absolute top-1 left-1 w-4 h-4 bg-white rounded-full shadow transition-transform peer-checked:translate-x-4" />
+                <div className="absolute top-1 left-1 w-4 h-4 bg-slate-900/80 rounded-full shadow transition-transform peer-checked:translate-x-4" />
               </div>
               <div>
-                <p className="text-sm font-medium text-slate-700">Hotspot package</p>
-                <p className="text-xs text-slate-400">Only available for hotspot customers</p>
+                <p className="text-sm font-medium text-slate-300">Hotspot package</p>
+                <p className="text-xs text-slate-500">Only available for hotspot customers</p>
               </div>
             </label>
           </div>
@@ -183,7 +183,7 @@ export default function PackageForm() {
             <button
               type="button"
               onClick={() => navigate("/admin/packages")}
-              className="px-6 py-2.5 border border-slate-300 rounded-lg text-sm text-slate-700 hover:bg-slate-50 transition-colors"
+              className="px-6 py-2.5 border border-white/15 rounded-lg text-sm text-slate-300 hover:bg-white/5 transition-colors"
             >
               Cancel
             </button>
@@ -197,7 +197,7 @@ export default function PackageForm() {
 function Field({ label, name, value, onChange, type = "text", placeholder, required, min }) {
   return (
     <div>
-      <label className="block text-sm font-medium text-slate-700 mb-1.5">
+      <label className="block text-sm font-medium text-slate-300 mb-1.5">
         {label} {required && <span className="text-red-500">*</span>}
       </label>
       <input
@@ -208,7 +208,7 @@ function Field({ label, name, value, onChange, type = "text", placeholder, requi
         placeholder={placeholder}
         required={required}
         min={min}
-        className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+        className="w-full border border-white/15 bg-slate-950 text-slate-100 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
       />
     </div>
   );

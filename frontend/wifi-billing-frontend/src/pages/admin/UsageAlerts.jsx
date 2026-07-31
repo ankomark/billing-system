@@ -10,23 +10,23 @@ function AlertRow({ a }) {
   const pct = Math.min(a.percent, 100);
 
   return (
-    <div className={`bg-white rounded-xl border p-4 ${critical ? "border-red-200" : "border-amber-200"}`}>
+    <div className={`bg-slate-900/80 rounded-xl border p-4 ${critical ? "border-red-500/30" : "border-amber-500/30"}`}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="font-semibold text-slate-800 truncate">{a.customer}</p>
-          <p className="text-sm text-slate-500">{a.phone}</p>
+          <p className="font-semibold text-white truncate">{a.customer}</p>
+          <p className="text-sm text-slate-400">{a.phone}</p>
         </div>
         <div className="text-right flex-shrink-0">
-          <p className={`text-lg font-bold ${critical ? "text-red-600" : "text-amber-600"}`}>
+          <p className={`text-lg font-bold ${critical ? "text-red-300" : "text-amber-300"}`}>
             {a.percent}%
           </p>
-          <p className="text-xs text-slate-500">{a.used_gb} GB / {a.cap_gb} GB</p>
+          <p className="text-xs text-slate-400">{a.used_gb} GB / {a.cap_gb} GB</p>
         </div>
       </div>
       <div className="mt-3">
-        <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+        <div className="h-2 bg-white/5 rounded-full overflow-hidden">
           <div
-            className={`h-full rounded-full transition-all ${critical ? "bg-red-500" : "bg-amber-400"}`}
+            className={`h-full rounded-full transition-all ${critical ? "bg-red-500/100" : "bg-amber-400"}`}
             style={{ width: `${pct}%` }}
           />
         </div>
@@ -37,7 +37,7 @@ function AlertRow({ a }) {
 
 function SkeletonAlert() {
   return (
-    <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 space-y-3">
+    <div className="rounded-xl border border-white/10 bg-slate-900/80 shadow-lg shadow-black/20 p-4 space-y-3">
       <div className="flex justify-between">
         <div className="space-y-1.5">
           <Skeleton className="h-4 w-36" />
@@ -65,16 +65,16 @@ export default function UsageAlerts() {
       <div className="space-y-6">
         <div className="flex items-start justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Usage Alerts</h1>
-            <p className="text-slate-500 text-sm mt-1">
+            <h1 className="text-2xl font-bold text-white tracking-tight">Usage Alerts</h1>
+            <p className="text-slate-400 text-sm mt-1">
               Customers at 80%+ of their monthly data cap
             </p>
             {!isLoading && alerts.length > 0 && (
               <div className="flex gap-3 mt-2">
-                <span className="text-xs font-semibold text-red-600 bg-red-50 border border-red-200 px-2.5 py-0.5 rounded-full">
+                <span className="text-xs font-semibold text-red-300 bg-red-500/10 border border-red-500/30 px-2.5 py-0.5 rounded-full">
                   {critical} over limit
                 </span>
-                <span className="text-xs font-semibold text-amber-600 bg-amber-50 border border-amber-200 px-2.5 py-0.5 rounded-full">
+                <span className="text-xs font-semibold text-amber-300 bg-amber-500/10 border border-amber-500/30 px-2.5 py-0.5 rounded-full">
                   {alerts.length - critical} nearing limit
                 </span>
               </div>
@@ -83,7 +83,7 @@ export default function UsageAlerts() {
           <button
             onClick={() => refetch()}
             disabled={isFetching}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-slate-300 rounded-lg text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50 transition-colors"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-white/15 rounded-lg text-xs font-medium text-slate-300 hover:bg-white/5 disabled:opacity-50 transition-colors"
           >
             <RefreshCw size={12} className={isFetching ? "animate-spin" : ""} />
             Refresh
@@ -91,7 +91,7 @@ export default function UsageAlerts() {
         </div>
 
         {isError && (
-          <div className="bg-red-50 border border-red-200 rounded-xl px-5 py-4 text-red-700 text-sm">
+          <div className="bg-red-500/10 border border-red-500/30 rounded-xl px-5 py-4 text-red-300 text-sm">
             Failed to load usage alerts. Try refreshing.
           </div>
         )}
@@ -101,7 +101,7 @@ export default function UsageAlerts() {
             {[...Array(5)].map((_, i) => <SkeletonAlert key={i} />)}
           </div>
         ) : alerts.length === 0 ? (
-          <div className="bg-white rounded-xl border border-slate-200">
+          <div className="rounded-xl border border-white/10 bg-slate-900/80">
             <EmptyState
               icon={<ShieldAlert size={24} />}
               title="All customers within limits"

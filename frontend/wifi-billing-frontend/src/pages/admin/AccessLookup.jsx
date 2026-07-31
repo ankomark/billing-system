@@ -16,8 +16,8 @@ function fmt(dateString) {
 function Row({ label, value, large }) {
   return (
     <div>
-      <p className="text-xs text-slate-500 mb-0.5">{label}</p>
-      <p className={`font-medium text-slate-800 ${large ? "text-lg" : "text-sm"}`}>
+      <p className="text-xs text-slate-400 mb-0.5">{label}</p>
+      <p className={`font-medium text-white ${large ? "text-lg" : "text-sm"}`}>
         {value || "—"}
       </p>
     </div>
@@ -92,18 +92,18 @@ export default function AccessLookup() {
 
         {/* Header */}
         <div>
-          <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Access Lookup</h1>
-          <p className="text-slate-500 text-sm mt-1">
+          <h1 className="text-2xl font-bold text-white tracking-tight">Access Lookup</h1>
+          <p className="text-slate-400 text-sm mt-1">
             Search by voucher code, M-Pesa receipt, or customer phone number
           </p>
         </div>
 
         {/* Search */}
-        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
+        <div className="rounded-xl border border-white/10 bg-slate-900/80 shadow-lg shadow-black/20 p-5">
           <div className="flex gap-3">
             <input
               type="text"
-              className="flex-1 border border-slate-300 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+              className="flex-1 border border-white/15 bg-slate-950 text-slate-100 placeholder-slate-600 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
               placeholder="WIFI-XXXXXX  ·  QK12345678  ·  2547XXXXXXXX"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
@@ -123,9 +123,9 @@ export default function AccessLookup() {
 
         {/* Error / not found */}
         {error && !loading && (
-          <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-8 text-center">
-            <p className="text-slate-400 text-4xl mb-3">🔍</p>
-            <p className="font-semibold text-slate-700">{error}</p>
+          <div className="rounded-xl border border-white/10 bg-slate-900/80 shadow-lg shadow-black/20 p-8 text-center">
+            <p className="text-slate-500 text-4xl mb-3">🔍</p>
+            <p className="font-semibold text-slate-300">{error}</p>
             <button
               onClick={() => setError("")}
               className="mt-3 text-blue-600 text-sm hover:underline"
@@ -137,9 +137,9 @@ export default function AccessLookup() {
 
         {/* Results */}
         {result && !loading && (
-          <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+          <div className="rounded-xl border border-white/10 bg-slate-900/80 shadow-lg shadow-black/20 overflow-hidden">
             {/* Tabs */}
-            <div className="border-b border-slate-200 flex overflow-x-auto">
+            <div className="border-b border-white/10 flex overflow-x-auto">
               {tabs.map((tab) => (
                 <button
                   key={tab}
@@ -147,7 +147,7 @@ export default function AccessLookup() {
                   className={`px-5 py-3.5 text-sm font-medium capitalize whitespace-nowrap transition-colors ${
                     activeTab === tab
                       ? "text-blue-600 border-b-2 border-blue-600"
-                      : "text-slate-500 hover:text-slate-700"
+                      : "text-slate-400 hover:text-slate-300"
                   }`}
                 >
                   {tab === "details" ? "Customer" : tab}
@@ -160,27 +160,27 @@ export default function AccessLookup() {
               {activeTab === "details" && (
                 <div className="grid md:grid-cols-2 gap-6">
                   <div className="space-y-4">
-                    <h3 className="font-semibold text-slate-800">Customer Information</h3>
+                    <h3 className="font-semibold text-white">Customer Information</h3>
                     <Row label="Full Name" value={result.customer.name} />
                     <Row label="Phone"     value={result.customer.phone} />
                     <div>
-                      <p className="text-xs text-slate-500 mb-1">Status</p>
+                      <p className="text-xs text-slate-400 mb-1">Status</p>
                       <StatusBadge status={result.customer.status} />
                     </div>
                     <Row label="Connection" value={result.customer.connection_type} />
                   </div>
-                  <div className="bg-slate-50 rounded-lg p-4 space-y-3">
-                    <p className="font-medium text-slate-700 text-sm">Access Summary</p>
+                  <div className="bg-white/5 rounded-lg p-4 space-y-3">
+                    <p className="font-medium text-slate-300 text-sm">Access Summary</p>
                     <div className="flex justify-between text-sm">
-                      <span className="text-slate-500">Lookup type</span>
+                      <span className="text-slate-400">Lookup type</span>
                       <span className="font-medium capitalize">{result.type}</span>
                     </div>
                     <div className="flex justify-between text-sm">
-                      <span className="text-slate-500">Package</span>
+                      <span className="text-slate-400">Package</span>
                       <span className="font-medium">{result.subscription?.package || "—"}</span>
                     </div>
                     <div className="flex justify-between text-sm">
-                      <span className="text-slate-500">Sub status</span>
+                      <span className="text-slate-400">Sub status</span>
                       <StatusBadge status={result.subscription?.status} />
                     </div>
                   </div>
@@ -191,20 +191,20 @@ export default function AccessLookup() {
               {activeTab === "subscription" && (
                 <div className="grid md:grid-cols-2 gap-6">
                   <div className="space-y-4">
-                    <h3 className="font-semibold text-slate-800">Subscription Details</h3>
+                    <h3 className="font-semibold text-white">Subscription Details</h3>
                     <Row label="Package"  value={result.subscription.package} large />
                     <div>
-                      <p className="text-xs text-slate-500 mb-1">Status</p>
+                      <p className="text-xs text-slate-400 mb-1">Status</p>
                       <StatusBadge status={result.subscription.status} />
                     </div>
                     <Row label="Duration" value={result.subscription.duration || "—"} />
                   </div>
                   <div className="space-y-4">
-                    <h3 className="font-semibold text-slate-800">Dates</h3>
+                    <h3 className="font-semibold text-white">Dates</h3>
                     <Row label="Expires" value={fmt(result.subscription.expires_at)} />
                     {result.subscription.expires_at &&
                       new Date(result.subscription.expires_at) > new Date() && (
-                        <p className="text-xs text-emerald-600 font-semibold">
+                        <p className="text-xs text-emerald-300 font-semibold">
                           Active for{" "}
                           {Math.ceil(
                             (new Date(result.subscription.expires_at) - Date.now()) / 86400000
@@ -220,15 +220,15 @@ export default function AccessLookup() {
               {activeTab === "voucher" && result.voucher && (
                 <div className="grid md:grid-cols-2 gap-6">
                   <div className="space-y-4">
-                    <h3 className="font-semibold text-slate-800">Voucher Details</h3>
+                    <h3 className="font-semibold text-white">Voucher Details</h3>
                     <div>
-                      <p className="text-xs text-slate-500 mb-1">Code</p>
-                      <code className="bg-slate-100 text-slate-800 px-3 py-1.5 rounded-lg text-sm font-mono block">
+                      <p className="text-xs text-slate-400 mb-1">Code</p>
+                      <code className="bg-white/5 text-white px-3 py-1.5 rounded-lg text-sm font-mono block">
                         {result.voucher.code}
                       </code>
                     </div>
                     <div>
-                      <p className="text-xs text-slate-500 mb-1">Status</p>
+                      <p className="text-xs text-slate-400 mb-1">Status</p>
                       <StatusBadge status={result.voucher.is_active ? "active" : "expired"} />
                     </div>
                   </div>
@@ -242,15 +242,15 @@ export default function AccessLookup() {
               {/* Actions tab */}
               {activeTab === "actions" && (
                 <div className="max-w-xl">
-                  <div className="bg-red-50 border border-red-200 rounded-xl p-5">
-                    <h3 className="font-semibold text-red-700 mb-1">Revoke Access</h3>
-                    <p className="text-red-600 text-sm mb-4">
+                  <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-5">
+                    <h3 className="font-semibold text-red-300 mb-1">Revoke Access</h3>
+                    <p className="text-red-300 text-sm mb-4">
                       This immediately removes internet access for{" "}
                       <strong>{result.customer.name}</strong> and expires their subscription.
                       This action is permanent.
                     </p>
                     <textarea
-                      className="w-full border border-red-200 rounded-lg px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-red-400 bg-white resize-none"
+                      className="w-full border border-red-500/30 rounded-lg px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-red-400 bg-slate-900/80 resize-none"
                       placeholder="Required: reason for revoking access…"
                       rows={3}
                       value={reason}
@@ -267,7 +267,7 @@ export default function AccessLookup() {
                       </button>
                       <button
                         onClick={() => setActiveTab("details")}
-                        className="px-5 py-2.5 border border-slate-300 rounded-lg text-sm text-slate-700 hover:bg-slate-50 transition-colors"
+                        className="px-5 py-2.5 border border-white/15 rounded-lg text-sm text-slate-300 hover:bg-white/5 transition-colors"
                       >
                         Cancel
                       </button>

@@ -29,10 +29,10 @@ export default function ConfirmModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onCancel} />
-      <div className="relative bg-white rounded-2xl shadow-2xl max-w-md w-full p-6">
+      <div className="relative bg-slate-900/80 rounded-2xl shadow-2xl max-w-md w-full p-6">
         <button
           onClick={onCancel}
-          className="absolute top-4 right-4 text-slate-400 hover:text-slate-600 transition-colors"
+          className="absolute top-4 right-4 text-slate-500 hover:text-slate-300 transition-colors"
         >
           <X size={18} />
         </button>
@@ -40,12 +40,12 @@ export default function ConfirmModal({
           <div className={`flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center ${
             danger ? "bg-red-100" : "bg-amber-100"
           }`}>
-            <AlertTriangle size={20} className={danger ? "text-red-600" : "text-amber-600"} />
+            <AlertTriangle size={20} className={danger ? "text-red-300" : "text-amber-300"} />
           </div>
           <div className="flex-1 min-w-0">
-            <h3 className="font-bold text-slate-800 text-base leading-tight">{title}</h3>
+            <h3 className="font-bold text-white text-base leading-tight">{title}</h3>
             {description && (
-              <p className="text-slate-500 text-sm mt-1.5 leading-relaxed">{description}</p>
+              <p className="text-slate-400 text-sm mt-1.5 leading-relaxed">{description}</p>
             )}
             <div className="flex gap-3 mt-5">
               <button
@@ -59,7 +59,7 @@ export default function ConfirmModal({
               <button
                 ref={cancelRef}
                 onClick={onCancel}
-                className="flex-1 py-2 rounded-lg text-sm font-semibold border border-slate-300 text-slate-700 hover:bg-slate-50 transition-colors"
+                className="flex-1 py-2 rounded-lg text-sm font-semibold border border-white/15 text-slate-300 hover:bg-white/5 transition-colors"
               >
                 {cancelText}
               </button>

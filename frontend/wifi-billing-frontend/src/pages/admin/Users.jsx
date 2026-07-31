@@ -78,8 +78,8 @@ export default function Users() {
       <div className="max-w-4xl space-y-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Team</h1>
-            <p className="text-slate-500 text-sm mt-1">
+            <h1 className="text-2xl font-bold text-white tracking-tight">Team</h1>
+            <p className="text-slate-400 text-sm mt-1">
               People who can sign in to your business
             </p>
           </div>
@@ -98,11 +98,11 @@ export default function Users() {
               e.preventDefault();
               create.mutate(form);
             }}
-            className="bg-white rounded-xl border border-slate-200 shadow-sm p-5 space-y-4"
+            className="rounded-xl border border-white/10 bg-slate-900/80 shadow-lg shadow-black/20 p-5 space-y-4"
           >
             <div className="grid sm:grid-cols-3 gap-4">
               <label className="block">
-                <span className="text-sm font-medium text-slate-700">Username</span>
+                <span className="text-sm font-medium text-slate-300">Username</span>
                 <input
                   value={form.username}
                   onChange={(e) => setForm({ ...form, username: e.target.value })}
@@ -110,11 +110,11 @@ export default function Users() {
                   className={inputCls(err("username"))}
                 />
                 {err("username") && (
-                  <span className="text-xs text-red-600 mt-1 block">{err("username")}</span>
+                  <span className="text-xs text-red-300 mt-1 block">{err("username")}</span>
                 )}
               </label>
               <label className="block">
-                <span className="text-sm font-medium text-slate-700">
+                <span className="text-sm font-medium text-slate-300">
                   Temporary password
                 </span>
                 <input
@@ -125,11 +125,11 @@ export default function Users() {
                   className={inputCls(err("password"))}
                 />
                 {err("password") && (
-                  <span className="text-xs text-red-600 mt-1 block">{err("password")}</span>
+                  <span className="text-xs text-red-300 mt-1 block">{err("password")}</span>
                 )}
               </label>
               <label className="block">
-                <span className="text-sm font-medium text-slate-700">Role</span>
+                <span className="text-sm font-medium text-slate-300">Role</span>
                 <select
                   value={form.role}
                   onChange={(e) => setForm({ ...form, role: e.target.value })}
@@ -140,20 +140,20 @@ export default function Users() {
                 </select>
               </label>
             </div>
-            <div className="rounded-lg bg-slate-50 border border-slate-200 px-4 py-3 text-xs text-slate-600 space-y-1.5">
+            <div className="rounded-lg bg-white/5 border border-white/10 px-4 py-3 text-xs text-slate-300 space-y-1.5">
               <p>
-                <strong className="text-slate-800">Staff</strong> run the counter:
+                <strong className="text-white">Staff</strong> run the counter:
                 they can see customers, packages, invoices and the network, look
                 up who has access, resend a voucher and record a cash payment.
               </p>
               <p>
-                <strong className="text-slate-800">Admin</strong> can do all of
+                <strong className="text-white">Admin</strong> can do all of
                 that and change the business — add and edit customers, set
                 package prices, manage routers and stations, edit settings and
                 M-Pesa, and manage this team.
               </p>
             </div>
-            <p className="text-xs text-slate-400">
+            <p className="text-xs text-slate-500">
               Give them this password directly. They will be made to replace it
               the first time they sign in, and you will not see it again.
             </p>
@@ -168,7 +168,7 @@ export default function Users() {
               <button
                 type="button"
                 onClick={() => setAdding(false)}
-                className="text-slate-500 hover:text-slate-800 text-sm font-medium"
+                className="text-slate-400 hover:text-white text-sm font-medium"
               >
                 Cancel
               </button>
@@ -176,37 +176,37 @@ export default function Users() {
           </form>
         )}
 
-        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+        <div className="rounded-xl border border-white/10 bg-slate-900/80 shadow-lg shadow-black/20 overflow-hidden">
           {isLoading ? (
-            <div className="px-5 py-10 text-center text-sm text-slate-400">Loading…</div>
+            <div className="px-5 py-10 text-center text-sm text-slate-500">Loading…</div>
           ) : (
             <table className="w-full text-sm">
-              <thead className="bg-slate-50 border-b border-slate-200">
+              <thead className="bg-white/5 border-b border-white/10">
                 <tr>
                   {["Person", "Role", "Status", ""].map((h) => (
                     <th
                       key={h}
-                      className="px-5 py-3 text-left text-[11px] font-semibold text-slate-500 uppercase tracking-[0.14em]"
+                      className="px-5 py-3 text-left text-[11px] font-semibold text-slate-400 uppercase tracking-[0.14em]"
                     >
                       {h}
                     </th>
                   ))}
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100">
+              <tbody className="divide-y divide-white/5">
                 {users.map((u) => {
                   const isMe = u.id === me?.id;
                   return (
                     <tr key={u.id} className={u.is_active ? "" : "opacity-60"}>
                       <td className="px-5 py-3.5">
-                        <p className="font-medium text-slate-800">
+                        <p className="font-medium text-white">
                           {u.username}
-                          {isMe && <span className="text-xs text-slate-400"> · you</span>}
+                          {isMe && <span className="text-xs text-slate-500"> · you</span>}
                         </p>
-                        {u.email && <p className="text-xs text-slate-400">{u.email}</p>}
+                        {u.email && <p className="text-xs text-slate-500">{u.email}</p>}
                       </td>
                       <td className="px-5 py-3.5">
-                        <span className="inline-flex items-center gap-1.5 text-slate-600">
+                        <span className="inline-flex items-center gap-1.5 text-slate-300">
                           {u.role === "tenant_admin" && (
                             <ShieldCheck size={13} className="text-blue-600" aria-hidden="true" />
                           )}
@@ -215,29 +215,29 @@ export default function Users() {
                       </td>
                       <td className="px-5 py-3.5">
                         {!u.is_active ? (
-                          <span className="text-xs font-medium text-slate-500">Disabled</span>
+                          <span className="text-xs font-medium text-slate-400">Disabled</span>
                         ) : u.must_change_password ? (
-                          <span className="text-xs font-medium text-amber-600">
+                          <span className="text-xs font-medium text-amber-300">
                             Must set password
                           </span>
                         ) : (
-                          <span className="text-xs font-medium text-emerald-600">Active</span>
+                          <span className="text-xs font-medium text-emerald-300">Active</span>
                         )}
                       </td>
                       <td className="px-5 py-3.5 text-right">
                         {isMe ? (
-                          <span className="text-xs text-slate-400">—</span>
+                          <span className="text-xs text-slate-500">—</span>
                         ) : u.is_active ? (
                           <button
                             onClick={() => setConfirmDisable(u)}
-                            className="inline-flex items-center gap-1.5 text-red-600 hover:text-red-700 text-xs font-semibold"
+                            className="inline-flex items-center gap-1.5 text-red-300 hover:text-red-300 text-xs font-semibold"
                           >
                             <UserX size={13} /> Disable
                           </button>
                         ) : (
                           <button
                             onClick={() => toggle.mutate({ id: u.id, is_active: true })}
-                            className="inline-flex items-center gap-1.5 text-emerald-600 hover:text-emerald-700 text-xs font-semibold"
+                            className="inline-flex items-center gap-1.5 text-emerald-300 hover:text-emerald-300 text-xs font-semibold"
                           >
                             <UserCheck size={13} /> Enable
                           </button>
@@ -267,5 +267,5 @@ export default function Users() {
 
 const inputCls = (hasError) =>
   `mt-1 w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 ${
-    hasError ? "border-red-300 focus:ring-red-400" : "border-slate-300 focus:ring-blue-500"
+    hasError ? "border-red-300 focus:ring-red-400" : "border-white/15 bg-slate-950 text-slate-100 focus:ring-blue-500"
   }`;

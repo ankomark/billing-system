@@ -26,7 +26,7 @@ const SORT_FIELDS = {
 };
 
 function SortIcon({ field, sortField, sortDir }) {
-  if (sortField !== field) return <ChevronsUpDown size={13} className="text-slate-400" />;
+  if (sortField !== field) return <ChevronsUpDown size={13} className="text-slate-500" />;
   return sortDir === "asc"
     ? <ChevronUp size={13} className="text-blue-600" />
     : <ChevronDown size={13} className="text-blue-600" />;
@@ -125,9 +125,9 @@ export default function Customers() {
         {/* Page header */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
-            <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Customers</h1>
+            <h1 className="text-2xl font-bold text-white tracking-tight">Customers</h1>
             {data && (
-              <p className="text-slate-500 text-sm mt-0.5">
+              <p className="text-slate-400 text-sm mt-0.5">
                 {data.count.toLocaleString()} customer{data.count !== 1 ? "s" : ""} total
               </p>
             )}
@@ -136,7 +136,7 @@ export default function Customers() {
             {hasResults && (
               <button
                 onClick={() => exportCSV(sorted)}
-                className="inline-flex items-center gap-2 px-3 py-2 border border-slate-300 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+                className="inline-flex items-center gap-2 px-3 py-2 border border-white/15 rounded-lg text-sm font-medium text-slate-300 hover:bg-white/5 transition-colors"
               >
                 <Download size={14} />
                 Export
@@ -155,19 +155,19 @@ export default function Customers() {
         {/* Filters */}
         <div className="flex flex-col sm:flex-row gap-3">
           <div className="relative flex-1">
-            <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
             <input
               type="text"
               placeholder="Search by name, phone, or PPPoE username…"
               value={search}
               onChange={(e) => onSearch(e.target.value)}
-              className="w-full pl-9 pr-4 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              className="w-full pl-9 pr-4 py-2 text-sm border border-white/15 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
           </div>
           <select
             value={statusFilter}
             onChange={(e) => onStatus(e.target.value)}
-            className="border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+            className="border border-white/15 bg-slate-950 text-slate-100 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-slate-900/80"
           >
             <option value="">All statuses</option>
             <option value="active">Active</option>
@@ -176,7 +176,7 @@ export default function Customers() {
           <select
             value={typeFilter}
             onChange={(e) => onType(e.target.value)}
-            className="border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+            className="border border-white/15 bg-slate-950 text-slate-100 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-slate-900/80"
           >
             <option value="">All types</option>
             <option value="pppoe">PPPoE</option>
@@ -186,22 +186,22 @@ export default function Customers() {
 
         {/* Error */}
         {isError && (
-          <div className="bg-red-50 border border-red-200 rounded-xl px-5 py-4 text-red-700 text-sm">
+          <div className="bg-red-500/10 border border-red-500/30 rounded-xl px-5 py-4 text-red-300 text-sm">
             Failed to load customers. Check your connection and try again.
           </div>
         )}
 
         {/* Table */}
-        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+        <div className="rounded-xl border border-white/10 bg-slate-900/80 shadow-lg shadow-black/20 overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
-              <thead className="bg-slate-50 border-b border-slate-200">
+              <thead className="bg-white/5 border-b border-white/10">
                 <tr>
                   {Object.entries(SORT_FIELDS).map(([field, label]) => (
                     <th
                       key={field}
                       onClick={() => toggleSort(field)}
-                      className="px-4 py-3 text-left text-[11px] font-semibold text-slate-500 uppercase tracking-[0.14em] cursor-pointer hover:text-slate-700 select-none whitespace-nowrap"
+                      className="px-4 py-3 text-left text-[11px] font-semibold text-slate-400 uppercase tracking-[0.14em] cursor-pointer hover:text-slate-300 select-none whitespace-nowrap"
                     >
                       <span className="inline-flex items-center gap-1.5">
                         {label}
@@ -209,12 +209,12 @@ export default function Customers() {
                       </span>
                     </th>
                   ))}
-                  <th className="px-4 py-3 text-right text-[11px] font-semibold text-slate-500 uppercase tracking-[0.14em]">
+                  <th className="px-4 py-3 text-right text-[11px] font-semibold text-slate-400 uppercase tracking-[0.14em]">
                     Actions
                   </th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100">
+              <tbody className="divide-y divide-white/5">
                 {isLoading ? (
                   <SkeletonTable rows={PAGE_SIZE} cols={6} />
                 ) : sorted.length === 0 ? (
@@ -246,17 +246,17 @@ export default function Customers() {
                   sorted.map((c) => (
                     <tr
                       key={c.id}
-                      className="hover:bg-slate-50 transition-colors"
+                      className="hover:bg-white/5 transition-colors"
                     >
-                      <td className="px-4 py-3 font-medium text-slate-800">{c.full_name}</td>
-                      <td className="px-4 py-3 text-slate-600">{c.phone}</td>
+                      <td className="px-4 py-3 font-medium text-white">{c.full_name}</td>
+                      <td className="px-4 py-3 text-slate-300">{c.phone}</td>
                       <td className="px-4 py-3">
                         <StatusBadge status={c.connection_type} />
                       </td>
                       <td className="px-4 py-3">
                         <StatusBadge status={c.status} />
                       </td>
-                      <td className="px-4 py-3 text-slate-500 text-xs whitespace-nowrap">
+                      <td className="px-4 py-3 text-slate-400 text-xs whitespace-nowrap">
                         {new Date(c.created_at).toLocaleDateString("en-KE", {
                           day: "numeric", month: "short", year: "numeric",
                         })}
@@ -265,14 +265,14 @@ export default function Customers() {
                         <div className="flex items-center justify-end gap-1">
                           <button
                             onClick={() => navigate(`/admin/customers/${c.id}`)}
-                            className="p-1.5 rounded-lg text-slate-400 hover:text-blue-600 hover:bg-blue-50 transition-colors"
+                            className="p-1.5 rounded-lg text-slate-500 hover:text-blue-600 hover:bg-blue-500/10 transition-colors"
                             title="View details"
                           >
                             <Eye size={15} />
                           </button>
                           <button
                             onClick={() => handleDelete(c)}
-                            className="p-1.5 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 transition-colors"
+                            className="p-1.5 rounded-lg text-slate-500 hover:text-red-300 hover:bg-red-500/10 transition-colors"
                             title="Delete customer"
                           >
                             <Trash2 size={15} />

@@ -6,14 +6,17 @@ import { statusStyle } from "./tokens";
  *
  * Before this, every page invented its own: three card styles, four table
  * headers, two heading sizes, and status pills coloured wherever they happened
- * to be rendered. Same rigour as the platform kit; different palette, because
- * the two consoles must not look alike.
+ * to be rendered.
+ *
+ * Dark, like the platform kit. The two consoles are told apart by accent now —
+ * blue here, teal there — plus the impersonation banner, rather than by one
+ * being light.
  */
 
 export function Card({ children, className = "", padded = true }) {
   return (
     <div
-      className={`rounded-xl border border-slate-200 bg-white shadow-sm ${
+      className={`rounded-xl border border-white/10 bg-slate-900/80 shadow-lg shadow-black/20 ${
         padded ? "p-5" : ""
       } ${className}`}
     >
@@ -26,8 +29,8 @@ export function CardHeader({ title, subtitle, action }) {
   return (
     <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
       <div className="min-w-0">
-        <h2 className="text-sm font-semibold text-slate-800">{title}</h2>
-        {subtitle && <p className="text-xs text-slate-500 mt-0.5">{subtitle}</p>}
+        <h2 className="text-sm font-semibold text-white">{title}</h2>
+        {subtitle && <p className="text-xs text-slate-400 mt-0.5">{subtitle}</p>}
       </div>
       {action}
     </div>
@@ -38,7 +41,7 @@ export function Section({ title, action, children }) {
   return (
     <section>
       <div className="flex items-center justify-between gap-3 mb-3">
-        <h2 className="text-[11px] font-semibold text-slate-500 uppercase tracking-[0.14em]">
+        <h2 className="text-[11px] font-semibold text-slate-400 uppercase tracking-[0.14em]">
           {title}
         </h2>
         {action}
@@ -52,8 +55,8 @@ export function PageHeader({ title, subtitle, children }) {
   return (
     <div className="flex flex-wrap items-start justify-between gap-4">
       <div className="min-w-0">
-        <h1 className="text-2xl font-bold text-slate-900 tracking-tight">{title}</h1>
-        {subtitle && <p className="text-slate-500 text-sm mt-1">{subtitle}</p>}
+        <h1 className="text-2xl font-bold text-white tracking-tight">{title}</h1>
+        {subtitle && <p className="text-slate-400 text-sm mt-1">{subtitle}</p>}
       </div>
       {children && <div className="flex flex-wrap items-center gap-2">{children}</div>}
     </div>
@@ -72,10 +75,10 @@ export function StatusBadge({ status, label }) {
 }
 
 const NOTE_TONES = {
-  info: { cls: "bg-blue-50 border-blue-200 text-blue-900", icon: Info },
-  good: { cls: "bg-emerald-50 border-emerald-200 text-emerald-900", icon: CheckCircle2 },
-  warning: { cls: "bg-amber-50 border-amber-200 text-amber-900", icon: AlertTriangle },
-  critical: { cls: "bg-red-50 border-red-200 text-red-900", icon: AlertOctagon },
+  info: { cls: "bg-blue-500/10 border-blue-500/30 text-blue-200", icon: Info },
+  good: { cls: "bg-emerald-500/10 border-emerald-500/30 text-emerald-200", icon: CheckCircle2 },
+  warning: { cls: "bg-amber-500/10 border-amber-500/30 text-amber-200", icon: AlertTriangle },
+  critical: { cls: "bg-red-500/10 border-red-500/30 text-red-200", icon: AlertOctagon },
 };
 
 /**

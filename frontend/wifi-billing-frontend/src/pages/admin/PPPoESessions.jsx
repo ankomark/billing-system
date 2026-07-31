@@ -63,13 +63,13 @@ export default function PPPoESessions() {
 
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-slate-900 tracking-tight">PPPoE Sessions</h1>
-            <p className="text-slate-500 text-sm mt-1">
+            <h1 className="text-2xl font-bold text-white tracking-tight">PPPoE Sessions</h1>
+            <p className="text-slate-400 text-sm mt-1">
               Real-time active connections — auto-refreshes every 10s
             </p>
           </div>
-          <div className="flex items-center gap-2 text-sm text-slate-600">
-            <span className={`w-2 h-2 rounded-full ${isFetching ? "bg-amber-400" : "bg-emerald-500 animate-pulse"}`} />
+          <div className="flex items-center gap-2 text-sm text-slate-300">
+            <span className={`w-2 h-2 rounded-full ${isFetching ? "bg-amber-400" : "bg-emerald-500/100 animate-pulse"}`} />
             {sessions.length} active
           </div>
         </div>
@@ -81,21 +81,21 @@ export default function PPPoESessions() {
             { label: "Active Routers",   value: [...new Set(sessions.map((s) => s.router))].length },
             { label: "Auto-refresh",     value: "10s" },
           ].map((card) => (
-            <div key={card.label} className="bg-white rounded-xl border border-slate-200 shadow-sm p-4">
-              <p className="text-xs text-slate-500 font-medium">{card.label}</p>
-              <p className="text-2xl font-bold text-slate-800 mt-1">{card.value}</p>
+            <div key={card.label} className="rounded-xl border border-white/10 bg-slate-900/80 shadow-lg shadow-black/20 p-4">
+              <p className="text-xs text-slate-400 font-medium">{card.label}</p>
+              <p className="text-2xl font-bold text-white mt-1">{card.value}</p>
             </div>
           ))}
         </div>
 
-        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+        <div className="rounded-xl border border-white/10 bg-slate-900/80 shadow-lg shadow-black/20 overflow-hidden">
           {isLoading ? (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
-                <thead className="bg-slate-50 border-b border-slate-200">
+                <thead className="bg-white/5 border-b border-white/10">
                   <tr>
                     {["Customer", "Username", "IP Address", "Uptime", "Download", "Upload", "Router", "Action"].map((h) => (
-                      <th key={h} className="px-5 py-3 text-left text-[11px] font-semibold text-slate-500 uppercase tracking-[0.14em]">{h}</th>
+                      <th key={h} className="px-5 py-3 text-left text-[11px] font-semibold text-slate-400 uppercase tracking-[0.14em]">{h}</th>
                     ))}
                   </tr>
                 </thead>
@@ -105,41 +105,41 @@ export default function PPPoESessions() {
           ) : sessions.length === 0 ? (
             <div className="p-12 text-center">
               <p className="text-2xl mb-2">📡</p>
-              <p className="text-slate-600 font-medium">No active PPPoE sessions</p>
-              <p className="text-slate-400 text-sm mt-1">Waiting for connections…</p>
+              <p className="text-slate-300 font-medium">No active PPPoE sessions</p>
+              <p className="text-slate-500 text-sm mt-1">Waiting for connections…</p>
             </div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
-                <thead className="bg-slate-50 border-b border-slate-200">
+                <thead className="bg-white/5 border-b border-white/10">
                   <tr>
                     {["Customer", "Username", "IP Address", "Uptime", "Download", "Upload", "Router", "Action"].map((h) => (
-                      <th key={h} className="px-5 py-3 text-left text-[11px] font-semibold text-slate-500 uppercase tracking-[0.14em] whitespace-nowrap">
+                      <th key={h} className="px-5 py-3 text-left text-[11px] font-semibold text-slate-400 uppercase tracking-[0.14em] whitespace-nowrap">
                         {h}
                       </th>
                     ))}
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-100">
+                <tbody className="divide-y divide-white/5">
                   {sessions.map((s, i) => (
-                    <tr key={i} className="hover:bg-slate-50 transition-colors">
+                    <tr key={i} className="hover:bg-white/5 transition-colors">
                       <td className="px-5 py-3.5">
                         <div className="flex items-center gap-3">
-                          <div className="w-8 h-8 bg-blue-100 text-blue-700 rounded-lg flex items-center justify-center font-bold text-xs flex-shrink-0">
+                          <div className="w-8 h-8 bg-blue-100 text-blue-300 rounded-lg flex items-center justify-center font-bold text-xs flex-shrink-0">
                             {(s.customer || "?").charAt(0).toUpperCase()}
                           </div>
-                          <span className="font-medium text-slate-800">{s.customer || "Unknown"}</span>
+                          <span className="font-medium text-white">{s.customer || "Unknown"}</span>
                         </div>
                       </td>
                       <td className="px-5 py-3.5">
-                        <code className="bg-slate-100 text-slate-700 px-2 py-0.5 rounded text-xs">{s.username}</code>
+                        <code className="bg-white/5 text-slate-300 px-2 py-0.5 rounded text-xs">{s.username}</code>
                       </td>
-                      <td className="px-5 py-3.5 text-slate-600 font-mono text-xs">{s.ip_address}</td>
-                      <td className="px-5 py-3.5 text-slate-700 font-medium">{fmtUptime(s.uptime)}</td>
-                      <td className="px-5 py-3.5 text-blue-700 font-medium">{fmtMB(s.rx_bytes)}</td>
-                      <td className="px-5 py-3.5 text-emerald-700 font-medium">{fmtMB(s.tx_bytes)}</td>
+                      <td className="px-5 py-3.5 text-slate-300 font-mono text-xs">{s.ip_address}</td>
+                      <td className="px-5 py-3.5 text-slate-300 font-medium">{fmtUptime(s.uptime)}</td>
+                      <td className="px-5 py-3.5 text-blue-300 font-medium">{fmtMB(s.rx_bytes)}</td>
+                      <td className="px-5 py-3.5 text-emerald-300 font-medium">{fmtMB(s.tx_bytes)}</td>
                       <td className="px-5 py-3.5">
-                        <span className="inline-flex items-center px-2.5 py-0.5 rounded-md text-xs font-medium bg-slate-100 text-slate-700">
+                        <span className="inline-flex items-center px-2.5 py-0.5 rounded-md text-xs font-medium bg-white/5 text-slate-300">
                           {s.router}
                         </span>
                       </td>

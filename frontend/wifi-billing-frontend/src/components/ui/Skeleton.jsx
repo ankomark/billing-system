@@ -19,7 +19,7 @@ export function SkeletonText({ lines = 1, className = "" }) {
 
 export function SkeletonCard({ className = "" }) {
   return (
-    <div className={`bg-white rounded-xl border border-slate-200 p-5 ${className}`}>
+    <div className={`rounded-xl border border-white/10 bg-slate-900/80 p-5 ${className}`}>
       <Skeleton className="h-3 w-24 mb-3" />
       <Skeleton className="h-8 w-32" />
     </div>

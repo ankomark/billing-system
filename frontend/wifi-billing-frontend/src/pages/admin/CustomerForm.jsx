@@ -23,11 +23,11 @@ const INITIAL = {
 function Field({ label, required, error, children }) {
   return (
     <div>
-      <label className="block text-sm font-medium text-slate-700 mb-1.5">
+      <label className="block text-sm font-medium text-slate-300 mb-1.5">
         {label} {required && <span className="text-red-500">*</span>}
       </label>
       {children}
-      {error && <p className="mt-1 text-xs text-red-600">{error}</p>}
+      {error && <p className="mt-1 text-xs text-red-300">{error}</p>}
     </div>
   );
 }
@@ -35,7 +35,7 @@ function Field({ label, required, error, children }) {
 function Input({ className = "", ...props }) {
   return (
     <input
-      className={`w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-slate-50 disabled:text-slate-400 ${className}`}
+      className={`w-full border border-white/15 bg-slate-950 text-slate-100 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-white/5 disabled:text-slate-500 ${className}`}
       {...props}
     />
   );
@@ -44,7 +44,7 @@ function Input({ className = "", ...props }) {
 function Select({ children, className = "", ...props }) {
   return (
     <select
-      className={`w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white disabled:bg-slate-50 ${className}`}
+      className={`w-full border border-white/15 bg-slate-950 text-slate-100 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-slate-900/80 disabled:bg-white/5 ${className}`}
       {...props}
     >
       {children}
@@ -174,7 +174,7 @@ export default function CustomerForm() {
       <AdminLayout>
         <div className="max-w-2xl space-y-4">
           <Skeleton className="h-8 w-48" />
-          <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 space-y-4">
+          <div className="rounded-xl border border-white/10 bg-slate-900/80 shadow-lg shadow-black/20 p-6 space-y-4">
             {[...Array(6)].map((_, i) => <Skeleton key={i} className="h-10 w-full" />)}
           </div>
         </div>
@@ -189,26 +189,26 @@ export default function CustomerForm() {
         <div className="flex items-center gap-3 mb-6">
           <button
             onClick={() => navigate(isEdit ? `/admin/customers/${id}` : "/admin/customers")}
-            className="text-slate-400 hover:text-slate-700 transition-colors"
+            className="text-slate-500 hover:text-slate-300 transition-colors"
           >
             <ArrowLeft size={20} />
           </button>
           <div>
-            <h1 className="text-2xl font-bold text-slate-900 tracking-tight">
+            <h1 className="text-2xl font-bold text-white tracking-tight">
               {isEdit ? "Edit Customer" : "Add Customer"}
             </h1>
-            <p className="text-slate-500 text-sm mt-0.5">
+            <p className="text-slate-400 text-sm mt-0.5">
               {isEdit ? `Editing ${existing?.full_name}` : "Create a new customer account"}
             </p>
           </div>
         </div>
 
         <form onSubmit={handleSubmit} noValidate>
-          <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 space-y-5">
+          <div className="rounded-xl border border-white/10 bg-slate-900/80 shadow-lg shadow-black/20 p-6 space-y-5">
 
             {/* Basic info */}
             <div className="pb-1">
-              <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-[0.14em] mb-4">
+              <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-[0.14em] mb-4">
                 Basic Information
               </p>
               <div className="grid sm:grid-cols-2 gap-4">
@@ -232,8 +232,8 @@ export default function CustomerForm() {
             </div>
 
             {/* Connection */}
-            <div className="border-t border-slate-100 pt-5">
-              <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-[0.14em] mb-4">
+            <div className="border-t border-white/5 pt-5">
+              <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-[0.14em] mb-4">
                 Connection
               </p>
               <div className="grid sm:grid-cols-2 gap-4">
@@ -291,8 +291,8 @@ export default function CustomerForm() {
             </div>
 
             {/* Advanced */}
-            <div className="border-t border-slate-100 pt-5">
-              <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-[0.14em] mb-4">
+            <div className="border-t border-white/5 pt-5">
+              <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-[0.14em] mb-4">
                 Advanced
               </p>
               <div className="grid sm:grid-cols-2 gap-4">
@@ -328,7 +328,7 @@ export default function CustomerForm() {
             <button
               type="button"
               onClick={() => navigate(isEdit ? `/admin/customers/${id}` : "/admin/customers")}
-              className="px-6 py-2.5 border border-slate-300 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+              className="px-6 py-2.5 border border-white/15 rounded-lg text-sm font-medium text-slate-300 hover:bg-white/5 transition-colors"
             >
               Cancel
             </button>

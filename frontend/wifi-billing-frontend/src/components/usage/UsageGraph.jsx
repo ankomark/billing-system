@@ -11,7 +11,7 @@ import {
 export default function UsageGraph({ data, title }) {
   if (!data || data.length === 0) {
     return (
-      <div className="bg-white p-4 rounded shadow mt-6">
+      <div className="bg-slate-900/80 p-4 rounded shadow mt-6">
         <h3 className="font-semibold mb-3">{title}</h3>
         <p className="text-sm text-gray-500">No usage data available</p>
       </div>
@@ -19,7 +19,7 @@ export default function UsageGraph({ data, title }) {
   }
 
   return (
-    <div className="bg-white p-4 rounded shadow mt-6">
+    <div className="bg-slate-900/80 p-4 rounded shadow mt-6">
       <h3 className="font-semibold mb-3">{title}</h3>
 
       <ResponsiveContainer width="100%" height={250}>

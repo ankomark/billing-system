@@ -77,8 +77,8 @@ export default function Stations() {
       <div className="max-w-4xl space-y-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Stations</h1>
-            <p className="text-slate-500 text-sm mt-1">
+            <h1 className="text-2xl font-bold text-white tracking-tight">Stations</h1>
+            <p className="text-slate-400 text-sm mt-1">
               Your sites. Group the routers at each place so you can watch them
               separately.
             </p>
@@ -93,7 +93,7 @@ export default function Stations() {
         </div>
 
         {stations.length === 0 && !isLoading && !adding && (
-          <div className="bg-blue-50 border border-blue-200 text-blue-900 rounded-xl px-5 py-4 text-sm">
+          <div className="bg-blue-500/10 border border-blue-500/30 text-blue-200 rounded-xl px-5 py-4 text-sm">
             <p className="font-semibold">You don't need stations for one site.</p>
             <p className="mt-1">
               Add one only when you have routers in more than one place. Once you
@@ -110,11 +110,11 @@ export default function Stations() {
               e.preventDefault();
               create.mutate(form);
             }}
-            className="bg-white rounded-xl border border-slate-200 shadow-sm p-5 space-y-4"
+            className="rounded-xl border border-white/10 bg-slate-900/80 shadow-lg shadow-black/20 p-5 space-y-4"
           >
             <div className="grid sm:grid-cols-3 gap-4">
               <label className="block sm:col-span-2">
-                <span className="text-sm font-medium text-slate-700">Name</span>
+                <span className="text-sm font-medium text-slate-300">Name</span>
                 <input
                   value={form.name}
                   onChange={(e) => setForm({ ...form, name: e.target.value })}
@@ -122,11 +122,11 @@ export default function Stations() {
                   className={inputCls(err("name"))}
                 />
                 {err("name") && (
-                  <span className="text-xs text-red-600 mt-1 block">{err("name")}</span>
+                  <span className="text-xs text-red-300 mt-1 block">{err("name")}</span>
                 )}
               </label>
               <label className="block">
-                <span className="text-sm font-medium text-slate-700">
+                <span className="text-sm font-medium text-slate-300">
                   Short code
                 </span>
                 <input
@@ -139,7 +139,7 @@ export default function Stations() {
               </label>
             </div>
             <label className="block">
-              <span className="text-sm font-medium text-slate-700">Notes</span>
+              <span className="text-sm font-medium text-slate-300">Notes</span>
               <input
                 value={form.notes}
                 onChange={(e) => setForm({ ...form, notes: e.target.value })}
@@ -158,7 +158,7 @@ export default function Stations() {
               <button
                 type="button"
                 onClick={() => setAdding(false)}
-                className="text-slate-500 hover:text-slate-800 text-sm font-medium"
+                className="text-slate-400 hover:text-white text-sm font-medium"
               >
                 Cancel
               </button>
@@ -167,50 +167,50 @@ export default function Stations() {
         )}
 
         {isLoading ? (
-          <div className="h-32 rounded-xl border border-slate-200 bg-white animate-pulse" />
+          <div className="h-32 rounded-xl border border-white/10 bg-slate-900/80 animate-pulse" />
         ) : (
           <div className="grid gap-4 sm:grid-cols-2">
             {stations.map((s) => (
               <div
                 key={s.id}
-                className="bg-white rounded-xl border border-slate-200 shadow-sm p-5"
+                className="rounded-xl border border-white/10 bg-slate-900/80 shadow-lg shadow-black/20 p-5"
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <p className="font-semibold text-slate-800 flex items-center gap-1.5">
-                      <MapPin size={14} className="text-slate-400" aria-hidden="true" />
+                    <p className="font-semibold text-white flex items-center gap-1.5">
+                      <MapPin size={14} className="text-slate-500" aria-hidden="true" />
                       {s.name}
                       {s.code && (
-                        <span className="text-xs font-normal text-slate-400">
+                        <span className="text-xs font-normal text-slate-500">
                           {s.code}
                         </span>
                       )}
                     </p>
                     {s.notes && (
-                      <p className="text-xs text-slate-500 mt-1">{s.notes}</p>
+                      <p className="text-xs text-slate-400 mt-1">{s.notes}</p>
                     )}
                   </div>
                   <button
                     onClick={() => setConfirmDelete(s)}
-                    className="text-slate-300 hover:text-red-600 transition-colors"
+                    className="text-slate-500 hover:text-red-300 transition-colors"
                     aria-label={`Remove ${s.name}`}
                   >
                     <Trash2 size={15} />
                   </button>
                 </div>
 
-                <div className="mt-4 pt-4 border-t border-slate-100 flex items-center gap-5 text-sm">
-                  <span className="inline-flex items-center gap-1.5 text-slate-600">
-                    <RouterIcon size={14} className="text-slate-400" aria-hidden="true" />
+                <div className="mt-4 pt-4 border-t border-white/5 flex items-center gap-5 text-sm">
+                  <span className="inline-flex items-center gap-1.5 text-slate-300">
+                    <RouterIcon size={14} className="text-slate-500" aria-hidden="true" />
                     {s.routers} router{s.routers === 1 ? "" : "s"}
                   </span>
                   {s.routers_offline > 0 && (
-                    <span className="text-red-600 text-xs font-semibold">
+                    <span className="text-red-300 text-xs font-semibold">
                       {s.routers_offline} offline
                     </span>
                   )}
-                  <span className="inline-flex items-center gap-1.5 text-slate-600 ml-auto">
-                    <Users size={14} className="text-slate-400" aria-hidden="true" />
+                  <span className="inline-flex items-center gap-1.5 text-slate-300 ml-auto">
+                    <Users size={14} className="text-slate-500" aria-hidden="true" />
                     {s.subscribers}
                   </span>
                 </div>
@@ -235,5 +235,5 @@ export default function Stations() {
 
 const inputCls = (hasError) =>
   `mt-1 w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 ${
-    hasError ? "border-red-300 focus:ring-red-400" : "border-slate-300 focus:ring-blue-500"
+    hasError ? "border-red-300 focus:ring-red-400" : "border-white/15 bg-slate-950 text-slate-100 focus:ring-blue-500"
   }`;

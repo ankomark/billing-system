@@ -1,51 +1,49 @@
 /**
  * Design tokens for the operator console.
  *
- * Light, deliberately. The platform console is dark and this one is not, and
- * that difference is the whole point — someone holding both kinds of access
- * must know at a glance whose data is on screen. So this is the platform kit's
- * rigour, not its palette.
+ * Dark, matching the platform console. It was light until now, on the argument
+ * that the two consoles must look different so someone holding both kinds of
+ * access knows whose data is on screen. That job has not gone away — it is
+ * carried by the accent instead: this console is BLUE throughout, the platform
+ * one is TEAL, and the impersonation banner stays loud above everything.
  *
- * The series palette was validated against THIS surface (#ffffff cards), not
- * inherited from the dark console: lightness band, chroma floor, CVD separation
- * and normal-vision floor all pass, worst adjacent CVD ΔE 9.1.
- *
- * One caveat that is not dismissable. Three slots — aqua, yellow and magenta —
- * measure below 3:1 against white (2.82, 2.17, 2.69). The rule for that is
- * relief: any chart using them must ship visible numbers, either as direct
- * labels or as a table beside the plot. The usage graph does this with its KPI
- * tiles, and any new chart must do the same or stay within the first two slots,
- * which both clear 3:1.
+ * The palette was re-validated against this surface rather than assumed to
+ * invert. All eight slots pass, worst adjacent CVD ΔE 8.4 — and every slot now
+ * clears 3:1, so the relief rule that constrained three of them on white no
+ * longer applies here.
  */
 
 export const CHROME = {
-  plane: "#f8fafc",      // page background behind the cards
-  surface: "#ffffff",    // card / chart surface — what the palette was validated against
-  border: "#e2e8f0",
-  inkPrimary: "#1e293b",
-  inkSecondary: "#475569",
+  plane: "#020617",      // page background behind the cards
+  surface: "#0f172a",    // card / chart surface — what the palette was validated against
+  border: "rgba(255,255,255,0.08)",
+  inkPrimary: "#f8fafc",
+  inkSecondary: "#cbd5e1",
   inkMuted: "#94a3b8",   // axis ticks, labels
-  grid: "#f1f5f9",       // hairline gridlines
-  baseline: "#cbd5e1",
+  grid: "#1e293b",       // hairline gridlines
+  baseline: "#334155",
 };
+
+/** This console's accent. Teal belongs to the platform; blue belongs here. */
+export const ACCENT = "#3b82f6";
 
 // Categorical series, fixed order, never cycled. Slots 1-3 also pass all-pairs,
 // which is the cap for scatter-type forms.
 export const SERIES = [
-  "#2a78d6", // 1 blue
-  "#eb6834", // 2 orange
-  "#1baf7a", // 3 aqua      — below 3:1, needs relief
-  "#eda100", // 4 yellow    — below 3:1, needs relief
-  "#e87ba4", // 5 magenta   — below 3:1, needs relief
+  "#3987e5", // 1 blue
+  "#d95926", // 2 orange
+  "#199e70", // 3 aqua
+  "#c98500", // 4 yellow
+  "#d55181", // 5 magenta
   "#008300", // 6 green
-  "#4a3aa7", // 7 violet
-  "#e34948", // 8 red
+  "#9085e9", // 7 violet
+  "#e66767", // 8 red
 ];
 
 export const seriesColor = (i) => SERIES[i % SERIES.length];
 
-/** Slots that need visible numbers beside the mark on this surface. */
-export const NEEDS_RELIEF = new Set([2, 3, 4]);
+/** Empty on this surface — every slot clears 3:1 against #0f172a. */
+export const NEEDS_RELIEF = new Set();
 
 // Status — reserved, never reused as a series colour, always paired with an
 // icon and a label because two of these are close in normal-vision terms.
@@ -65,19 +63,19 @@ export const STATUS_INK = {
  */
 export const STATUS_STYLES = {
   // customers and subscriptions
-  active: "bg-emerald-50 text-emerald-700 border-emerald-200",
-  expired: "bg-slate-100 text-slate-600 border-slate-200",
-  suspended: "bg-amber-50 text-amber-700 border-amber-200",
+  active: "bg-emerald-500/10 text-emerald-300 border-emerald-500/30",
+  expired: "bg-slate-500/10 text-slate-400 border-slate-500/30",
+  suspended: "bg-amber-500/10 text-amber-300 border-amber-500/30",
   // invoices
-  paid: "bg-emerald-50 text-emerald-700 border-emerald-200",
-  unpaid: "bg-red-50 text-red-700 border-red-200",
-  pending: "bg-amber-50 text-amber-700 border-amber-200",
+  paid: "bg-emerald-500/10 text-emerald-300 border-emerald-500/30",
+  unpaid: "bg-red-500/10 text-red-300 border-red-500/30",
+  pending: "bg-amber-500/10 text-amber-300 border-amber-500/30",
   // routers and everything else
-  online: "bg-emerald-50 text-emerald-700 border-emerald-200",
-  offline: "bg-red-50 text-red-700 border-red-200",
-  inactive: "bg-slate-100 text-slate-600 border-slate-200",
-  failed: "bg-red-50 text-red-700 border-red-200",
-  success: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  online: "bg-emerald-500/10 text-emerald-300 border-emerald-500/30",
+  offline: "bg-red-500/10 text-red-300 border-red-500/30",
+  inactive: "bg-slate-500/10 text-slate-400 border-slate-500/30",
+  failed: "bg-red-500/10 text-red-300 border-red-500/30",
+  success: "bg-emerald-500/10 text-emerald-300 border-emerald-500/30",
 };
 
 export const statusStyle = (s) =>

@@ -22,12 +22,12 @@ export default function DataTable({
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
         <thead>
-          <tr className="border-b border-slate-200 bg-slate-50">
+          <tr className="border-b border-white/10 bg-white/5">
             {columns.map((c) => (
               <th
                 key={c.key}
                 scope="col"
-                className={`${pad} text-[11px] font-semibold uppercase tracking-wider text-slate-500 whitespace-nowrap ${
+                className={`${pad} text-[11px] font-semibold uppercase tracking-wider text-slate-400 whitespace-nowrap ${
                   c.align === "right" ? "text-right" : "text-left"
                 }`}
               >
@@ -36,20 +36,20 @@ export default function DataTable({
             ))}
           </tr>
         </thead>
-        <tbody className="divide-y divide-slate-100">
+        <tbody className="divide-y divide-white/5">
           {loading ? (
             Array.from({ length: loadingRows }).map((_, i) => (
               <tr key={i}>
                 {columns.map((c) => (
                   <td key={c.key} className={pad}>
-                    <div className="h-3 w-full max-w-[10rem] rounded bg-slate-100 animate-pulse" />
+                    <div className="h-3 w-full max-w-[10rem] rounded bg-white/5 animate-pulse" />
                   </td>
                 ))}
               </tr>
             ))
           ) : !rows?.length ? (
             <tr>
-              <td colSpan={columns.length} className="px-5 py-10 text-center text-sm text-slate-400">
+              <td colSpan={columns.length} className="px-5 py-10 text-center text-sm text-slate-500">
                 {empty}
               </td>
             </tr>
@@ -58,12 +58,12 @@ export default function DataTable({
               <tr
                 key={rowKey(row)}
                 onClick={onRowClick ? () => onRowClick(row) : undefined}
-                className={onRowClick ? "cursor-pointer hover:bg-slate-50 transition-colors" : ""}
+                className={onRowClick ? "cursor-pointer hover:bg-white/5 transition-colors" : ""}
               >
                 {columns.map((c) => (
                   <td
                     key={c.key}
-                    className={`${pad} text-slate-600 ${
+                    className={`${pad} text-slate-300 ${
                       // Columns of figures align on the decimal; that is what
                       // tabular figures are for, and only there.
                       c.align === "right" ? "text-right tabular-nums" : ""

@@ -20,28 +20,28 @@ export default function Pagination({ page, totalPages, onPageChange, count, page
 
   return (
     <div className="flex flex-col sm:flex-row items-center justify-between gap-3 mt-4 px-1">
-      <p className="text-xs text-slate-500 order-2 sm:order-1">
-        Showing <span className="font-medium text-slate-700">{start}–{end}</span> of{" "}
-        <span className="font-medium text-slate-700">{count}</span>
+      <p className="text-xs text-slate-400 order-2 sm:order-1">
+        Showing <span className="font-medium text-slate-300">{start}–{end}</span> of{" "}
+        <span className="font-medium text-slate-300">{count}</span>
       </p>
 
       <div className="flex items-center gap-2 order-1 sm:order-2">
         <button
           onClick={() => onPageChange(page - 1)}
           disabled={page <= 1}
-          className="h-8 w-8 flex items-center justify-center rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          className="h-8 w-8 flex items-center justify-center rounded-lg border border-white/15 text-slate-300 hover:bg-white/5 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
           <ChevronLeft size={15} />
         </button>
 
-        <span className="text-sm text-slate-600 font-medium px-1 min-w-[80px] text-center">
+        <span className="text-sm text-slate-300 font-medium px-1 min-w-[80px] text-center">
           {page} / {totalPages}
         </span>
 
         <button
           onClick={() => onPageChange(page + 1)}
           disabled={page >= totalPages}
-          className="h-8 w-8 flex items-center justify-center rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          className="h-8 w-8 flex items-center justify-center rounded-lg border border-white/15 text-slate-300 hover:bg-white/5 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
           <ChevronRight size={15} />
         </button>
@@ -55,7 +55,7 @@ export default function Pagination({ page, totalPages, onPageChange, count, page
               value={jumpValue}
               onChange={(e) => setJumpValue(e.target.value)}
               placeholder="Go to"
-              className="h-8 w-16 border border-slate-300 rounded-lg px-2 text-xs text-center focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="h-8 w-16 border border-white/15 rounded-lg px-2 text-xs text-center focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
             <button
               type="submit"

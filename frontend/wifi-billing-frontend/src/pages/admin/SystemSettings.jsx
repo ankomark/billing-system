@@ -77,7 +77,7 @@ export default function SystemSettings() {
       <AdminLayout>
         <div className="max-w-3xl space-y-4">
           <Skeleton className="h-8 w-48" />
-          <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 space-y-4">
+          <div className="rounded-xl border border-white/10 bg-slate-900/80 shadow-lg shadow-black/20 p-6 space-y-4">
             {[...Array(6)].map((_, i) => <Skeleton key={i} className="h-10 w-full" />)}
           </div>
         </div>
@@ -89,8 +89,8 @@ export default function SystemSettings() {
     <AdminLayout>
       <div className="max-w-3xl space-y-6">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900 tracking-tight">System Settings</h1>
-          <p className="text-slate-500 text-sm mt-1">
+          <h1 className="text-2xl font-bold text-white tracking-tight">System Settings</h1>
+          <p className="text-slate-400 text-sm mt-1">
             Configure M-Pesa, SMS, and WhatsApp integrations
           </p>
         </div>
@@ -144,8 +144,8 @@ export default function SystemSettings() {
 
 function Section({ title, children }) {
   return (
-    <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 space-y-4">
-      <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-[0.14em]">{title}</p>
+    <div className="rounded-xl border border-white/10 bg-slate-900/80 shadow-lg shadow-black/20 p-6 space-y-4">
+      <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-[0.14em]">{title}</p>
       {children}
     </div>
   );
@@ -154,13 +154,13 @@ function Section({ title, children }) {
 function Field({ label, name, value, onChange, placeholder = "" }) {
   return (
     <div>
-      <label className="block text-sm font-medium text-slate-700 mb-1.5">{label}</label>
+      <label className="block text-sm font-medium text-slate-300 mb-1.5">{label}</label>
       <input
         name={name}
         value={value}
         onChange={onChange}
         placeholder={placeholder}
-        className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+        className="w-full border border-white/15 bg-slate-950 text-slate-100 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
       />
     </div>
   );
@@ -168,7 +168,7 @@ function Field({ label, name, value, onChange, placeholder = "" }) {
 
 const testColors = {
   emerald: "bg-emerald-600 hover:bg-emerald-700",
-  amber:   "bg-amber-500  hover:bg-amber-600",
+  amber:   "bg-amber-500/100  hover:bg-amber-600",
   violet:  "bg-violet-600 hover:bg-violet-700",
 };
 

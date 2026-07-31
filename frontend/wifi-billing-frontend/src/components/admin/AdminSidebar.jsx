@@ -40,13 +40,13 @@ export default function AdminSidebar({ open, onClose }) {
       {/* Sidebar */}
       <aside
         className={`
-          fixed top-0 left-0 z-40 h-full w-64 bg-slate-900 flex flex-col transform transition-transform duration-300 ease-in-out
+          fixed top-0 left-0 z-40 h-full w-64 bg-slate-900 border-r border-white/10 flex flex-col transform transition-transform duration-300 ease-in-out
           lg:static lg:translate-x-0 lg:z-auto lg:flex-shrink-0
           ${open ? "translate-x-0" : "-translate-x-full"}
         `}
       >
         {/* Brand */}
-        <div className="px-5 py-4 border-b border-slate-700/60 flex items-center justify-between">
+        <div className="px-5 py-4 border-b border-white/10 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center flex-shrink-0">
               <Wifi size={16} className="text-white" />
@@ -59,13 +59,13 @@ export default function AdminSidebar({ open, onClose }) {
               <p className="text-white font-bold text-sm leading-tight">
                 {operatorName}
               </p>
-              <p className="text-slate-500 text-xs">Management Portal</p>
+              <p className="text-slate-400 text-xs">Management Portal</p>
             </div>
           </div>
           {/* Mobile close button */}
           <button
             onClick={onClose}
-            className="lg:hidden text-slate-400 hover:text-white transition-colors"
+            className="lg:hidden text-slate-500 hover:text-white transition-colors"
           >
             <X size={18} />
           </button>
@@ -113,10 +113,10 @@ export default function AdminSidebar({ open, onClose }) {
         </nav>
 
         {/* Logout */}
-        <div className="p-3 border-t border-slate-700/60">
+        <div className="p-3 border-t border-white/10">
           <button
             onClick={handleLogout}
-            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-400 hover:text-white hover:bg-red-600/90 transition-colors text-sm font-medium"
+            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-500 hover:text-white hover:bg-red-600/90 transition-colors text-sm font-medium"
           >
             <LogOut size={15} />
             Sign Out
@@ -129,7 +129,7 @@ export default function AdminSidebar({ open, onClose }) {
 
 function SectionLabel({ label }) {
   return (
-    <p className="px-3 pt-5 pb-1.5 text-xs font-semibold text-slate-500 uppercase tracking-widest select-none">
+    <p className="px-3 pt-5 pb-1.5 text-xs font-semibold text-slate-400 uppercase tracking-widest select-none">
       {label}
     </p>
   );
@@ -144,7 +144,7 @@ function NavItem({ to, icon: Icon, label, onClick }) {
         `flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
           isActive
             ? "bg-blue-600 text-white shadow-sm"
-            : "text-slate-400 hover:text-white hover:bg-slate-800"
+            : "text-slate-500 hover:text-white hover:bg-white/5"
         }`
       }
     >

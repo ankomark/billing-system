@@ -48,7 +48,7 @@ export default function Dashboard() {
   const rev = data?.revenue_summary;
   const stats = data?.customer_stats;
   const skeleton = (
-    <div className="h-[92px] rounded-xl border border-slate-200 bg-white shadow-sm animate-pulse" />
+    <div className="h-[92px] rounded-xl border border-white/10 bg-slate-900/80 shadow-lg shadow-black/20 animate-pulse" />
   );
 
   return (
@@ -56,14 +56,14 @@ export default function Dashboard() {
       <div className="space-y-8 max-w-6xl">
         <PageHeader title="Dashboard" subtitle="How your business is doing today">
           {dataUpdatedAt > 0 && (
-            <span className="hidden sm:block text-xs text-slate-400">
+            <span className="hidden sm:block text-xs text-slate-500">
               Updated {new Date(dataUpdatedAt).toLocaleTimeString("en-KE")}
             </span>
           )}
           <button
             onClick={() => refetch()}
             disabled={isFetching}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50 transition-colors"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-white/15 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-white/5 disabled:opacity-50 transition-colors"
           >
             <RefreshCw size={12} className={isFetching ? "animate-spin" : ""} />
             Refresh

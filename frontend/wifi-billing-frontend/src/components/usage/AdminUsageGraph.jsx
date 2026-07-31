@@ -45,14 +45,14 @@ function UsageGraph({
   const CustomTooltip = ({ active, payload, label }) => {
     if (active && payload && payload.length) {
       return (
-        <div className="rounded-lg border border-gray-200 bg-white p-3 shadow-lg">
+        <div className="rounded-lg border border-gray-200 bg-slate-900/80 p-3 shadow-lg">
           <p className="font-medium text-gray-900">
             {formatFullDate(label)}
           </p>
           <div className="mt-2 space-y-1">
             <div className="flex items-center justify-between">
               <span className="flex items-center">
-                <div className="mr-2 h-3 w-3 rounded-full bg-blue-500" />
+                <div className="mr-2 h-3 w-3 rounded-full bg-blue-500/100" />
                 Download
               </span>
               <span className="font-medium">
@@ -211,12 +211,12 @@ export default function AdminUsageGraph() {
   // Error state
   if (error) {
     return (
-      <div className="rounded-lg border border-red-200 bg-red-50 p-4">
+      <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-4">
         <h3 className="font-medium text-red-800">Unable to Load Usage Data</h3>
-        <p className="text-sm text-red-600 mt-1">{error}</p>
+        <p className="text-sm text-red-300 mt-1">{error}</p>
         <button 
           onClick={() => window.location.reload()}
-          className="mt-3 text-sm font-medium text-red-700 hover:text-red-800"
+          className="mt-3 text-sm font-medium text-red-300 hover:text-red-800"
         >
           Try Again
         </button>
@@ -268,14 +268,14 @@ export default function AdminUsageGraph() {
         </div>
       </div>
       
-      <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+      <div className="rounded-xl border border-gray-200 bg-slate-900/80 p-4 shadow-sm">
         <UsageGraph data={data} />
       </div>
       
       <div className="grid grid-cols-2 gap-4 text-sm">
-        <div className="rounded-lg bg-blue-50 p-3">
-          <div className="font-medium text-blue-900">Peak Download</div>
-          <div className="text-2xl font-bold text-blue-700">
+        <div className="rounded-lg bg-blue-500/10 p-3">
+          <div className="font-medium text-blue-200">Peak Download</div>
+          <div className="text-2xl font-bold text-blue-300">
             {peakDownload.toFixed(1)} GB
           </div>
         </div>

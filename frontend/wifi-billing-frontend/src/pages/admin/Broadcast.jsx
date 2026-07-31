@@ -59,32 +59,32 @@ export default function Broadcast() {
     <AdminLayout>
       <div className="space-y-6 max-w-3xl">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Broadcast Messaging</h1>
-          <p className="text-slate-500 text-sm mt-1">
+          <h1 className="text-2xl font-bold text-white tracking-tight">Broadcast Messaging</h1>
+          <p className="text-slate-400 text-sm mt-1">
             Send SMS or WhatsApp messages to customers in bulk
           </p>
         </div>
 
         {error && (
-          <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl text-sm">
+          <div className="bg-red-500/10 border border-red-500/30 text-red-200 px-4 py-3 rounded-xl text-sm">
             {error}
           </div>
         )}
 
         {result && (
-          <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 px-4 py-3 rounded-xl text-sm font-medium">
+          <div className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-800 px-4 py-3 rounded-xl text-sm font-medium">
             Sent: {result.sent} &nbsp;·&nbsp; Failed: {result.failed}
           </div>
         )}
 
-        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 space-y-5">
+        <div className="rounded-xl border border-white/10 bg-slate-900/80 shadow-lg shadow-black/20 p-6 space-y-5">
           <div className="grid sm:grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1.5">Channel</label>
+              <label className="block text-sm font-medium text-slate-300 mb-1.5">Channel</label>
               <select
                 value={channel}
                 onChange={(e) => setChannel(e.target.value)}
-                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                className="w-full border border-white/15 bg-slate-950 text-slate-100 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-slate-900/80"
               >
                 <option value="sms">SMS</option>
                 <option value="whatsapp">WhatsApp</option>
@@ -92,11 +92,11 @@ export default function Broadcast() {
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1.5">Audience</label>
+              <label className="block text-sm font-medium text-slate-300 mb-1.5">Audience</label>
               <select
                 value={audience}
                 onChange={(e) => { setAudience(e.target.value); setSelected([]); }}
-                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                className="w-full border border-white/15 bg-slate-950 text-slate-100 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-slate-900/80"
               >
                 <option value="all">All customers</option>
                 <option value="active">Active only</option>
@@ -107,36 +107,36 @@ export default function Broadcast() {
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1.5">Message</label>
+            <label className="block text-sm font-medium text-slate-300 mb-1.5">Message</label>
             <textarea
               value={message}
               onChange={(e) => setMessage(e.target.value)}
               rows={5}
-              className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+              className="w-full border border-white/15 bg-slate-950 text-slate-100 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
               placeholder="Type your broadcast message…"
             />
-            <p className="text-xs text-slate-400 mt-1">{message.length} characters</p>
+            <p className="text-xs text-slate-500 mt-1">{message.length} characters</p>
           </div>
 
           {audience === "custom" && (
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-2">
+              <label className="block text-sm font-medium text-slate-300 mb-2">
                 Select customers ({selected.length} selected)
               </label>
-              <div className="border border-slate-200 rounded-lg max-h-56 overflow-y-auto divide-y divide-slate-100">
+              <div className="border border-white/10 rounded-lg max-h-56 overflow-y-auto divide-y divide-white/5">
                 {customers.length === 0 ? (
-                  <p className="px-4 py-6 text-center text-slate-400 text-sm">Loading customers…</p>
+                  <p className="px-4 py-6 text-center text-slate-500 text-sm">Loading customers…</p>
                 ) : (
                   customers.map((c) => (
-                    <label key={c.id} className="flex items-center gap-3 px-4 py-2.5 hover:bg-slate-50 cursor-pointer">
+                    <label key={c.id} className="flex items-center gap-3 px-4 py-2.5 hover:bg-white/5 cursor-pointer">
                       <input
                         type="checkbox"
                         checked={selected.includes(c.id)}
                         onChange={() => toggleCustomer(c.id)}
-                        className="rounded border-slate-300 text-blue-600"
+                        className="rounded border-white/15 text-blue-600"
                       />
-                      <span className="text-sm font-medium text-slate-800">{c.full_name}</span>
-                      <span className="text-xs text-slate-400">{c.phone}</span>
+                      <span className="text-sm font-medium text-white">{c.full_name}</span>
+                      <span className="text-xs text-slate-500">{c.phone}</span>
                     </label>
                   ))
                 )}

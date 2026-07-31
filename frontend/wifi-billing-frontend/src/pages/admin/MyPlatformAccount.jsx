@@ -33,7 +33,7 @@ export default function MyPlatformAccount() {
   if (isError) {
     return (
       <AdminLayout>
-        <p className="text-slate-500">Couldn't load your account.</p>
+        <p className="text-slate-400">Couldn't load your account.</p>
       </AdminLayout>
     );
   }
@@ -49,15 +49,15 @@ export default function MyPlatformAccount() {
     <AdminLayout>
       <div className="space-y-6 max-w-2xl">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Your subscription</h1>
-          <p className="text-slate-500 text-sm mt-1">{data.operator}</p>
+          <h1 className="text-2xl font-bold text-white tracking-tight">Your subscription</h1>
+          <p className="text-slate-400 text-sm mt-1">{data.operator}</p>
         </div>
 
         {(restricted || pastDue) && (
           <div className={`rounded-xl border px-5 py-4 flex gap-3 ${
             restricted
-              ? "bg-red-50 border-red-200 text-red-800"
-              : "bg-amber-50 border-amber-200 text-amber-800"
+              ? "bg-red-500/10 border-red-500/30 text-red-800"
+              : "bg-amber-500/10 border-amber-500/30 text-amber-800"
           }`}>
             <AlertTriangle size={18} className="flex-shrink-0 mt-0.5" />
             <div className="text-sm">
@@ -79,8 +79,8 @@ export default function MyPlatformAccount() {
           </div>
         )}
 
-        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
-          <h2 className="text-[11px] font-semibold text-slate-500 uppercase tracking-[0.14em] mb-4">
+        <div className="rounded-xl border border-white/10 bg-slate-900/80 shadow-lg shadow-black/20 p-5">
+          <h2 className="text-[11px] font-semibold text-slate-400 uppercase tracking-[0.14em] mb-4">
             Plan
           </h2>
           {data.subscription ? (
@@ -94,37 +94,37 @@ export default function MyPlatformAccount() {
               />
             </div>
           ) : (
-            <p className="text-sm text-slate-400">
+            <p className="text-sm text-slate-500">
               You are not on a plan yet. Contact the platform to get set up.
             </p>
           )}
         </div>
 
-        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
+        <div className="rounded-xl border border-white/10 bg-slate-900/80 shadow-lg shadow-black/20 p-5">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-[11px] font-semibold text-slate-500 uppercase tracking-[0.14em]">
+            <h2 className="text-[11px] font-semibold text-slate-400 uppercase tracking-[0.14em]">
               Outstanding
             </h2>
-            <span className="text-lg font-bold text-slate-800">
+            <span className="text-lg font-bold text-white">
               {KES(data.amount_due)}
             </span>
           </div>
 
           {data.outstanding.length === 0 ? (
-            <p className="text-sm text-emerald-600 font-medium">
+            <p className="text-sm text-emerald-300 font-medium">
               Nothing outstanding. You're all paid up.
             </p>
           ) : (
             <ul className="space-y-2">
               {data.outstanding.map((inv) => (
-                <li key={inv.id} className="flex justify-between items-center text-sm border-t border-slate-100 pt-2.5">
+                <li key={inv.id} className="flex justify-between items-center text-sm border-t border-white/5 pt-2.5">
                   <div>
-                    <code className="text-xs bg-slate-100 px-2 py-0.5 rounded">{inv.number}</code>
-                    <p className="text-xs text-slate-400 mt-1">
+                    <code className="text-xs bg-white/5 px-2 py-0.5 rounded">{inv.number}</code>
+                    <p className="text-xs text-slate-500 mt-1">
                       Due {new Date(inv.due_date).toLocaleDateString("en-KE")}
                     </p>
                   </div>
-                  <span className={`font-semibold ${inv.is_overdue ? "text-red-600" : "text-slate-800"}`}>
+                  <span className={`font-semibold ${inv.is_overdue ? "text-red-300" : "text-white"}`}>
                     {KES(inv.amount)}
                   </span>
                 </li>
@@ -132,7 +132,7 @@ export default function MyPlatformAccount() {
             </ul>
           )}
 
-          <p className="text-xs text-slate-400 mt-4">
+          <p className="text-xs text-slate-500 mt-4">
             Payments are recorded by the platform once received. Contact them
             with your M-Pesa reference if a payment isn't showing.
           </p>
@@ -145,8 +145,8 @@ export default function MyPlatformAccount() {
 function Row({ label, value }) {
   return (
     <div>
-      <p className="text-slate-400 text-xs">{label}</p>
-      <p className="font-medium text-slate-800 capitalize">{value}</p>
+      <p className="text-slate-500 text-xs">{label}</p>
+      <p className="font-medium text-white capitalize">{value}</p>
     </div>
   );
 }
