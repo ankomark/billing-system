@@ -551,6 +551,38 @@ class MpesaSTKCallbackView(APIView):
         # messaging credentials.
         with tenant_context(invoice.tenant_id):
             with transaction.atomic():
+                # Re-read under a lock and refuse an invoice that is already
+                # paid. The receipt-level idempotency above only stops the SAME
+                # receipt being applied twice; it does nothing about two
+                # DIFFERENT receipts against one invoice — a customer who pays
+                # twice, or an STK re-initiated after a timeout that then also
+                # succeeds. Without this each one creates a Payment, and for a
+                # hotspot customer Payment.save() mints a voucher, so one
+                # purchase would hand out two.
+                #
+                # The manual payment path has guarded this from the start. This
+                # is the automated path, which is also the one Safaricom
+                # retries, so it needed it more.
+                locked = (
+                    Invoice.objects.all_tenants()
+                    .select_for_update()
+                    .select_related("customer", "subscription")
+                    .get(pk=invoice.pk)
+                )
+                if locked.payment_status == "paid":
+                    tx.invoice = locked
+                    tx.processed = True
+                    tx.status = "success"
+                    tx.error_message = "Invoice already paid — no second payment recorded"
+                    tx.save()
+                    logger.warning(
+                        "[mpesa] Receipt %s arrived for invoice %s which is "
+                        "already paid. Recorded, not applied.",
+                        mpesa_receipt, locked.invoice_number,
+                    )
+                    return Response({"detail": "Invoice already paid"})
+
+                invoice = locked
                 payment = Payment.objects.create(
                     tenant_id=invoice.tenant_id,
                     customer=invoice.customer,

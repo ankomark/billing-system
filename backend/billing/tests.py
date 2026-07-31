@@ -4731,3 +4731,101 @@ class StationRollupTests(TwoOperatorMixin, TestCase):
         owner = make_platform_owner()
         resp = self.auth(owner).get("/api/platform/analytics/", {"days": 7})
         self.assertEqual(resp.data["stations"], [])
+
+
+# =====================================================
+# 25. Two receipts, one invoice
+# =====================================================
+
+class DoublePaymentTests(TwoOperatorMixin, TestCase):
+    """
+    The receipt-level idempotency stops the same receipt being applied twice.
+    It does nothing about two DIFFERENT receipts against one invoice — a
+    customer who pays twice, or an STK re-initiated after a timeout that then
+    also succeeds.
+
+    The manual payment path has guarded this from the start. The callback path
+    did not, and it is the one Safaricom retries.
+    """
+
+    URL = "/api/mpesa/stk-callback/"
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        self.invoice = self.data["t1"]["invoice"]
+        self.customer = self.data["t1"]["customer"]
+        # DRF's client, so format="json" is honoured — the plain Django test
+        # client posts the dict as a form and the view sees a string.
+        self.api = APIClient()
+
+    def _callback(self, receipt):
+        return {
+            "Body": {"stkCallback": {
+                "ResultCode": 0,
+                "ResultDesc": "Success",
+                "CallbackMetadata": {"Item": [
+                    {"Name": "MpesaReceiptNumber", "Value": receipt},
+                    {"Name": "Amount", "Value": float(self.invoice.total_amount)},
+                    {"Name": "PhoneNumber", "Value": 254700000001},
+                    {"Name": "AccountReference", "Value": self.invoice.invoice_number},
+                ]},
+            }}
+        }
+
+    @patch("billing.views.is_trusted_mpesa_ip", return_value=True)
+    def test_the_same_receipt_twice_is_ignored(self, _ip):
+        """Already true before this change; kept so it cannot regress."""
+        self.api.post(self.URL, self._callback("RCT-A"), format="json")
+        resp = self.api.post(self.URL, self._callback("RCT-A"), format="json")
+        self.assertIn("Duplicate", resp.data["detail"])
+        self.assertEqual(
+            Payment.objects.all_tenants().filter(subscription=self.invoice.subscription).count(),
+            1,
+        )
+
+    @patch("billing.views.is_trusted_mpesa_ip", return_value=True)
+    def test_two_different_receipts_pay_the_invoice_once(self, _ip):
+        first = self.api.post(self.URL, self._callback("RCT-A"), format="json")
+        self.assertEqual(first.status_code, 200, first.data)
+
+        second = self.api.post(self.URL, self._callback("RCT-B"), format="json")
+        self.assertEqual(second.status_code, 200)
+        self.assertIn("already paid", second.data["detail"].lower())
+
+        self.assertEqual(
+            Payment.objects.all_tenants().filter(subscription=self.invoice.subscription).count(),
+            1,
+            "a second receipt created a second payment against one invoice",
+        )
+
+    @patch("billing.views.is_trusted_mpesa_ip", return_value=True)
+    def test_the_second_receipt_is_still_recorded(self, _ip):
+        """
+        Money did arrive. Dropping the record would leave nothing to reconcile
+        against when the customer asks where their second payment went.
+        """
+        self.api.post(self.URL, self._callback("RCT-A"), format="json")
+        self.api.post(self.URL, self._callback("RCT-B"), format="json")
+
+        tx = MpesaTransaction.objects.all_tenants().get(mpesa_receipt="RCT-B")
+        self.assertTrue(tx.processed)
+        self.assertEqual(tx.invoice_id, self.invoice.id)
+        self.assertIn("already paid", tx.error_message.lower())
+
+    @patch("billing.views.is_trusted_mpesa_ip", return_value=True)
+    def test_a_hotspot_customer_gets_one_voucher_not_two(self, _ip):
+        """
+        The concrete cost of the gap: Payment.save() mints a voucher for a
+        hotspot customer, so one purchase would have handed out two.
+        """
+        with tenant_context(self.t1):
+            self.customer.connection_type = "hotspot"
+            self.customer.save(update_fields=["connection_type"])
+
+        self.api.post(self.URL, self._callback("RCT-A"), format="json")
+        self.api.post(self.URL, self._callback("RCT-B"), format="json")
+
+        vouchers = Voucher.objects.all_tenants().filter(
+            subscription=self.invoice.subscription).count()
+        self.assertEqual(vouchers, 1)
