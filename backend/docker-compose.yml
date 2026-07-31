@@ -1,3 +1,18 @@
+# One image, built once, shared by every service that runs this codebase.
+#
+# Without the explicit `image:` below, compose gives each service with `build: .`
+# its OWN image — backend-web, backend-worker, backend-migrate and so on — built
+# independently. `docker compose build web` then rebuilt only the web image and
+# left the others on whatever they were, so the Celery worker and beat ran stale
+# code, and the one-shot migrate ran an old copy that did not contain the
+# migration being deployed. The Dockerfile header already claimed the image was
+# shared by all four; naming it here is what makes that true.
+x-app: &app
+  build: .
+  image: wifi-billing-app:latest
+  env_file:
+    - .env
+
 services:
   postgres:
     image: postgres:16
@@ -50,10 +65,8 @@ services:
   # schema too, and because web runs multiple gunicorn workers — concurrent
   # `migrate` calls race each other on the same database.
   migrate:
-    build: .
+    <<: *app
     command: python manage.py migrate --noinput
-    env_file:
-      - .env
     depends_on:
       postgres:
         condition: service_healthy
@@ -64,7 +77,7 @@ services:
       disable: true
 
   web:
-    build: .
+    <<: *app
     # gunicorn, not `manage.py runserver` — runserver is single-threaded, does
     # not serve static under DEBUG=False, and is explicitly not for production.
     # collectstatic runs first so WhiteNoise has something to serve (/admin/).
@@ -85,8 +98,6 @@ services:
       - sh
       - -c
       - "python manage.py collectstatic --noinput && exec gunicorn backend.wsgi:application --bind 0.0.0.0:8000 --workers ${GUNICORN_WORKERS:-4} --timeout 60 --access-logfile - --error-logfile -"
-    env_file:
-      - .env
     ports:
       - "8000:8000"
     restart: unless-stopped
@@ -99,10 +110,8 @@ services:
         condition: service_completed_successfully
 
   worker:
-    build: .
+    <<: *app
     command: celery -A backend worker -l info
-    env_file:
-      - .env
     restart: unless-stopped
     depends_on:
       postgres:
@@ -120,10 +129,8 @@ services:
       disable: true
 
   beat:
-    build: .
+    <<: *app
     command: celery -A backend beat -l info
-    env_file:
-      - .env
     # beat is the one service whose death is silent: no scheduler means no
     # expiry sweeps or reminders, and nothing else errors. It previously had
     # neither an ordering guarantee nor a restart policy, so losing the startup
@@ -140,7 +147,7 @@ services:
       disable: true
 
   flower:
-    build: .
+    <<: *app
     # Credentials come from FLOWER_BASIC_AUTH in .env — never hardcode them here,
     # this file is committed. The `:?` guard makes compose abort with the message
     # below if the variable is unset or empty; without it an empty --basic_auth
@@ -151,8 +158,6 @@ services:
       --address=0.0.0.0
       --port=5555
       --basic_auth=${FLOWER_BASIC_AUTH:?set FLOWER_BASIC_AUTH=user:password in backend/.env}
-    env_file:
-      - .env
     # Bound to loopback: Flower has no TLS and only weak basic auth, so it should
     # not be reachable from outside the host. Reach it via an SSH tunnel:
     #   ssh -L 5555:localhost:5555 you@server

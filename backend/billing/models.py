@@ -3,8 +3,11 @@ from django.utils import timezone
 from django.contrib.auth.models import AbstractUser, UserManager
 from django.core.exceptions import ValidationError
 from dateutil.relativedelta import relativedelta
+import logging
 import secrets
 import string
+
+logger = logging.getLogger(__name__)
 
 from billing.notifications import notify_customer
 from .utils import generate_invoice_number
@@ -207,6 +210,91 @@ class ImpersonationLog(models.Model):
         return f"{self.platform_user} viewed {self.tenant} — {self.method} {self.path}"
 
 
+class AdminActionLog(models.Model):
+    """
+    Administrative acts on accounts — the ones that change who can get in.
+
+    Distinct from ImpersonationLog, which records reading. This records
+    changing: a password reset, a role change, an account disabled. Those are
+    the events someone asks about after the fact ("who reset my password, and
+    when?"), and none of them are reconstructable from the accounts themselves,
+    because each one overwrites the state that preceded it.
+
+    Not tenant-scoped: a platform owner acting on an operator's account belongs
+    in one timeline with an operator admin acting on their own staff, and the
+    actor is frequently a platform account with no tenant at all.
+    """
+
+    RESET_PASSWORD = "reset_password"
+    CHANGE_PASSWORD = "change_password"
+    CHANGE_USERNAME = "change_username"
+    CREATE_USER = "create_user"
+    DISABLE_USER = "disable_user"
+    ENABLE_USER = "enable_user"
+    CHANGE_ROLE = "change_role"
+    UPDATE_OPERATOR = "update_operator"
+
+    ACTION_CHOICES = (
+        (RESET_PASSWORD, "Reset password"),
+        (CHANGE_PASSWORD, "Changed own password"),
+        (CHANGE_USERNAME, "Changed username"),
+        (CREATE_USER, "Created user"),
+        (DISABLE_USER, "Disabled user"),
+        (ENABLE_USER, "Enabled user"),
+        (CHANGE_ROLE, "Changed role"),
+        (UPDATE_OPERATOR, "Updated operator details"),
+    )
+
+    actor = models.ForeignKey(
+        "User", on_delete=models.SET_NULL, null=True, related_name="admin_actions"
+    )
+    action = models.CharField(max_length=32, choices=ACTION_CHOICES)
+    # Who it was done to. SET_NULL so deleting an account does not erase the
+    # record that something was done to it.
+    target_user = models.ForeignKey(
+        "User", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="admin_actions_received",
+    )
+    target_tenant = models.ForeignKey(
+        "Tenant", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="admin_actions",
+    )
+    # A label that survives the target being deleted.
+    target_label = models.CharField(max_length=150, blank=True)
+    detail = models.CharField(max_length=255, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["-created_at"], name="adminlog_time_idx"),
+            models.Index(fields=["target_tenant", "-created_at"],
+                         name="adminlog_tenant_time_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.actor} {self.action} {self.target_label}"
+
+
+def record_admin_action(actor, action, *, target_user=None, target_tenant=None, detail=""):
+    """
+    Write one audit row. Never raises — an audit failure must not roll back the
+    action it describes, but it must be visible in the logs.
+    """
+    try:
+        return AdminActionLog.objects.create(
+            actor=actor if getattr(actor, "pk", None) else None,
+            action=action,
+            target_user=target_user,
+            target_tenant=target_tenant or getattr(target_user, "tenant", None),
+            target_label=str(target_user or target_tenant or ""),
+            detail=detail[:255],
+        )
+    except Exception:
+        logger.exception("[audit] could not record %s by %s", action, actor)
+        return None
+
+
 def set_tenant_status(tenant, new_status, *, reason="", changed_by=None, automatic=False):
     """Change an operator's standing and record why. Returns True if it moved."""
     if tenant.status == new_status:
@@ -339,7 +427,30 @@ class User(AbstractUser):
         default=TENANT_ADMIN,
     )
 
+    # Set when someone else chose this account's password — a platform owner
+    # resetting a forgotten one. Cleared the moment the holder sets their own.
+    must_change_password = models.BooleanField(default=False)
+
+    # Bumped whenever this account's credentials or access change, and carried
+    # as a JWT claim. Without it a password reset would not end the sessions it
+    # was meant to end: access tokens live 30 minutes and refresh tokens a day,
+    # and the token blacklist app is not installed, so an old token would keep
+    # working for up to 24 hours after the password it was issued against had
+    # been replaced. That is precisely the window a reset exists to close.
+    token_version = models.PositiveIntegerField(default=0)
+
     objects = BillingUserManager()
+
+    def invalidate_sessions(self):
+        """
+        End every session this account currently has.
+
+        Call after any change that should not be survivable with an old token:
+        a password change or reset, or disabling the account.
+        """
+        self.token_version = models.F("token_version") + 1
+        self.save(update_fields=["token_version"])
+        self.refresh_from_db(fields=["token_version"])
 
     @property
     def is_platform_staff(self):

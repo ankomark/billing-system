@@ -17,6 +17,15 @@ export default function ProtectedRoute({ children, allowedRoles }) {
     return <Navigate to="/login" replace />;
   }
 
+  // An account whose password was chosen by someone else — a platform owner
+  // resetting a forgotten one, or an operator admin creating a colleague — goes
+  // nowhere until it has its own. Checked before the role check so it applies
+  // to every guarded route rather than to one of them.
+  const CHANGE_PASSWORD = "/change-password";
+  if (user.must_change_password && location.pathname !== CHANGE_PASSWORD) {
+    return <Navigate to={CHANGE_PASSWORD} replace />;
+  }
+
   if (allowedRoles && !allowedRoles.includes(user.role)) {
     const home = homeFor(user.role);
     // Guard against a redirect loop. If their own home is also forbidden the

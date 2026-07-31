@@ -61,7 +61,7 @@ from billing.models import (
     SystemSetting, PPPoEUsageSnapshot, PPPoEUsageState, PPPoEUsageRecord,
     HotspotUsageState, HotspotUsageRecord, UsageRecord,
     PlatformPlan, PlatformSetting, TenantSubscription, TenantInvoice, TenantPayment,
-    TenantStatusChange, ImpersonationLog, set_tenant_status,
+    TenantStatusChange, ImpersonationLog, AdminActionLog, set_tenant_status,
 )
 from billing.fields import ENCRYPTED_PREFIX
 
@@ -3225,3 +3225,325 @@ class ImpersonationCorsTests(TestCase):
             "access-control-allow-headers"].lower()
         self.assertIn("authorization", allowed)
         self.assertIn("content-type", allowed)
+
+
+# =====================================================
+# 18. Phase 1 — accounts, passwords, roles
+# =====================================================
+
+class PasswordChangeTests(TwoOperatorMixin, TestCase):
+    """Self-service password change, and what it must invalidate."""
+
+    URL = "/api/auth/change-password/"
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+
+    def test_requires_the_current_password(self):
+        resp = self.auth(self.admin1).post(
+            self.URL, {"current_password": "wrong", "new_password": "N3wPassphrase!x"},
+            format="json")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("current_password", resp.data)
+
+    def test_rejects_a_weak_new_password(self):
+        resp = self.auth(self.admin1).post(
+            self.URL, {"current_password": "pw", "new_password": "12345678"},
+            format="json")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("new_password", resp.data)
+
+    def test_rejects_reusing_the_same_password(self):
+        resp = self.auth(self.admin1).post(
+            self.URL, {"current_password": "pw", "new_password": "pw"},
+            format="json")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_changes_the_password(self):
+        resp = self.auth(self.admin1).post(
+            self.URL, {"current_password": "pw", "new_password": "N3wPassphrase!x"},
+            format="json")
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.admin1.refresh_from_db()
+        self.assertTrue(self.admin1.check_password("N3wPassphrase!x"))
+
+    def test_existing_tokens_stop_working(self):
+        """
+        The point of the token_version claim.
+
+        Without it a password change would leave tokens minted against the old
+        password working for up to a day — refresh tokens live that long and
+        there is no blacklist app installed.
+        """
+        client = self.auth(self.admin1)                     # token issued now
+        self.assertEqual(client.get("/api/auth/profile/").status_code, 200)
+
+        self.admin1.set_password("N3wPassphrase!x")
+        self.admin1.save(update_fields=["password"])
+        self.admin1.invalidate_sessions()
+
+        self.assertEqual(client.get("/api/auth/profile/").status_code, 401)
+
+    def test_the_caller_gets_a_usable_token_back(self):
+        """Succeeding must not bounce you to the login screen."""
+        resp = self.auth(self.admin1).post(
+            self.URL, {"current_password": "pw", "new_password": "N3wPassphrase!x"},
+            format="json")
+        fresh = APIClient()
+        fresh.credentials(HTTP_AUTHORIZATION=f"Bearer {resp.data['access']}")
+        self.assertEqual(fresh.get("/api/auth/profile/").status_code, 200)
+
+
+class OperatorPasswordResetTests(PlatformBillingMixin, TestCase):
+    """The owner-driven forgotten-password path."""
+
+    def setUp(self):
+        cache.clear()
+        self.build_billing()
+        self.owner = make_platform_owner()
+
+    def url(self, tenant):
+        return f"/api/platform/operators/{tenant.id}/reset-password/"
+
+    def test_operator_cannot_reset_anyone(self):
+        resp = self.auth(self.admin1).post(self.url(self.t1), {}, format="json")
+        self.assertEqual(resp.status_code, 403)
+
+    def test_platform_staff_cannot_reset(self):
+        """Minting working credentials for someone else's business is owner-only."""
+        staff = User.objects.create_user(
+            username="pstaff2", password="x", role=User.PLATFORM_STAFF, tenant=None)
+        resp = self.auth(staff).post(self.url(self.t1), {}, format="json")
+        self.assertEqual(resp.status_code, 403)
+
+    def test_owner_resets_and_the_new_password_works(self):
+        resp = self.auth(self.owner).post(self.url(self.t1), {}, format="json")
+        self.assertEqual(resp.status_code, 200, resp.data)
+        temp = resp.data["temporary_password"]
+        self.assertEqual(resp.data["username"], self.admin1.username)
+
+        self.admin1.refresh_from_db()
+        self.assertTrue(self.admin1.check_password(temp))
+        self.assertTrue(self.admin1.must_change_password)
+
+    def test_reset_ends_existing_sessions(self):
+        """
+        A reset prompted by a suspected compromise is worthless if the suspect
+        session keeps working.
+        """
+        victim = self.auth(self.admin1)
+        self.assertEqual(victim.get("/api/auth/profile/").status_code, 200)
+
+        self.auth(self.owner).post(self.url(self.t1), {}, format="json")
+
+        self.assertEqual(victim.get("/api/auth/profile/").status_code, 401)
+
+    def test_reset_is_audited(self):
+        self.auth(self.owner).post(
+            self.url(self.t1), {"reason": "phoned in, verified"}, format="json")
+        log = AdminActionLog.objects.filter(action=AdminActionLog.RESET_PASSWORD).first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.actor, self.owner)
+        self.assertEqual(log.target_user, self.admin1)
+        self.assertEqual(log.detail, "phoned in, verified")
+
+    def test_unknown_operator_is_404(self):
+        resp = self.auth(self.owner).post(
+            "/api/platform/operators/999999/reset-password/", {}, format="json")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_ambiguous_when_the_operator_has_two_admins(self):
+        User.objects.create_user(
+            username="second_admin", password="x",
+            role=User.TENANT_ADMIN, tenant=self.t1)
+        resp = self.auth(self.owner).post(self.url(self.t1), {}, format="json")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("usernames", resp.data)
+
+    def test_naming_the_account_resolves_the_ambiguity(self):
+        other = User.objects.create_user(
+            username="second_admin", password="x",
+            role=User.TENANT_ADMIN, tenant=self.t1)
+        resp = self.auth(self.owner).post(
+            self.url(self.t1), {"username": other.username}, format="json")
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(resp.data["username"], other.username)
+
+    def test_cannot_reset_an_account_belonging_to_another_operator(self):
+        resp = self.auth(self.owner).post(
+            self.url(self.t1), {"username": self.admin2.username}, format="json")
+        self.assertEqual(resp.status_code, 404)
+
+
+class TenantUserManagementTests(TwoOperatorMixin, TestCase):
+    """An operator admin managing their own staff — and only their own."""
+
+    URL = "/api/users/"
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+
+    def test_lists_only_this_operators_users(self):
+        resp = self.auth(self.admin1).get(self.URL)
+        self.assertEqual(resp.status_code, 200)
+        names = {u["username"] for u in resp.data["results"]}
+        self.assertIn(self.admin1.username, names)
+        self.assertNotIn(self.admin2.username, names)
+
+    def test_creates_staff_inside_the_callers_operator(self):
+        resp = self.auth(self.admin1).post(
+            self.URL,
+            {"username": "newstaff", "password": "S0meLongPassphrase", "role": "tenant_staff"},
+            format="json")
+        self.assertEqual(resp.status_code, 201, resp.data)
+        created = User.objects.get(username="newstaff")
+        self.assertEqual(created.tenant, self.t1)
+        self.assertEqual(created.role, User.TENANT_STAFF)
+        # Someone else chose this password, so it must be replaced on first use.
+        self.assertTrue(created.must_change_password)
+
+    def test_a_supplied_tenant_id_cannot_plant_a_user_elsewhere(self):
+        """The write path forces the tenant; the queryset filter alone would not."""
+        self.auth(self.admin1).post(
+            self.URL,
+            {"username": "planted", "password": "S0meLongPassphrase",
+             "role": "tenant_staff", "tenant": self.t2.id},
+            format="json")
+        self.assertEqual(User.objects.get(username="planted").tenant, self.t1)
+
+    def test_a_platform_role_cannot_be_created_here(self):
+        """
+        A platform role means a NULL tenant, which means unscoped. Creating one
+        through a tenant-scoped endpoint would be a privilege escalation.
+        """
+        resp = self.auth(self.admin1).post(
+            self.URL,
+            {"username": "sneaky", "password": "S0meLongPassphrase",
+             "role": "platform_owner"},
+            format="json")
+        self.assertEqual(resp.status_code, 400)
+        self.assertFalse(User.objects.filter(username="sneaky").exists())
+
+    def test_cannot_reach_another_operators_user(self):
+        resp = self.auth(self.admin1).patch(
+            f"{self.URL}{self.admin2.id}/", {"is_active": False}, format="json")
+        self.assertEqual(resp.status_code, 404)
+        self.admin2.refresh_from_db()
+        self.assertTrue(self.admin2.is_active)
+
+    def test_tenant_staff_cannot_manage_users(self):
+        staff = User.objects.create_user(
+            username="plainstaff", password="x",
+            role=User.TENANT_STAFF, tenant=self.t1)
+        self.assertEqual(self.auth(staff).get(self.URL).status_code, 403)
+
+    def test_disabling_ends_that_users_sessions(self):
+        target = User.objects.create_user(
+            username="tobedisabled", password="S0meLongPassphrase",
+            role=User.TENANT_STAFF, tenant=self.t1)
+        theirs = self.auth(target)
+        self.assertEqual(theirs.get("/api/auth/profile/").status_code, 200)
+
+        self.auth(self.admin1).delete(f"{self.URL}{target.id}/")
+
+        target.refresh_from_db()
+        self.assertFalse(target.is_active)
+        self.assertEqual(theirs.get("/api/auth/profile/").status_code, 401)
+
+    def test_delete_disables_rather_than_deletes(self):
+        target = User.objects.create_user(
+            username="keepme", password="x", role=User.TENANT_STAFF, tenant=self.t1)
+        self.auth(self.admin1).delete(f"{self.URL}{target.id}/")
+        self.assertTrue(User.objects.filter(pk=target.pk).exists())
+
+    def test_cannot_disable_yourself(self):
+        resp = self.auth(self.admin1).delete(f"{self.URL}{self.admin1.id}/")
+        self.assertEqual(resp.status_code, 400)
+        self.admin1.refresh_from_db()
+        self.assertTrue(self.admin1.is_active)
+
+
+class ProfileUpdateTests(TwoOperatorMixin, TestCase):
+    URL = "/api/auth/profile/"
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+
+    def test_can_change_own_username(self):
+        resp = self.auth(self.admin1).patch(
+            self.URL, {"username": "renamed_admin"}, format="json")
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.admin1.refresh_from_db()
+        self.assertEqual(self.admin1.username, "renamed_admin")
+
+    def test_username_change_is_audited(self):
+        self.auth(self.admin1).patch(self.URL, {"username": "renamed_admin"}, format="json")
+        log = AdminActionLog.objects.filter(action=AdminActionLog.CHANGE_USERNAME).first()
+        self.assertIsNotNone(log)
+        self.assertIn("renamed_admin", log.detail)
+
+    def test_a_taken_username_is_rejected(self):
+        resp = self.auth(self.admin1).patch(
+            self.URL, {"username": self.admin2.username}, format="json")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_role_and_tenant_are_not_self_service(self):
+        self.auth(self.admin1).patch(
+            self.URL, {"role": "platform_owner", "tenant": None}, format="json")
+        self.admin1.refresh_from_db()
+        self.assertEqual(self.admin1.role, User.TENANT_ADMIN)
+        self.assertEqual(self.admin1.tenant, self.t1)
+
+    def test_profile_reports_operator_status(self):
+        resp = self.auth(self.admin1).get(self.URL)
+        self.assertEqual(resp.data["tenant_status"], self.t1.status)
+
+
+class OperatorDetailUpdateTests(PlatformBillingMixin, TestCase):
+    def setUp(self):
+        cache.clear()
+        self.build_billing()
+        self.owner = make_platform_owner()
+
+    def url(self, tenant):
+        return f"/api/platform/operators/{tenant.id}/"
+
+    def test_owner_can_correct_details_after_onboarding(self):
+        resp = self.auth(self.owner).patch(
+            self.url(self.t1),
+            {"business_name": "Corrected Name", "support_phone": "0799000111"},
+            format="json")
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.t1.refresh_from_db()
+        self.assertEqual(self.t1.business_name, "Corrected Name")
+
+    def test_platform_staff_cannot_edit(self):
+        staff = User.objects.create_user(
+            username="pstaff3", password="x", role=User.PLATFORM_STAFF, tenant=None)
+        resp = self.auth(staff).patch(
+            self.url(self.t1), {"business_name": "Nope"}, format="json")
+        self.assertEqual(resp.status_code, 403)
+
+    def test_operator_cannot_edit_themselves_here(self):
+        resp = self.auth(self.admin1).patch(
+            self.url(self.t1), {"business_name": "Nope"}, format="json")
+        self.assertEqual(resp.status_code, 403)
+
+    def test_slug_and_status_are_not_editable(self):
+        """Both are identity other things resolve against; status has its own audited endpoint."""
+        original_slug, original_status = self.t1.slug, self.t1.status
+        self.auth(self.owner).patch(
+            self.url(self.t1),
+            {"slug": "hijacked", "status": "restricted"}, format="json")
+        self.t1.refresh_from_db()
+        self.assertEqual(self.t1.slug, original_slug)
+        self.assertEqual(self.t1.status, original_status)
+
+    def test_edits_are_audited(self):
+        self.auth(self.owner).patch(
+            self.url(self.t1), {"business_name": "Corrected Name"}, format="json")
+        self.assertTrue(
+            AdminActionLog.objects.filter(action=AdminActionLog.UPDATE_OPERATOR).exists())

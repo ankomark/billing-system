@@ -12,6 +12,7 @@ from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework_simplejwt.exceptions import AuthenticationFailed
 
 TENANT_CLAIM = "tenant_id"
+VERSION_CLAIM = "tv"
 
 _ABSENT = object()
 
@@ -47,6 +48,20 @@ class TenantAwareJWTAuthentication(JWTAuthentication):
             raise AuthenticationFailed(
                 "Your access has changed. Please sign in again.",
                 code="tenant_claim_stale",
+            )
+
+        # Same reasoning, applied to credentials rather than scope. A password
+        # reset bumps token_version, so tokens minted against the old password
+        # stop here instead of working until they expire — up to a day, since
+        # the blacklist app is not installed and refresh tokens live that long.
+        #
+        # Tokens predating the claim have no version to compare and are left
+        # alone; they expire within a day of this deploying.
+        version = token.payload.get(VERSION_CLAIM, _ABSENT)
+        if version is not _ABSENT and version != user.token_version:
+            raise AuthenticationFailed(
+                "Your password was changed. Please sign in again.",
+                code="token_version_stale",
             )
 
         return result

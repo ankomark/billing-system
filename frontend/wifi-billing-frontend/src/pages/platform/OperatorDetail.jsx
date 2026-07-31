@@ -2,10 +2,12 @@ import { useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import toast from "react-hot-toast";
-import { ArrowLeft, Eye, ShieldAlert, ShieldCheck } from "lucide-react";
+import { ArrowLeft, Eye, KeyRound, ShieldAlert, ShieldCheck } from "lucide-react";
 import PlatformLayout from "../../components/platform/PlatformLayout";
+import ResetPasswordModal from "../../components/platform/ResetPasswordModal";
 import { Skeleton } from "../../components/ui/Skeleton";
-import { startImpersonating } from "../../services/auth";
+import { getUser, startImpersonating } from "../../services/auth";
+import { PLATFORM_OWNER } from "../../constants/roles";
 import { fetchOperator, setOperatorStatus } from "../../services/platform";
 import { KES } from "../../components/platform/ui";
 
@@ -16,6 +18,8 @@ export default function OperatorDetail() {
 
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
+  const [resetting, setResetting] = useState(false);
+  const isOwner = getUser()?.role === PLATFORM_OWNER;
 
   const { data: op, isLoading } = useQuery({
     queryKey: ["platform-operator", id],
@@ -62,6 +66,11 @@ export default function OperatorDetail() {
 
   return (
     <PlatformLayout>
+      <ResetPasswordModal
+        open={resetting}
+        operator={op}
+        onClose={() => setResetting(false)}
+      />
       <div className="space-y-6 max-w-4xl">
         <div className="flex items-center gap-3">
           <button onClick={() => navigate("/platform/operators")}
@@ -125,6 +134,12 @@ export default function OperatorDetail() {
                     className="inline-flex items-center gap-2 bg-teal-500 hover:bg-teal-400 text-slate-950 px-4 py-2 rounded-lg text-sm font-semibold disabled:opacity-50">
               <Eye size={14} /> View as this operator
             </button>
+            {isOwner && (
+              <button onClick={() => setResetting(true)} disabled={busy}
+                      className="inline-flex items-center gap-2 border border-white/15 hover:bg-white/5 text-slate-200 px-4 py-2 rounded-lg text-sm font-semibold disabled:opacity-50">
+                <KeyRound size={14} /> Reset password
+              </button>
+            )}
             {op.is_restricted ? (
               <button onClick={() => changeStatus("active")} disabled={busy}
                       className="inline-flex items-center gap-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 px-4 py-2 rounded-lg text-sm font-semibold disabled:opacity-50">

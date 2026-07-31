@@ -10,6 +10,7 @@ import {
 // ─── Page-level code splitting ──────────────────────────────────────────────
 const Login            = lazy(() => import("./pages/Login"));
 const NotFound         = lazy(() => import("./pages/NotFound"));
+const ChangePassword   = lazy(() => import("./pages/ChangePassword"));
 
 // Admin
 const Dashboard        = lazy(() => import("./pages/admin/Dashboard"));
@@ -28,6 +29,8 @@ const UsageAlerts      = lazy(() => import("./pages/admin/UsageAlerts"));
 const AccessLookup     = lazy(() => import("./pages/admin/AccessLookup"));
 const Broadcast        = lazy(() => import("./pages/admin/Broadcast"));
 const SystemSettings   = lazy(() => import("./pages/admin/SystemSettings"));
+const MyAccount        = lazy(() => import("./pages/admin/MyAccount"));
+const Users            = lazy(() => import("./pages/admin/Users"));
 
 // Customer
 const PPPoEPortal      = lazy(() => import("./pages/customer/PPPoEPortal"));
@@ -102,6 +105,10 @@ export default function App() {
 
         {/* Public */}
         <Route path="/login"            element={<Login />} />
+        {/* Any signed-in account can be made to change its password, so this
+            route is role-agnostic — it only requires a session. */}
+        <Route path="/change-password"  element={<ProtectedRoute><ErrorBoundary><ChangePassword /></ErrorBoundary></ProtectedRoute>} />
+
         <Route path="/hotspot"          element={<HotspotPackages />} />
         <Route path="/hotspot/pay"      element={<HotspotPay />} />
         <Route path="/hotspot/status"   element={<HotspotStatus />} />
@@ -134,6 +141,8 @@ export default function App() {
 
         {/* Admin — system */}
         <Route path="/admin/settings"               element={<Admin roles={SUPER_ROLES}><SystemSettings /></Admin>} />
+        <Route path="/admin/account"                element={<Admin><MyAccount /></Admin>} />
+        <Route path="/admin/team"                   element={<Admin roles={SUPER_ROLES}><Users /></Admin>} />
         {/* Reachable while restricted — it is the page explaining why. */}
         <Route path="/admin/billing"                element={<Admin roles={SUPER_ROLES}><MyPlatformAccount /></Admin>} />
 

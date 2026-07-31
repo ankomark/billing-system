@@ -1,3 +1,4 @@
+from django.contrib.auth.password_validation import validate_password
 from django.utils.text import slugify
 from rest_framework import serializers
 from .models import (
@@ -202,12 +203,127 @@ class MpesaTransactionDashboardSerializer(serializers.ModelSerializer):
 class UserProfileSerializer(serializers.ModelSerializer):
     tenant_name = serializers.CharField(source="tenant.business_name", read_only=True, default=None)
     is_platform_staff = serializers.BooleanField(read_only=True)
+    # The app shell needs to know an operator is past due or locked out without
+    # a second request; only /platform/my-account/ carried it before.
+    tenant_status = serializers.CharField(source="tenant.status", read_only=True, default=None)
 
     class Meta:
         model = User
         # tenant is null for platform staff, which is how the frontend knows
         # to show the platform dashboard rather than an operator one.
-        fields = ("id", "username", "role", "tenant", "tenant_name", "is_platform_staff")
+        fields = (
+            "id", "username", "email", "role", "tenant", "tenant_name",
+            "tenant_status", "is_platform_staff", "must_change_password",
+        )
+        # Only username and email are writable — role and tenant decide what
+        # this account can reach, and are never self-service.
+        read_only_fields = (
+            "id", "role", "tenant", "tenant_name", "tenant_status",
+            "is_platform_staff", "must_change_password",
+        )
+
+    def validate_username(self, value):
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError("A username is required.")
+        clash = User.objects.filter(username__iexact=value)
+        if self.instance:
+            clash = clash.exclude(pk=self.instance.pk)
+        if clash.exists():
+            raise serializers.ValidationError("That username is already taken.")
+        return value
+
+
+class ChangePasswordSerializer(serializers.Serializer):
+    """
+    Self-service password change.
+
+    The current password is required even though the caller is already
+    authenticated: a token in someone else's hands should not be enough to lock
+    the real owner out of their own account.
+    """
+
+    current_password = serializers.CharField(write_only=True)
+    new_password = serializers.CharField(write_only=True)
+
+    def validate_current_password(self, value):
+        user = self.context["request"].user
+        if not user.check_password(value):
+            raise serializers.ValidationError("That is not your current password.")
+        return value
+
+    def validate_new_password(self, value):
+        # Django's configured validators — length, commonness, similarity to
+        # the username — rather than a length check invented here.
+        validate_password(value, user=self.context["request"].user)
+        return value
+
+    def validate(self, attrs):
+        if attrs["current_password"] == attrs["new_password"]:
+            raise serializers.ValidationError(
+                {"new_password": "The new password must be different."}
+            )
+        return attrs
+
+
+class TenantUserSerializer(serializers.ModelSerializer):
+    """
+    An operator's own staff, managed by their admin.
+
+    Role choices are narrowed to the two operator roles. The model's
+    user_role_matches_tenant_presence constraint means a platform role always
+    has a NULL tenant, so allowing one here would either fail at the database
+    or, worse, create an unscoped account inside a tenant-scoped view.
+    """
+
+    password = serializers.CharField(write_only=True, required=False)
+    role = serializers.ChoiceField(
+        choices=((User.TENANT_ADMIN, "Operator Admin"), (User.TENANT_STAFF, "Operator Staff")),
+        default=User.TENANT_STAFF,
+    )
+
+    class Meta:
+        model = User
+        fields = ("id", "username", "email", "role", "is_active", "password",
+                  "must_change_password", "date_joined", "last_login")
+        read_only_fields = ("id", "must_change_password", "date_joined", "last_login")
+
+    def validate_username(self, value):
+        value = value.strip()
+        clash = User.objects.filter(username__iexact=value)
+        if self.instance:
+            clash = clash.exclude(pk=self.instance.pk)
+        if clash.exists():
+            raise serializers.ValidationError("That username is already taken.")
+        return value
+
+    def validate_password(self, value):
+        validate_password(value)
+        return value
+
+    def validate(self, attrs):
+        if self.instance is None and not attrs.get("password"):
+            raise serializers.ValidationError(
+                {"password": "A new user needs a password."}
+            )
+        return attrs
+
+
+class OperatorUpdateSerializer(serializers.ModelSerializer):
+    """
+    Correcting an operator's details after onboarding.
+
+    Deliberately excludes slug, status and public_token. The slug and token are
+    identity other things resolve against — the M-Pesa callback URL and the
+    hotspot portal both carry the token — and status has its own audited
+    endpoint.
+    """
+
+    class Meta:
+        model = Tenant
+        fields = ("name", "business_name", "support_phone", "pppoe_prefix",
+                  "contact_email", "contact_phone")
+        extra_kwargs = {f: {"required": False} for f in fields}
 
 
 class SystemSettingSerializer(serializers.Serializer):

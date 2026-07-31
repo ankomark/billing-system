@@ -59,6 +59,8 @@ const ADMIN_PAGES = [
   ["Broadcast", () => require("../pages/admin/Broadcast").default, null],
   ["SystemSettings", () => require("../pages/admin/SystemSettings").default, null],
   ["MyPlatformAccount", () => require("../pages/admin/MyPlatformAccount").default, /Skylink WiFi/i],
+  ["MyAccount", () => require("../pages/admin/MyAccount").default, /Operator admin/i],
+  ["Users", () => require("../pages/admin/Users").default, /skyadmin/i],
 ];
 
 /** Log in for real. Retries because the login endpoint is rate-limited. */
@@ -225,6 +227,68 @@ describe("detail and form pages against the live backend", () => {
       adminTokens, "/admin/packages/:id", "/admin/packages/1", null
     );
   }, 40000);
+});
+
+describe("accounts against the live backend", () => {
+  test("the profile carries what the app shell needs", async () => {
+    authAs(adminTokens);
+    const { fetchProfile } = require("../services/account");
+    const profile = await fetchProfile();
+    expect(profile.username).toBe("skyadmin");
+    expect(profile.tenant_name).toBeTruthy();
+    // Added so the shell can show a past-due banner without a second call.
+    expect(profile).toHaveProperty("tenant_status");
+    expect(profile).toHaveProperty("must_change_password");
+  }, 40000);
+
+  test("an operator admin sees only their own team", async () => {
+    authAs(adminTokens);
+    const { fetchUsers } = require("../services/account");
+    const users = await fetchUsers();
+    const names = users.map((u) => u.username);
+    expect(names).toContain("skyadmin");
+    // blueadmin belongs to the other operator.
+    expect(names).not.toContain("blueadmin");
+  }, 40000);
+
+  test("a wrong current password is refused", async () => {
+    authAs(adminTokens);
+    const { changePassword } = require("../services/account");
+    await expect(
+      changePassword({ current_password: "definitely-wrong", new_password: "N3wPassphrase!x" })
+    ).rejects.toMatchObject({ response: { status: 400 } });
+  }, 40000);
+
+  test("an operator admin cannot reset anyone via the platform endpoint", async () => {
+    authAs(adminTokens);
+    const { resetOperatorPassword } = require("../services/platform");
+    await expect(
+      resetOperatorPassword(1, { reason: "should not work" })
+    ).rejects.toMatchObject({ response: { status: 403 } });
+  }, 40000);
+
+  test("the owner can reset, and the temporary password works once", async () => {
+    // Reset the SECOND operator so the skyadmin token the rest of this suite
+    // uses is not invalidated underneath it.
+    authAs(ownerTokens);
+    const { resetOperatorPassword } = require("../services/platform");
+    const result = await resetOperatorPassword(2, { reason: "livetest" });
+    expect(result.username).toBe("blueadmin");
+    expect(result.temporary_password).toHaveLength(14);
+
+    const signedIn = await axios.post(`${API}auth/login/`, {
+      username: "blueadmin",
+      password: result.temporary_password,
+    });
+    expect(signedIn.status).toBe(200);
+
+    // Put it back so re-running this suite stays idempotent.
+    await axios.post(
+      `${API}auth/change-password/`,
+      { current_password: result.temporary_password, new_password: "devpass123" },
+      { headers: { Authorization: `Bearer ${signedIn.data.access}` } }
+    );
+  }, 60000);
 });
 
 describe("creating an operator against the live backend", () => {

@@ -1,8 +1,10 @@
+import secrets
+import string
 from decimal import Decimal
 from django.http import HttpResponse
 from django.db import transaction
 from celery import chain
-from .auth_tokens import TenantTokenObtainPairView
+from .auth_tokens import TenantTokenObtainPairView, TenantTokenObtainPairSerializer
 from rest_framework.filters import SearchFilter
 from .permissions import (
     IsCustomer, IsPlatformOwner, IsPlatformStaff, IsTenantAdmin,
@@ -12,6 +14,7 @@ from .throttles import LoginRateThrottle, HotspotPublicThrottle, MpesaCallbackTh
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, permissions
+from rest_framework.exceptions import ValidationError
 from django.shortcuts import get_object_or_404
 from .security import is_trusted_mpesa_ip
 from billing.services.voucher_service import validate_voucher
@@ -34,14 +37,15 @@ from rest_framework import viewsets
 from .models import Customer, Package, Subscription,Invoice, Payment,MpesaTransaction,SystemSetting,RouterFailoverLog, HotspotUsageRecord, AccessAuditLog, Tenant
 from .models import PlatformPlan, TenantSubscription, TenantInvoice, TenantPayment
 from .models import ImpersonationLog
-from .models import User
-from .tenancy import tenant_context
+from .models import User, AdminActionLog, record_admin_action
+from .tenancy import tenant_context, get_current_tenant_id
 import logging
 
 logger = logging.getLogger(__name__)
 from .serializers import (PlatformPlanSerializer, TenantSubscriptionSerializer,
                           TenantInvoiceSerializer, TenantPaymentSerializer,
-                          OperatorCreateSerializer,)
+                          OperatorCreateSerializer, OperatorUpdateSerializer,
+                          ChangePasswordSerializer, TenantUserSerializer,)
 from .serializers import (CustomerSerializer,CustomerDetailSerializer,PackageSerializer,SubscriptionSerializer,InvoiceSerializer,  PaymentSerializer,SystemSettingSerializer,)
 from billing.tasks.notification_tasks import notify_customer_task,send_sms_task, send_whatsapp_task
 from .config import get_setting
@@ -95,6 +99,144 @@ class UserProfileView(APIView):
     def get(self, request):
         serializer = UserProfileSerializer(request.user)
         return Response(serializer.data)
+
+    def patch(self, request):
+        """Change your own username or email. Role and tenant are not here."""
+        old_username = request.user.username
+        serializer = UserProfileSerializer(
+            request.user, data=request.data, partial=True
+        )
+        serializer.is_valid(raise_exception=True)
+        user = serializer.save()
+
+        if user.username != old_username:
+            record_admin_action(
+                request.user, AdminActionLog.CHANGE_USERNAME,
+                target_user=user, detail=f"{old_username} -> {user.username}",
+            )
+        return Response(serializer.data)
+
+
+class ChangePasswordView(APIView):
+    """
+    Set your own password.
+
+    Every other session ends. Someone changing their password because they
+    think it is known to someone else gets nothing from a change that leaves
+    the other sessions signed in.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = ChangePasswordSerializer(
+            data=request.data, context={"request": request}
+        )
+        serializer.is_valid(raise_exception=True)
+
+        user = request.user
+        user.set_password(serializer.validated_data["new_password"])
+        user.must_change_password = False
+        user.save(update_fields=["password", "must_change_password"])
+        user.invalidate_sessions()
+
+        record_admin_action(user, AdminActionLog.CHANGE_PASSWORD, target_user=user)
+
+        # The caller's own token is now stale too, so hand back a fresh pair
+        # rather than bouncing someone to the login screen for succeeding.
+        refresh = TenantTokenObtainPairSerializer.get_token(user)
+        return Response({
+            "detail": "Password changed. Other sessions have been signed out.",
+            "access": str(refresh.access_token),
+            "refresh": str(refresh),
+        })
+
+
+class TenantUserViewSet(viewsets.ModelViewSet):
+    """
+    An operator admin managing their own staff.
+
+    Hard-scoped to the caller's tenant in both directions: the queryset filters
+    by it, and create/update force it. Neither is redundant — the filter stops
+    reading another operator's accounts, and forcing on write stops a payload
+    with someone else's tenant id from planting an account inside them.
+    """
+
+    serializer_class = TenantUserSerializer
+    permission_classes = [IsTenantAdmin]
+
+    def get_queryset(self):
+        tenant_id = get_current_tenant_id()
+        if tenant_id is None:
+            # Platform staff reach this while impersonating; without a tenant
+            # in scope there is no "their staff" to list.
+            return User.objects.none()
+        return (
+            User.objects.filter(tenant_id=tenant_id)
+            .filter(role__in=(User.TENANT_ADMIN, User.TENANT_STAFF))
+            .order_by("username")
+        )
+
+    def perform_create(self, serializer):
+        tenant_id = get_current_tenant_id()
+        if tenant_id is None:
+            raise ValidationError("No operator in scope for this request.")
+        password = serializer.validated_data.pop("password")
+        user = serializer.save(tenant_id=tenant_id)
+        user.set_password(password)
+        # Their admin chose this password, so the holder is made to replace it.
+        user.must_change_password = True
+        user.save(update_fields=["password", "must_change_password"])
+        record_admin_action(
+            self.request.user, AdminActionLog.CREATE_USER,
+            target_user=user, detail=f"role={user.role}",
+        )
+
+    def perform_update(self, serializer):
+        before_role = serializer.instance.role
+        before_active = serializer.instance.is_active
+        password = serializer.validated_data.pop("password", None)
+        user = serializer.save()
+
+        if password:
+            user.set_password(password)
+            user.must_change_password = True
+            user.save(update_fields=["password", "must_change_password"])
+            user.invalidate_sessions()
+            record_admin_action(
+                self.request.user, AdminActionLog.RESET_PASSWORD, target_user=user)
+
+        if user.role != before_role:
+            record_admin_action(
+                self.request.user, AdminActionLog.CHANGE_ROLE,
+                target_user=user, detail=f"{before_role} -> {user.role}",
+            )
+        if user.is_active != before_active:
+            # Disabling has to end the sessions too. is_active alone only stops
+            # the next sign-in; an issued token would keep working without this.
+            user.invalidate_sessions()
+            record_admin_action(
+                self.request.user,
+                AdminActionLog.DISABLE_USER if not user.is_active
+                else AdminActionLog.ENABLE_USER,
+                target_user=user,
+            )
+
+    def perform_destroy(self, instance):
+        """
+        Disable rather than delete.
+
+        Deleting would take the account's audit trail and its foreign keys with
+        it, and 'this person left' is not the same fact as 'this person never
+        existed'.
+        """
+        if instance.pk == self.request.user.pk:
+            raise ValidationError("You cannot disable your own account.")
+        instance.is_active = False
+        instance.save(update_fields=["is_active"])
+        instance.invalidate_sessions()
+        record_admin_action(
+            self.request.user, AdminActionLog.DISABLE_USER, target_user=instance)
 
 
 class CustomerViewSet(viewsets.ModelViewSet):
@@ -2595,9 +2737,106 @@ class PlatformOperatorListView(APIView):
         ])
 
 
+class OperatorPasswordResetView(APIView):
+    """
+    The forgotten-password path for an operator.
+
+    There is no email backend and the SMS credentials belong to each operator
+    rather than the platform, so there is nothing to send a reset link with.
+    The owner sets a temporary password instead and passes it on directly —
+    which matches how support already works here, the owner being the only
+    channel an operator has.
+
+    The temporary password is returned once, in this response, and never
+    stored in plaintext or written to a log. The account is marked
+    must_change_password so the holder replaces it immediately, and every
+    existing session is ended — otherwise a reset prompted by a suspected
+    compromise would leave the suspect session signed in for up to a day.
+    """
+
+    permission_classes = [IsPlatformOwner]
+
+    ALPHABET = string.ascii_letters + string.digits
+
+    def post(self, request, tenant_id):
+        tenant = Tenant.objects.filter(id=tenant_id).first()
+        if tenant is None:
+            return Response({"detail": "Operator not found"}, status=404)
+
+        username = request.data.get("username")
+        candidates = User.objects.filter(
+            tenant=tenant, role__in=(User.TENANT_ADMIN, User.TENANT_STAFF)
+        )
+        if username:
+            target = candidates.filter(username=username).first()
+        else:
+            # No username given: only unambiguous when they have one admin.
+            admins = list(candidates.filter(role=User.TENANT_ADMIN)[:2])
+            if len(admins) > 1:
+                return Response(
+                    {"detail": "This operator has several admins — name the one to reset.",
+                     "usernames": [u.username for u in candidates]},
+                    status=400,
+                )
+            target = admins[0] if admins else None
+
+        if target is None:
+            return Response({"detail": "No such account for this operator."}, status=404)
+
+        temporary = "".join(secrets.choice(self.ALPHABET) for _ in range(14))
+        target.set_password(temporary)
+        target.must_change_password = True
+        target.save(update_fields=["password", "must_change_password"])
+        target.invalidate_sessions()
+
+        record_admin_action(
+            request.user, AdminActionLog.RESET_PASSWORD,
+            target_user=target, target_tenant=tenant,
+            detail=request.data.get("reason", "")[:255],
+        )
+
+        return Response({
+            "detail": "Password reset. Give this to them directly — it is not shown again.",
+            "username": target.username,
+            "temporary_password": temporary,
+        })
+
+
 class PlatformOperatorDetailView(APIView):
     """One operator in full, including how often support has viewed them."""
     permission_classes = [IsPlatformStaff]
+
+    def patch(self, request, tenant_id):
+        """
+        Correct an operator's details after onboarding.
+
+        Owner-only: business_name and support_phone appear in the SMS their
+        subscribers receive, and pppoe_prefix shapes generated usernames.
+        """
+        if request.user.role != User.PLATFORM_OWNER:
+            return Response(
+                {"detail": "This endpoint is restricted to the platform owner."},
+                status=403,
+            )
+
+        tenant = Tenant.objects.filter(id=tenant_id).first()
+        if tenant is None:
+            return Response({"detail": "Operator not found"}, status=404)
+
+        serializer = OperatorUpdateSerializer(tenant, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        changed = [
+            f for f, v in serializer.validated_data.items()
+            if getattr(tenant, f) != v
+        ]
+        serializer.save()
+
+        if changed:
+            record_admin_action(
+                request.user, AdminActionLog.UPDATE_OPERATOR,
+                target_tenant=tenant, detail=", ".join(changed),
+            )
+        return Response(serializer.data)
 
     def get(self, request, tenant_id):
         from django.db.models import Sum

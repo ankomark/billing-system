@@ -34,7 +34,11 @@ export default function Login() {
       const user = { ...profileRes.data, role: data.role ?? profileRes.data.role };
       localStorage.setItem("user", JSON.stringify(user));
 
-      navigate(homeFor(user.role), { replace: true });
+      // Someone else chose this password — a reset, or a colleague's account
+      // just created. Land on the change screen rather than a dashboard.
+      navigate(user.must_change_password ? "/change-password" : homeFor(user.role), {
+        replace: true,
+      });
     } catch {
       setError("Invalid username or password. Please try again.");
     } finally {

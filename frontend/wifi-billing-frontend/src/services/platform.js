@@ -27,6 +27,29 @@ export const fetchOperator = async (id) => {
   return res.data;
 };
 
+/**
+ * Correct an operator's details after onboarding. Owner-only.
+ */
+export const updateOperator = async (id, payload) => {
+  const res = await api.patch(`platform/operators/${id}/`, payload);
+  return res.data;
+};
+
+/**
+ * Set a temporary password for an operator's admin.
+ *
+ * The password comes back in this response and nowhere else — it is not stored
+ * in readable form and not written to any log. If the caller loses it, the only
+ * remedy is another reset.
+ */
+export const resetOperatorPassword = async (id, { username, reason } = {}) => {
+  const res = await api.post(`platform/operators/${id}/reset-password/`, {
+    ...(username ? { username } : {}),
+    ...(reason ? { reason } : {}),
+  });
+  return res.data;
+};
+
 export const fetchOperatorStatusHistory = async (id) => {
   const res = await api.get(`platform/operators/${id}/status/`);
   return res.data;

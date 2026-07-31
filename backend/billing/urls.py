@@ -7,6 +7,9 @@ from .views import (
     health_check,
     ThrottledLoginView,
     UserProfileView,
+    ChangePasswordView,
+    TenantUserViewSet,
+    OperatorPasswordResetView,
 
     # ViewSets
     CustomerViewSet,
@@ -102,6 +105,9 @@ router.register("subscriptions", SubscriptionViewSet, basename="subscription")
 router.register("invoices",      InvoiceViewSet,      basename="invoice")
 router.register("payments",      PaymentViewSet,      basename="payment")
 router.register("platform/plans", PlatformPlanViewSet, basename="platform-plan")
+# An operator admin managing their own staff. Scoped to their tenant by the
+# viewset, not by the URL.
+router.register("users",         TenantUserViewSet,   basename="user")
 
 urlpatterns = [
     # ─── Root ────────────────────────────────────────────────────────────────
@@ -112,6 +118,7 @@ urlpatterns = [
     path("api/auth/login/",   ThrottledLoginView.as_view(), name="token_obtain_pair"),
     path("api/auth/refresh/", TokenRefreshView.as_view(),   name="token_refresh"),
     path("api/auth/profile/", UserProfileView.as_view(),    name="auth-profile"),
+    path("api/auth/change-password/", ChangePasswordView.as_view(), name="change-password"),
 
     # ─── Reports & dashboards ────────────────────────────────────────────────
     path("api/reports/revenue/",            RevenueDashboardView.as_view(),         name="revenue-dashboard"),
@@ -219,6 +226,7 @@ urlpatterns = [
     path("api/platform/operators/", PlatformOperatorListView.as_view(), name="platform-operators"),
     path("api/platform/operators/<int:tenant_id>/", PlatformOperatorDetailView.as_view(), name="platform-operator-detail"),
     path("api/platform/operators/<int:tenant_id>/status/", TenantStatusView.as_view(), name="platform-tenant-status"),
+    path("api/platform/operators/<int:tenant_id>/reset-password/", OperatorPasswordResetView.as_view(), name="platform-operator-reset-password"),
 
     # ─── DRF ViewSets ────────────────────────────────────────────────────────
     path("api/", include(router.urls)),

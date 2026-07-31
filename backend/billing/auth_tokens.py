@@ -19,7 +19,7 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 # The authentication class lives in billing/authentication.py — importing
 # simplejwt.views here pulls in DRF's schema module, which resolves
 # DEFAULT_AUTHENTICATION_CLASSES at import time and would cycle back here.
-from .authentication import TENANT_CLAIM  # noqa: F401  (re-exported)
+from .authentication import TENANT_CLAIM, VERSION_CLAIM  # noqa: F401  (re-exported)
 
 ROLE_CLAIM = "role"
 
@@ -31,6 +31,10 @@ class TenantTokenObtainPairSerializer(TokenObtainPairSerializer):
         # NULL tenant means platform staff, who run unscoped.
         token[TENANT_CLAIM] = user.tenant_id
         token[ROLE_CLAIM] = user.role
+        # Stamps which generation of this account's credentials the token was
+        # issued against, so a password change can invalidate it. See the check
+        # in authentication.py.
+        token[VERSION_CLAIM] = user.token_version
         return token
 
     def validate(self, attrs):
