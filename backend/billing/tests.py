@@ -2516,16 +2516,29 @@ class RestrictionScopeTests(PlatformBillingMixin, TestCase):
         }, format="json")
         self.assertEqual(resp.status_code, 403)
 
-    def test_restricted_operator_stops_taking_walk_up_business(self):
-        """Nobody loses service — a prospective customer simply cannot start."""
+    # ---- what it must NOT stop --------------------------------------------
+
+    def test_restricted_operator_still_takes_walk_up_business(self):
+        """
+        Restriction is dashboard-only.
+
+        This used to assert the opposite — a restricted operator was refused new
+        walk-up customers, as leverage over an unpaid invoice. Reversed
+        deliberately: the person turned away at a hotspot is not party to the
+        dispute, and charging them for it is the wrong trade. What the platform
+        withholds is its own product, the dashboard.
+        """
         self._restrict()
         pkg = Package.objects.all_tenants().get(tenant=self.t1, is_hotspot=True)
         resp = self.client.post("/api/hotspot/purchase/", {
             "t": self.t1.public_token, "package_id": pkg.id, "phone": "0712345678",
         }, format="json")
-        self.assertEqual(resp.status_code, 503)
-
-    # ---- what it must NOT stop --------------------------------------------
+        # Not 503-for-being-restricted. Whatever happens next is about the
+        # purchase itself — payment configuration, plan caps — not standing.
+        self.assertNotEqual(
+            resp.data.get("detail"),
+            "This provider is not accepting new customers right now.",
+        )
 
     def test_restricted_operator_can_still_see_what_they_owe(self):
         """Locking someone out of the page where they would pay is self-defeating."""

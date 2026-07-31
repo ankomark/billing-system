@@ -238,6 +238,16 @@ The balanced position:
 - Their business stops growing without anyone losing internet they already paid for
 - Escalation beyond that stays a deliberate manual action, never automatic
 
+> **Reversed after implementation (2026-07-31).** Freezing new subscriber
+> creation was built and then removed. The cost of that leverage falls on a
+> member of the public standing at a hotspot who is not party to the dispute,
+> and it is charged to them to pressure someone else. Restriction is now
+> dashboard-only: subscribers keep service, renewals work, walk-up customers can
+> still buy, and money still reaches the operator's till. What the platform
+> withholds is its own product. `RestrictionScopeTests` pins the current
+> behaviour, and closing an account — which stops invoicing — remains the
+> separate, final step.
+
 ---
 
 ## 6. Risks, ranked

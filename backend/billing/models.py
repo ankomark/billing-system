@@ -68,26 +68,21 @@ class Tenant(models.Model):
     @property
     def is_restricted(self):
         """
-        Locked out of their own dashboard.
+        Locked out of their own dashboard, and nothing else.
 
-        Deliberately narrow. Their subscribers keep their internet, renewals
-        keep working, and every background task keeps running — those people
-        paid the operator in good faith and are not party to this dispute.
-        What stops is the operator's admin access and their ability to take on
-        *new* subscribers.
+        Deliberately narrow, and narrower than it once was. Their subscribers
+        keep their internet, renewals keep working, money keeps reaching their
+        till, walk-up customers can still buy, and every background task keeps
+        running. The only thing that stops is the operator's own admin access.
+
+        It briefly refused new walk-up business too, reasoning that an operator
+        who loses only a dashboard can ignore an unpaid invoice indefinitely.
+        That reversed: refusing a member of the public standing at a hotspot
+        charges the cost of the dispute to someone who is not part of it. What
+        the platform withholds is its own product — the dashboard — not the
+        operator's ability to serve the people in front of them.
         """
         return self.status in ("restricted", "cancelled")
-
-    @property
-    def can_take_new_business(self):
-        """
-        Whether walk-up customers may still buy.
-
-        Nobody loses service when this is False — a prospective customer simply
-        cannot start. That is the leverage: the operator's business stops
-        growing without anyone being cut off.
-        """
-        return not self.is_restricted
 
     def plan_limit_exceeded(self, resource):
         """

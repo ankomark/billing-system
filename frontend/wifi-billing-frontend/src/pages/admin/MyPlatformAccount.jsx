@@ -72,8 +72,8 @@ export default function MyPlatformAccount() {
                 {cancelled
                   ? "Contact the platform to discuss reopening it. Your customers are not affected — they keep their internet and can still renew."
                   : restricted
-                  ? "Settle the invoice below to restore access. Your customers are not affected — they keep their internet and can still renew."
-                  : "Settle the invoice below to avoid your dashboard being locked. Your customers are never affected."}
+                  ? "Settle the invoice below to restore access. Your business is not affected — your customers keep their internet, new customers can still sign up, and payments still reach you."
+                  : "Settle the invoice below to avoid losing access to this dashboard. Your customers and your income are never affected."}
               </p>
             </div>
           </div>

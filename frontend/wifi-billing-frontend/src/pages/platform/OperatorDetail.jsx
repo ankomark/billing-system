@@ -243,8 +243,7 @@ export default function OperatorDetail() {
                   <ShieldCheck size={14} aria-hidden="true" /> Restore access
                 </button>
                 <p className="text-xs text-slate-500 mt-2">
-                  Gives their dashboard back and lets them take on new
-                  subscribers again.
+                  Gives them their dashboard back.
                 </p>
               </>
             ) : (
@@ -257,9 +256,10 @@ export default function OperatorDetail() {
                   <ShieldAlert size={14} aria-hidden="true" /> Restrict
                 </button>
                 <p className="text-xs text-slate-500 mt-2">
-                  Locks their dashboard and stops new signups. Their existing
-                  subscribers keep their internet and can still renew, and they
-                  keep being invoiced.
+                  Locks them out of their dashboard, and nothing else. Their
+                  subscribers keep their internet, walk-up customers can still
+                  buy, money still reaches their till, and they keep being
+                  invoiced.
                 </p>
               </>
             )}

@@ -2222,15 +2222,20 @@ class HotspotPurchaseView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        # A restricted operator stops taking on new subscribers. Nobody loses
-        # service here — a prospective customer simply cannot start — which is
-        # the point: the business stops growing without anyone being cut off.
-        # Existing subscribers keep their internet and can still renew.
-        if not tenant.can_take_new_business:
-            return Response(
-                {"detail": "This provider is not accepting new customers right now."},
-                status=status.HTTP_503_SERVICE_UNAVAILABLE,
-            )
+        # Restriction is deliberately NOT checked here. It locks the operator
+        # out of their own dashboard and nothing else: their subscribers keep
+        # their internet, renewals keep working, money keeps reaching their
+        # till, and walk-up customers can still buy.
+        #
+        # This used to refuse new business as well, on the argument that an
+        # operator who only loses a dashboard can ignore an unpaid invoice
+        # indefinitely. That was reversed deliberately: turning away a member of
+        # the public standing at a hotspot is a cost paid by someone who is not
+        # party to the dispute, to apply pressure to someone who is.
+        #
+        # The plan limit below still applies, and so does the payment
+        # configuration check — those are about whether a purchase can succeed
+        # at all, not about the operator's standing.
 
         # Only blocks a genuinely new subscriber — a returning customer with
         # this phone number already counts against the cap and can still buy.
