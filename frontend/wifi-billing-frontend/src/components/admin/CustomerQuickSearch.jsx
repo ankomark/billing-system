@@ -1,9 +1,12 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
-import { Search, ArrowRight } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Search, ArrowRight, Gift } from "lucide-react";
 import useDebounce from "../../hooks/useDebounce";
 import { fetchCustomers } from "../../services/customers";
+import CompAccessModal from "./CompAccessModal";
+import { getUser } from "../../services/auth";
+import { isOperatorAdmin } from "../../constants/roles";
 import { Card, CardHeader } from "./ui";
 
 /**
@@ -18,7 +21,12 @@ import { Card, CardHeader } from "./ui";
  */
 export default function CustomerQuickSearch() {
   const navigate = useNavigate();
+  const qc = useQueryClient();
   const [term, setTerm] = useState("");
+  // The last step of the same errand: somebody rings about a failure, you
+  // find them here, and you can put it right without leaving the page.
+  const [gifting, setGifting] = useState(null);
+  const canComp = isOperatorAdmin(getUser()?.role);
   const query = useDebounce(term.trim(), 350);
 
   const { data, isFetching } = useQuery({
@@ -40,6 +48,12 @@ export default function CustomerQuickSearch() {
 
   return (
     <Card>
+      <CompAccessModal
+        open={!!gifting}
+        customer={gifting}
+        onClose={() => setGifting(null)}
+        onDone={() => qc.invalidateQueries({ queryKey: ["customer-quick-search"] })}
+      />
       <CardHeader
         title="Find a customer"
         subtitle="Name, phone, username, voucher code, M-Pesa receipt or MAC"
@@ -76,10 +90,12 @@ export default function CustomerQuickSearch() {
             <>
               <ul className="divide-y divide-white/5">
                 {rows.map((c) => (
-                  <li key={c.id}>
+                  <li key={c.id} className="flex items-center gap-1">
+                    {/* Two controls, side by side rather than nested — a button
+                        inside a button is not markup a browser can honour. */}
                     <button
                       onClick={() => navigate(`/admin/customers/${c.id}`)}
-                      className="flex w-full items-center gap-3 rounded-lg px-1 py-2.5 text-left transition-colors hover:bg-white/5"
+                      className="flex min-w-0 flex-1 items-center gap-3 rounded-lg px-1 py-2.5 text-left transition-colors hover:bg-white/5"
                     >
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-sm font-medium text-white">
@@ -99,6 +115,15 @@ export default function CustomerQuickSearch() {
                       </span>
                       <ArrowRight size={14} className="flex-shrink-0 text-slate-600" />
                     </button>
+                    {canComp && (
+                      <button
+                        onClick={() => setGifting(c)}
+                        title="Give free access"
+                        className="flex-shrink-0 rounded-lg p-2 text-slate-500 transition-colors hover:bg-emerald-500/10 hover:text-emerald-300"
+                      >
+                        <Gift size={15} />
+                      </button>
+                    )}
                   </li>
                 ))}
               </ul>
