@@ -340,24 +340,56 @@ describe("accounts against the live backend", () => {
     // Put it back so re-running this suite stays idempotent.
     await axios.post(
       `${API}auth/change-password/`,
-      { current_password: result.temporary_password, new_password: "devpass123" },
+      { current_password: result.temporary_password, new_password: DEFAULT_PASSWORD },
       { headers: { Authorization: `Bearer ${signedIn.data.access}` } }
     );
   }, 60000);
 });
 
 describe("creating an operator against the live backend", () => {
+  /**
+   * Every run used to leave its operator behind. Fourteen of them accumulated
+   * in the development database before anyone noticed, each with a working
+   * tenant_admin login — the tests were creating real accounts and walking
+   * away. Cleaned up here now that erasing one is possible; the same three
+   * gates apply, so this closes the account first and types the name back.
+   */
+  let created;
+
+  afterAll(async () => {
+    if (!created) return;
+    authAs(ownerTokens);
+    const { setOperatorStatus, deleteOperator } = require("../services/platform");
+    try {
+      await setOperatorStatus(created.id, {
+        status: "cancelled",
+        reason: "Livetest cleanup",
+      });
+      await deleteOperator(created.id, created.name);
+    } catch (e) {
+      // Never fail the run over cleanup — say what was left so it can be
+      // cleared by hand rather than silently accumulating again.
+      console.warn(
+        `[livetest] could not remove operator ${created.id} (${created.name}):`,
+        e.response?.data?.detail || e.message
+      );
+    }
+  }, 60000);
+
   test("owner can create one, and the new admin can sign in", async () => {
     authAs(ownerTokens);
     const { createOperator } = require("../services/platform");
     // Unique per run so repeated runs do not collide on username or slug.
     const stamp = Date.now().toString().slice(-8);
+    const name = `Livetest Networks ${stamp}`;
     const op = await createOperator({
-      name: `Livetest Networks ${stamp}`,
+      name,
       admin_username: `lt${stamp}`,
-      admin_password: "devpass123",
+      admin_password: DEFAULT_PASSWORD,
       pppoe_prefix: "LT",
     });
+    // Recorded before the assertions, so a failure below still gets cleaned up.
+    created = { id: op.id, name };
     expect(op.id).toBeGreaterThan(0);
     expect(op.status).toBe("trial");
     expect(op.slug).toMatch(/^livetest-networks-/);
@@ -365,7 +397,7 @@ describe("creating an operator against the live backend", () => {
     // The whole point of creating the login alongside the tenant.
     const signedIn = await axios.post(`${API}auth/login/`, {
       username: `lt${stamp}`,
-      password: "devpass123",
+      password: DEFAULT_PASSWORD,
     });
     expect(signedIn.data.role).toBe("tenant_admin");
     expect(signedIn.data.tenant_id).toBe(op.id);
@@ -378,7 +410,7 @@ describe("creating an operator against the live backend", () => {
       createOperator({
         name: "Should Not Exist",
         admin_username: `nope${Date.now()}`,
-        admin_password: "devpass123",
+        admin_password: DEFAULT_PASSWORD,
       })
     ).rejects.toMatchObject({ response: { status: 403 } });
   }, 60000);
