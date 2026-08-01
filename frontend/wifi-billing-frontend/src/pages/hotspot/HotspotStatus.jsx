@@ -1,12 +1,16 @@
 import { useEffect, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
-import { fetchHotspotPaymentStatus } from "../../services/hotspot";
+import { useSearchParams, useNavigate } from "react-router-dom";
+import {
+  fetchHotspotPaymentStatus,
+  validateHotspotVoucher,
+} from "../../services/hotspot";
 
 const POLL_MS = 3000;
 const GIVE_UP_AFTER_MS = 3 * 60 * 1000; // Safaricom prompts expire well inside this
 
 export default function HotspotStatus() {
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
   const mac = searchParams.get("mac");
   const reference = searchParams.get("ref");
   const tenantToken = searchParams.get("t");
@@ -18,7 +22,7 @@ export default function HotspotStatus() {
   useEffect(() => {
     if (!mac || !reference) {
       setState("invalid");
-      return;
+      return undefined;
     }
 
     const timer = setInterval(async () => {
@@ -38,6 +42,30 @@ export default function HotspotStatus() {
           clearInterval(timer);
           setVoucher(data.voucher_code);
           setState("paid");
+
+          // Redeem it for them.
+          //
+          // Purchase deliberately does not bind the MAC — an unpaid request
+          // must not be able to squat a device that belongs to someone else.
+          // But the invoice is paid now and this is the device that paid, so
+          // making the customer read a code off one screen and type it into
+          // another is a step that exists only because nothing did it for
+          // them. If it fails they still have the code below.
+          if (data.voucher_code) {
+            try {
+              await validateHotspotVoucher({
+                tenantToken,
+                code: data.voucher_code,
+                mac,
+              });
+              const params = new URLSearchParams({ mac, voucher: data.voucher_code });
+              if (data.expires_at) params.set("expires", data.expires_at);
+              if (tenantToken) params.set("t", tenantToken);
+              navigate(`/hotspot/success?${params.toString()}`, { replace: true });
+            } catch {
+              /* stay here and show them the code to enter by hand */
+            }
+          }
         } else if (data.status === "not_found") {
           clearInterval(timer);
           setState("invalid");
@@ -48,7 +76,7 @@ export default function HotspotStatus() {
     }, POLL_MS);
 
     return () => clearInterval(timer);
-  }, [mac, reference, tenantToken]);
+  }, [mac, reference, tenantToken, navigate]);
 
   const views = {
     pending: {
@@ -74,8 +102,13 @@ export default function HotspotStatus() {
           <code className="block bg-slate-100 text-slate-800 font-mono text-lg tracking-wider py-3 rounded-lg">
             {voucher}
           </code>
+          {/* It used to say the code had also been sent by SMS. Messaging
+              credentials belong to each operator and are optional, so for an
+              operator without them that was simply untrue, and the customer
+              stopped writing the code down on the strength of it. */}
           <p className="text-xs text-slate-500 mt-2">
-            We've also sent this to you by SMS.
+            Write this down — it gets you back online on this phone until it
+            expires.
           </p>
         </div>
       ),

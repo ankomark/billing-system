@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Optional
+import re
+from typing import List, Optional
 
 from django.utils import timezone
 from django.db import transaction
@@ -12,6 +13,30 @@ from billing.models import Voucher, Payment, Subscription
 # Safe default: expiry_date is the main source of truth.
 BLOCKED_SUB_STATUSES = {"revoked", "cancelled"}
 
+# Longest input accepted. An M-Pesa message is around 160 characters; anything
+# far beyond that is not one, and parsing it would only widen the search.
+MAX_INPUT = 400
+
+# How many candidates one submission may test. This is the real limit on
+# guessing: without it, pasting a "message" containing fifty code-shaped tokens
+# would turn a single throttled request into fifty attempts.
+MAX_CANDIDATES = 3
+
+# Our own voucher codes, e.g. WIFI-NITGYQ.
+_VOUCHER_RE = re.compile(r"\b[A-Z]{2,10}-[A-Z0-9]{4,12}\b")
+
+# Safaricom receipts are 10 uppercase alphanumerics and always lead the
+# message: "TGX11AA001 Confirmed. Ksh50.00 sent to ...".
+_RECEIPT_RE = re.compile(r"\b[A-Z0-9]{8,12}\b")
+_CONFIRMED_RE = re.compile(r"\b([A-Z0-9]{8,12})\s+Confirmed", re.IGNORECASE)
+
+# Tokens that match the receipt shape but are words, not codes. Without this
+# the first candidate off a pasted message is often "CONFIRMED".
+_NOT_A_CODE = {
+    "CONFIRMED", "TRANSACTION", "BALANCE", "ACCOUNT", "SUCCESSFUL",
+    "RECEIVED", "MPESA", "SAFARICOM", "AVAILABLE",
+}
+
 
 def _normalize_code(code: str) -> str:
     """
@@ -20,6 +45,49 @@ def _normalize_code(code: str) -> str:
     - keeps case as-is (Mpesa receipts can be case-sensitive sometimes)
     """
     return (code or "").strip()
+
+
+def extract_codes(text: str) -> List[str]:
+    """
+    Pull the codes worth trying out of whatever the customer pasted.
+
+    People do not read a receipt code off an SMS and retype it — they long-press
+    the message and paste the whole thing. Asking for "just the code" is asking
+    them to do the parsing, on a phone, while offline.
+
+    Returns candidates most-likely-first, capped at MAX_CANDIDATES. Order
+    matters: the token before "Confirmed" is the receipt in every M-Pesa
+    message, so it is tried before anything else code-shaped in the text.
+    """
+    text = (text or "").strip()
+    if not text:
+        return []
+
+    # Anything that is already a bare code is used as-is, so a customer typing
+    # their voucher in by hand behaves exactly as before.
+    if len(text) <= 32 and " " not in text:
+        return [text]
+
+    text = text[:MAX_INPUT]
+    upper = text.upper()
+    candidates: List[str] = []
+
+    def add(value):
+        value = value.strip()
+        if value and value not in candidates and value.upper() not in _NOT_A_CODE:
+            candidates.append(value)
+
+    confirmed = _CONFIRMED_RE.search(text)
+    if confirmed:
+        add(confirmed.group(1).upper())
+
+    for match in _VOUCHER_RE.finditer(upper):
+        add(match.group(0))
+
+    for match in _RECEIPT_RE.finditer(upper):
+        add(match.group(0))
+
+    return candidates[:MAX_CANDIDATES]
 
 
 def _subscription_is_valid_for_access(sub: Subscription) -> bool:
@@ -74,6 +142,16 @@ def validate_voucher(
     Accepts:
     1) Voucher.code (Voucher model)
     2) M-Pesa receipt (Payment.reference) — ONLY if payment.method == "mpesa"
+    3) A whole pasted M-Pesa message containing either of the above
+
+    (3) is a convenience with teeth: extract_codes() caps how many candidates
+    one submission may test, so a paste cannot be used to smuggle a batch of
+    guesses past the endpoint's rate limit.
+
+    A forged message buys nothing. The code is looked up in this operator's own
+    Payment and Voucher rows, which only exist because we received and matched
+    the callback ourselves — the message is a way of typing a code, never
+    evidence that a payment happened.
 
     Returns:
         Subscription if valid, else None
@@ -99,10 +177,24 @@ def validate_voucher(
     - This function DOES NOT bind MAC address.
       Your view should bind MAC if subscription is returned and customer.hotspot_username is empty.
     """
-    now = timezone.now()
     code = _normalize_code(code)
     if not code:
         return None
+
+    for candidate in extract_codes(code):
+        sub = _resolve_code(candidate, mac_address=mac_address, tenant=tenant)
+        if sub is not None:
+            return sub
+    return None
+
+
+def _resolve_code(
+    code: str,
+    mac_address: Optional[str] = None,
+    tenant=None,
+) -> Optional[Subscription]:
+    """One exact code, against one operator."""
+    now = timezone.now()
 
     # ---------------------------------------------------------
     # 1) Try Voucher.code

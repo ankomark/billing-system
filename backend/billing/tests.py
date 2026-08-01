@@ -41,7 +41,7 @@ from billing.mpesa_client import (
     payments_configured,
 )
 from billing.services.pppoe_service import generate_pppoe_credentials
-from billing.services.voucher_service import validate_voucher
+from billing.services.voucher_service import validate_voucher, extract_codes
 from billing.tasks.mpesa_tasks import initiate_stk_push_task
 from billing.tasks.platform_billing_tasks import (
     generate_tenant_invoices,
@@ -5716,4 +5716,111 @@ class VoucherTenantScopeTests(TwoOperatorMixin, TestCase):
             {"code": self.vouchers["t1"].code, "mac_address": "AA:BB:CC:00:00:06"},
             format="json",
         )
+        self.assertEqual(resp.status_code, 400)
+
+
+# =====================================================
+# 32. Pasting the M-Pesa message
+# =====================================================
+
+class MpesaMessageAsVoucherTests(TwoOperatorMixin, TestCase):
+    """
+    Nobody reads a receipt code off an SMS and retypes it. They long-press the
+    message and paste the whole thing, so the whole thing has to work.
+
+    A pasted message is a way of typing a code, never evidence that a payment
+    happened: the code still has to match a Payment this operator already
+    recorded from a callback we matched ourselves.
+    """
+
+    MESSAGE = (
+        "TGX11AA001 Confirmed. Ksh50.00 sent to SKYLINK WIFI for account "
+        "254711000101 on 1/8/26 at 10:15 AM. New M-PESA balance is Ksh1,234.00. "
+        "Transaction cost, Ksh0.00."
+    )
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        d = self.data["t1"]
+        with tenant_context(self.t1):
+            d["customer"].connection_type = "hotspot"
+            d["customer"].pppoe_username = ""
+            d["customer"].save()
+            self.sub = d["sub"]
+            self.sub.expiry_date = timezone.now() + timezone.timedelta(days=3)
+            self.sub.status = "active"
+            self.sub.save()
+            inv = self.sub.invoice
+            inv.payment_status = "paid"
+            inv.save(update_fields=["payment_status"])
+            Payment.objects.create(
+                tenant=self.t1, customer=d["customer"], subscription=self.sub,
+                amount=Decimal("50.00"), method="mpesa", reference="TGX11AA001",
+            )
+            self.voucher = Voucher.objects.create(
+                tenant=self.t1, code="WIFI-ABC123", subscription=self.sub,
+                expires_at=self.sub.expiry_date,
+            )
+
+    def validate(self, code, mac, tenant=None):
+        return APIClient().post(
+            f"/api/hotspot/validate/?t={(tenant or self.t1).public_token}",
+            {"code": code, "mac_address": mac},
+            format="json",
+        )
+
+    # ---- parsing -----------------------------------------------------------
+
+    def test_the_receipt_is_taken_from_a_whole_message(self):
+        self.assertEqual(extract_codes(self.MESSAGE)[0], "TGX11AA001")
+
+    def test_a_bare_code_is_left_alone(self):
+        """Typing the code by hand must behave exactly as it always did."""
+        self.assertEqual(extract_codes("WIFI-ABC123"), ["WIFI-ABC123"])
+        self.assertEqual(extract_codes("  TGX11AA001 "), ["TGX11AA001"])
+
+    def test_a_voucher_pasted_inside_a_message_is_found(self):
+        text = "Welcome to Skylink! Your Voucher Code: WIFI-ABC123 valid until tomorrow."
+        self.assertIn("WIFI-ABC123", extract_codes(text))
+
+    def test_the_word_confirmed_is_not_treated_as_a_code(self):
+        self.assertNotIn("CONFIRMED", extract_codes(self.MESSAGE))
+
+    def test_a_paste_cannot_smuggle_a_batch_of_guesses(self):
+        """
+        The rate limit counts requests, so the number of codes one request may
+        test is the thing that actually bounds guessing.
+        """
+        stuffed = " ".join(f"AAAA{n:06d}" for n in range(50))
+        self.assertLessEqual(len(extract_codes(stuffed)), 3)
+
+    def test_absurdly_long_input_is_truncated(self):
+        self.assertLessEqual(len(extract_codes("X" * 5000)), 3)
+
+    # ---- end to end --------------------------------------------------------
+
+    def test_pasting_the_message_connects_the_device(self):
+        resp = self.validate(self.MESSAGE, "AA:BB:CC:11:00:01")
+        self.assertEqual(resp.status_code, 200, resp.data)
+        c = Customer.objects.all_tenants().get(pk=self.data["t1"]["customer"].pk)
+        self.assertEqual(c.hotspot_username, "AA:BB:CC:11:00:01")
+
+    def test_a_message_from_another_operator_does_not_work(self):
+        resp = self.validate(self.MESSAGE, "AA:BB:CC:11:00:02", tenant=self.t2)
+        self.assertEqual(resp.status_code, 400)
+
+    def test_an_invented_message_grants_nothing(self):
+        """A forged SMS is just a string. The receipt has to be one of ours."""
+        forged = self.MESSAGE.replace("TGX11AA001", "ZZ99ZZ9999")
+        resp = self.validate(forged, "AA:BB:CC:11:00:03")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_a_message_for_an_unpaid_invoice_grants_nothing(self):
+        with tenant_context(self.t1):
+            inv = self.sub.invoice
+            inv.payment_status = "unpaid"
+            inv.save(update_fields=["payment_status"])
+            Voucher.objects.all_tenants().filter(pk=self.voucher.pk).delete()
+        resp = self.validate(self.MESSAGE, "AA:BB:CC:11:00:04")
         self.assertEqual(resp.status_code, 400)

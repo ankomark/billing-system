@@ -974,10 +974,24 @@ class HotspotStatusView(APIView):
             return Response({"status": "expired"})
 
         # 🎉 PAYMENT IS CONFIRMED + SUBSCRIPTION ACTIVE
+        #
+        # The code and package come back too, so a device returning after a
+        # power cut can be shown what it is still on rather than only that it
+        # works. The voucher is already bound to this MAC, so it grants nothing
+        # to whoever is asking from this device — it is the same string the
+        # purchase SMS sent them.
+        voucher = (
+            Voucher.objects.all_tenants()
+            .filter(tenant_id=customer.tenant_id, subscription=subscription)
+            .order_by("-created_at")
+            .first()
+        )
         return Response(
             {
                 "status": "active",
                 "expires_at": subscription.expiry_date,
+                "voucher_code": voucher.code if voucher else None,
+                "package": getattr(subscription.package, "name", None),
             }
         )
 class PPPoECustomerPortalView(APIView):
