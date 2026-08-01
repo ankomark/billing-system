@@ -35,6 +35,26 @@ api.defaults.adapter = "http";
 
 const API = "http://127.0.0.1:8000/api/";
 
+/**
+ * The platform owner's own account — the one real person signs in with, so it
+ * is the one that gets renamed and re-passworded.
+ *
+ * It was hardcoded as owner/devpass123, which meant the whole suite stopped
+ * dead the first time the owner changed either. Everything here failed with
+ * "bad credentials", pointing at the tests rather than at the fact that they
+ * were spelling a username that no longer existed. Override to run it:
+ *
+ *   LIVETEST_OWNER=smartbill LIVETEST_OWNER_PASSWORD='…' npx react-scripts test …
+ *
+ * The seeded operator accounts are fixtures, not anyone's login, so they stay
+ * on the default.
+ */
+const OWNER = process.env.LIVETEST_OWNER || "smartbill";
+const DEFAULT_PASSWORD = "devpass123";
+const PASSWORDS = {
+  [OWNER]: process.env.LIVETEST_OWNER_PASSWORD || DEFAULT_PASSWORD,
+};
+
 // Seeded operator's public token — the hotspot portal carries no JWT and
 // identifies the operator from this alone.
 const TENANT_TOKEN = "0-tKzs_hCpw37qWtBo3_1YySXWsCvbhu";
@@ -52,6 +72,7 @@ const PLATFORM_PAGES = [
   ["PlatformHealth", () => require("../pages/platform/PlatformHealth").default, /Routers offline/i],
   ["PlatformPlans", () => require("../pages/platform/PlatformPlans").default, /Starter/i],
   ["PlatformAudit", () => require("../pages/platform/PlatformAudit").default, /Audit log/i],
+  ["PlatformAccount", () => require("../pages/platform/PlatformAccount").default, /owner/i],
 ];
 
 const ADMIN_PAGES = [
@@ -99,7 +120,7 @@ async function login(username) {
     try {
       const res = await axios.post(`${API}auth/login/`, {
         username,
-        password: "devpass123",
+        password: PASSWORDS[username] || DEFAULT_PASSWORD,
       });
       return res.data;
     } catch (e) {
@@ -130,7 +151,7 @@ const realConsoleError = console.error;
 beforeAll(async () => {
   // Stop msw so requests reach the real backend instead of the mock handlers.
   server.close();
-  ownerTokens = await tokenFor("owner");
+  ownerTokens = await tokenFor(OWNER);
   adminTokens = await tokenFor("skyadmin");
 }, 300000);
 
@@ -719,6 +740,34 @@ describe("operator lifecycle against the live backend", () => {
     authAs(adminTokens);
     const { warnOperator } = require("../services/platform");
     await expect(warnOperator(2, "nope")).rejects.toMatchObject({
+      response: { status: 403 },
+    });
+  }, 40000);
+});
+
+describe("erasing an operator, against the live backend", () => {
+  /**
+   * Only the refusals are exercised here. The seeded operators are what every
+   * other test in this file reads, so a test that actually deleted one would
+   * take the rest of the suite with it — and there is no undo to put it back.
+   */
+  test("a live operator is refused", async () => {
+    authAs(ownerTokens);
+    const { deleteOperator, fetchOperator } = require("../services/platform");
+    const op = await fetchOperator(2);
+
+    await expect(deleteOperator(2, op.name)).rejects.toMatchObject({
+      response: { status: 409 },
+    });
+
+    // Still there, and still live.
+    expect((await fetchOperator(2)).status).toBe(op.status);
+  }, 40000);
+
+  test("an operator admin cannot delete anyone", async () => {
+    authAs(adminTokens);
+    const { deleteOperator } = require("../services/platform");
+    await expect(deleteOperator(2, "Skylink WiFi")).rejects.toMatchObject({
       response: { status: 403 },
     });
   }, 40000);

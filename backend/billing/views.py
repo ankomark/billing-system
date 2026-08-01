@@ -43,10 +43,10 @@ from django.utils import timezone
 from rest_framework import viewsets
 from .models import Customer, Package, Subscription,Invoice, Payment,MpesaTransaction,SystemSetting,RouterFailoverLog, HotspotUsageRecord, AccessAuditLog, Tenant
 from .models import PlatformPlan, TenantSubscription, TenantInvoice, TenantPayment, TenantStatusChange
-from .models import RouterEvent, Station, router_uptime
+from .models import RouterEvent, Station, TenantScopedModel, router_uptime
 from .models import ImpersonationLog
 from .models import User, AdminActionLog, record_admin_action
-from .tenancy import tenant_context, get_current_tenant_id
+from .tenancy import tenant_context, get_current_tenant_id, all_tenants
 import logging
 
 logger = logging.getLogger(__name__)
@@ -3642,9 +3642,144 @@ class OperatorPasswordResetView(APIView):
         })
 
 
+def _erase_operator(tenant, actor=None):
+    """
+    Remove every row belonging to one operator, then the operator.
+
+    Returns (counts, removed).
+
+    Order is worked out rather than hardcoded. Every tenant-scoped model
+    PROTECTs the tenant, and several protect each other, so a fixed list would
+    be a guess that breaks the next time a model is added. This deletes what it
+    can, repeats while it is still making progress, and stops when nothing is
+    left or nothing more can go — so a new model joins the sweep by existing.
+
+    The whole thing is one transaction. A half-erased operator — the tenant
+    gone, its customers orphaned, or the reverse — is worse than either
+    outcome.
+    """
+    from django.db.models import ProtectedError
+
+    counts = {}
+    scoped = list(TenantScopedModel.__subclasses__())
+
+    with all_tenants(), transaction.atomic():
+        # Recorded before anything goes, with the numbers, because afterwards
+        # there is nothing left to count. The row survives the tenant: its
+        # reference is SET_NULL and target_label keeps the name as text.
+        for model in scoped:
+            n = model.objects.all_tenants().filter(tenant=tenant).count()
+            if n:
+                counts[model.__name__] = n
+        user_count = User.objects.filter(tenant=tenant).count()
+        if user_count:
+            counts["User"] = user_count
+
+        record_admin_action(
+            actor, AdminActionLog.DELETE_OPERATOR,
+            target_tenant=tenant,
+            label=tenant.business_name or tenant.name,
+            detail=", ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "no records",
+        )
+
+        remaining = list(scoped)
+        while remaining:
+            stuck = []
+            progressed = False
+            for model in remaining:
+                try:
+                    with transaction.atomic():
+                        deleted, _ = model.objects.all_tenants().filter(
+                            tenant=tenant).delete()
+                    progressed = progressed or bool(deleted)
+                except ProtectedError:
+                    # Something else still points at these. Try again once that
+                    # something has been removed.
+                    stuck.append(model)
+            if not stuck:
+                break
+            if not progressed:
+                logger.error(
+                    "[erase] stuck on %s for %s — rolling back",
+                    [m.__name__ for m in stuck], tenant,
+                )
+                raise RuntimeError("could not erase every record")
+            remaining = stuck
+
+        User.objects.filter(tenant=tenant).delete()
+        tenant.delete()
+
+    return counts, True
+
+
 class PlatformOperatorDetailView(APIView):
     """One operator in full, including how often support has viewed them."""
     permission_classes = [IsPlatformStaff]
+
+    def delete(self, request, tenant_id):
+        """
+        Erase a closed operator and everything belonging to them.
+
+        Irreversible, and it destroys billing history — invoices and payments
+        that most jurisdictions require keeping for years. Closing an account
+        already stops invoicing without destroying anything, so this exists for
+        the cases where the record genuinely should not persist: a test
+        operator, a duplicate, an onboarding that never began.
+
+        Three gates, because there is no undo:
+          - the account must already be closed, so this is never the first
+            action taken against a live business;
+          - only the platform owner may do it;
+          - the caller must type the operator's name back, which is the
+            difference between deciding and mis-clicking.
+
+        What is destroyed is counted and written to the audit log first. That
+        row survives because its tenant reference is SET_NULL and it keeps the
+        name as text — so afterwards there is still an answer to "what happened
+        to them".
+        """
+        if request.user.role != User.PLATFORM_OWNER:
+            return Response(
+                {"detail": "This endpoint is restricted to the platform owner."},
+                status=403,
+            )
+
+        tenant = Tenant.objects.filter(id=tenant_id).first()
+        if tenant is None:
+            return Response({"detail": "Operator not found"}, status=404)
+
+        if tenant.status != "cancelled":
+            return Response(
+                {"detail": "Close the account first. Only a closed operator can be "
+                           "deleted, so this is never the first action taken "
+                           "against a live business."},
+                status=409,
+            )
+
+        typed = (request.data.get("confirm") or "").strip()
+        expected = tenant.business_name or tenant.name
+        if typed != expected:
+            return Response(
+                {"detail": f'Type "{expected}" to confirm.', "expected": expected},
+                status=400,
+            )
+
+        try:
+            counts, _ = _erase_operator(tenant, actor=request.user)
+        except Exception:
+            # The transaction rolled back, so the operator is untouched. Say so
+            # rather than leaving the caller guessing what state it is in.
+            logger.exception("[erase] failed for %s", tenant)
+            return Response(
+                {"detail": "Could not remove every record for this operator. "
+                           "Nothing was deleted and they are unchanged."},
+                status=500,
+            )
+
+        return Response({
+            "detail": f"{expected} and all their records have been deleted.",
+            "removed": counts,
+        })
 
     def patch(self, request, tenant_id):
         """

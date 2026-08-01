@@ -230,6 +230,7 @@ class AdminActionLog(models.Model):
     UPDATE_OPERATOR = "update_operator"
     CONFIGURE_PAYMENTS = "configure_payments"
     CHANGE_PLAN = "change_plan"
+    DELETE_OPERATOR = "delete_operator"
 
     ACTION_CHOICES = (
         (RESET_PASSWORD, "Reset password"),
@@ -242,6 +243,7 @@ class AdminActionLog(models.Model):
         (UPDATE_OPERATOR, "Updated operator details"),
         (CONFIGURE_PAYMENTS, "Configured payment credentials"),
         (CHANGE_PLAN, "Changed plan"),
+        (DELETE_OPERATOR, "Deleted operator permanently"),
     )
 
     actor = models.ForeignKey(
@@ -275,7 +277,8 @@ class AdminActionLog(models.Model):
         return f"{self.actor} {self.action} {self.target_label}"
 
 
-def record_admin_action(actor, action, *, target_user=None, target_tenant=None, detail=""):
+def record_admin_action(actor, action, *, target_user=None, target_tenant=None,
+                        detail="", label=None):
     """
     Write one audit row. Never raises — an audit failure must not roll back the
     action it describes, but it must be visible in the logs.
@@ -286,7 +289,11 @@ def record_admin_action(actor, action, *, target_user=None, target_tenant=None, 
             action=action,
             target_user=target_user,
             target_tenant=target_tenant or getattr(target_user, "tenant", None),
-            target_label=str(target_user or target_tenant or ""),
+            # Whatever the actor actually saw on screen. A tenant's __str__ is
+            # its internal name, which can differ from the business name shown
+            # to them — and after a deletion this text is all that is left, so
+            # it should match what they were looking at when they decided.
+            target_label=label or str(target_user or target_tenant or ""),
             detail=detail[:255],
         )
     except Exception:

@@ -52,6 +52,7 @@ const PlatformInvoices = lazy(() => import("./pages/platform/PlatformInvoices"))
 const PlatformHealth   = lazy(() => import("./pages/platform/PlatformHealth"));
 const PlatformPlans    = lazy(() => import("./pages/platform/PlatformPlans"));
 const PlatformAudit    = lazy(() => import("./pages/platform/PlatformAudit"));
+const PlatformAccount  = lazy(() => import("./pages/platform/PlatformAccount"));
 const MyPlatformAccount = lazy(() => import("./pages/admin/MyPlatformAccount"));
 
 // ─── Role sets ──────────────────────────────────────────────────────────────
@@ -171,6 +172,7 @@ export default function App() {
         <Route path="/platform/health"              element={<Platform><PlatformHealth /></Platform>} />
         <Route path="/platform/plans"               element={<Platform><PlatformPlans /></Platform>} />
         <Route path="/platform/audit"               element={<Platform><PlatformAudit /></Platform>} />
+        <Route path="/platform/account"             element={<Platform><PlatformAccount /></Platform>} />
 
         {/* Customer portal */}
         <Route path="/customer/pppoe"               element={<Customer><PPPoEPortal /></Customer>} />

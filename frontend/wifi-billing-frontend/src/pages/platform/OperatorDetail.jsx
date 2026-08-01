@@ -2,9 +2,10 @@ import { useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import toast from "react-hot-toast";
-import { AlertTriangle, ArrowLeft, Eye, KeyRound, ShieldAlert, ShieldCheck } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Eye, KeyRound, ShieldAlert, ShieldCheck, Trash2 } from "lucide-react";
 import PlatformLayout from "../../components/platform/PlatformLayout";
 import ResetPasswordModal from "../../components/platform/ResetPasswordModal";
+import DeleteOperatorModal from "../../components/platform/DeleteOperatorModal";
 import AnalyticsPanel from "../../components/platform/AnalyticsPanel";
 import MpesaSetupPanel from "../../components/platform/MpesaSetupPanel";
 import AuditTrail from "../../components/platform/AuditTrail";
@@ -53,6 +54,7 @@ export default function OperatorDetail() {
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [warning, setWarning] = useState("");
   const isOwner = getUser()?.role === PLATFORM_OWNER;
 
@@ -135,6 +137,20 @@ export default function OperatorDetail() {
         open={resetting}
         operator={op}
         onClose={() => setResetting(false)}
+      />
+      <DeleteOperatorModal
+        open={deleting}
+        operator={op}
+        onClose={() => setDeleting(false)}
+        onDeleted={() => {
+          // This page's own query would 404 on the next fetch, so leave before
+          // dropping the caches rather than after.
+          navigate("/platform/operators");
+          qc.removeQueries({ queryKey: ["platform-operator", id] });
+          qc.invalidateQueries({ queryKey: ["platform-operators"] });
+          qc.invalidateQueries({ queryKey: ["platform-overview"] });
+          qc.invalidateQueries({ queryKey: ["platform-health"] });
+        }}
       />
       <div className="space-y-6 max-w-4xl">
         <div className="flex items-center gap-3">
@@ -293,6 +309,35 @@ export default function OperatorDetail() {
                   className="inline-flex items-center gap-2 border border-red-500/30 text-red-300 hover:bg-red-500/10 px-4 py-2 rounded-lg text-sm font-semibold disabled:opacity-50 transition-colors"
                 >
                   Close this account
+                </button>
+              </div>
+            </details>
+          )}
+
+          {/* Erasing is only reachable once the account is closed — the backend
+              refuses otherwise, so offering it earlier would only be a button
+              that 409s. It sits where "close this account" sat, because exactly
+              one of the two applies at a time. */}
+          {isOwner && op.status === "cancelled" && (
+            <details className="mt-4 pt-4 border-t border-white/10">
+              <summary className="text-xs text-slate-500 hover:text-slate-300 cursor-pointer select-none">
+                Remove them from the platform entirely
+              </summary>
+              <div className="mt-3">
+                <p className="text-xs text-slate-500 mb-2">
+                  Closing already stopped their invoices without destroying
+                  anything, and a closed account can be reopened. Deleting
+                  cannot — it erases their subscribers, routers and the whole
+                  billing history along with the account. Keep them closed
+                  unless the records genuinely should not exist: a test
+                  operator, a duplicate, an onboarding that never began.
+                </p>
+                <button
+                  onClick={() => setDeleting(true)}
+                  disabled={busy}
+                  className="inline-flex items-center gap-2 border border-red-500/30 text-red-300 hover:bg-red-500/10 px-4 py-2 rounded-lg text-sm font-semibold disabled:opacity-50 transition-colors"
+                >
+                  <Trash2 size={14} aria-hidden="true" /> Delete permanently
                 </button>
               </div>
             </details>

@@ -139,6 +139,21 @@ export const setOperatorStatus = async (id, { status, reason }) => {
   return res.data;
 };
 
+/**
+ * Erase an operator and everything belonging to them. There is no undo.
+ *
+ * `confirm` must be the operator's name exactly as the backend holds it —
+ * business name if they have one, otherwise their name. That is the same
+ * string the detail endpoint returns as `name`, so pass that rather than
+ * anything reconstructed here.
+ */
+export const deleteOperator = async (id, confirm) => {
+  const res = await api.delete(`platform/operators/${id}/`, {
+    data: { confirm },
+  });
+  return res.data;
+};
+
 // Platform invoices. Platform staff see every operator's; an operator sees
 // only their own, which makes this both the collections view and the
 // operator's statement.

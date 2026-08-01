@@ -5457,3 +5457,144 @@ class BlessedTextsSmsTests(TwoOperatorMixin, TestCase):
             result = sms_balance(tenant=self.t2)
         post.assert_not_called()
         self.assertFalse(result["ok"])
+
+
+# =====================================================
+# 30. Erasing a closed operator
+# =====================================================
+
+class OperatorDeletionTests(PlatformBillingMixin, TestCase):
+    """
+    Irreversible, and it destroys billing history. Three gates, because there
+    is no undo.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_billing()
+        self.owner = make_platform_owner()
+
+    def url(self, tenant):
+        return f"/api/platform/operators/{tenant.id}/"
+
+    def _close(self, tenant):
+        set_tenant_status(tenant, "cancelled", reason="test", automatic=True)
+        tenant.refresh_from_db()
+
+    def _delete(self, tenant, confirm=None, as_user=None):
+        return self.auth(as_user or self.owner).delete(
+            self.url(tenant),
+            {"confirm": confirm if confirm is not None
+             else (tenant.business_name or tenant.name)},
+            format="json",
+        )
+
+    # ---- the gates ---------------------------------------------------------
+
+    def test_a_live_operator_cannot_be_deleted(self):
+        """Never the first action taken against a working business."""
+        resp = self._delete(self.t1)
+        self.assertEqual(resp.status_code, 409)
+        self.assertTrue(Tenant.objects.filter(pk=self.t1.pk).exists())
+
+    def test_a_past_due_operator_cannot_be_deleted(self):
+        set_tenant_status(self.t1, "past_due", reason="test", automatic=True)
+        self.t1.refresh_from_db()
+        resp = self._delete(self.t1)
+        self.assertEqual(resp.status_code, 409)
+
+    def test_platform_staff_cannot_delete(self):
+        self._close(self.t1)
+        staff = User.objects.create_user(
+            username="pstaff_del", password="x",
+            role=User.PLATFORM_STAFF, tenant=None)
+        resp = self._delete(self.t1, as_user=staff)
+        self.assertEqual(resp.status_code, 403)
+        self.assertTrue(Tenant.objects.filter(pk=self.t1.pk).exists())
+
+    def test_an_operator_cannot_delete_anyone(self):
+        self._close(self.t1)
+        resp = self._delete(self.t1, as_user=self.admin1)
+        self.assertEqual(resp.status_code, 403)
+
+    def test_the_name_must_be_typed_back(self):
+        """The difference between deciding and mis-clicking."""
+        self._close(self.t1)
+        resp = self._delete(self.t1, confirm="something else")
+        self.assertEqual(resp.status_code, 400)
+        self.assertTrue(Tenant.objects.filter(pk=self.t1.pk).exists())
+
+    def test_a_blank_confirmation_is_refused(self):
+        self._close(self.t1)
+        resp = self._delete(self.t1, confirm="")
+        self.assertEqual(resp.status_code, 400)
+        self.assertTrue(Tenant.objects.filter(pk=self.t1.pk).exists())
+
+    # ---- the deletion ------------------------------------------------------
+
+    def test_a_closed_operator_and_everything_of_theirs_goes(self):
+        self._close(self.t1)
+        tenant_id = self.t1.id
+
+        resp = self._delete(self.t1)
+        self.assertEqual(resp.status_code, 200, resp.data)
+
+        self.assertFalse(Tenant.objects.filter(pk=tenant_id).exists())
+        self.assertFalse(User.objects.filter(tenant_id=tenant_id).exists())
+        for model in (Customer, Package, RouterDevice, Subscription, Invoice, Payment):
+            self.assertFalse(
+                model.objects.all_tenants().filter(tenant_id=tenant_id).exists(),
+                f"{model.__name__} rows survived",
+            )
+
+    def test_it_reports_what_it_destroyed(self):
+        self._close(self.t1)
+        resp = self._delete(self.t1)
+        self.assertIn("Customer", resp.data["removed"])
+        self.assertGreaterEqual(resp.data["removed"]["Customer"], 1)
+
+    def test_the_other_operator_is_untouched(self):
+        """The property worth protecting most."""
+        self._close(self.t1)
+        before = Customer.objects.all_tenants().filter(tenant=self.t2).count()
+        self.assertGreater(before, 0)
+
+        self._delete(self.t1)
+
+        self.assertTrue(Tenant.objects.filter(pk=self.t2.pk).exists())
+        self.assertEqual(
+            Customer.objects.all_tenants().filter(tenant=self.t2).count(), before)
+        self.assertTrue(User.objects.filter(tenant=self.t2).exists())
+
+    def test_the_audit_row_outlives_the_operator(self):
+        """
+        Afterwards there is nothing left to count, so the record has to be
+        written first and has to survive the thing it describes.
+        """
+        self._close(self.t1)
+        name = self.t1.business_name or self.t1.name
+
+        self._delete(self.t1)
+
+        log = AdminActionLog.objects.filter(
+            action=AdminActionLog.DELETE_OPERATOR).first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.actor, self.owner)
+        # The tenant reference is SET_NULL, so the name must be kept as text.
+        self.assertIsNone(log.target_tenant_id)
+        self.assertEqual(log.target_label, name)
+        self.assertIn("Customer=", log.detail)
+
+    def test_an_operator_with_no_records_can_still_be_deleted(self):
+        empty = Tenant.objects.create(name="Never Started", slug="never-started")
+        set_tenant_status(empty, "cancelled", reason="test", automatic=True)
+        empty.refresh_from_db()
+
+        resp = self._delete(empty)
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertFalse(Tenant.objects.filter(pk=empty.pk).exists())
+
+    def test_an_unknown_operator_is_404(self):
+        resp = self.auth(self.owner).delete(
+            "/api/platform/operators/999999/", {"confirm": "x"}, format="json")
+        self.assertEqual(resp.status_code, 404)

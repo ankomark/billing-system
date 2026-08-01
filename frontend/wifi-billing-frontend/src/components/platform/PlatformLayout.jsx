@@ -2,7 +2,7 @@ import { useState } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import {
   Activity, Building2, LayoutDashboard, LogOut, Menu, Receipt, ShieldCheck,
-  Tag, X,
+  Tag, UserCog, X,
 } from "lucide-react";
 import { getUser, logout } from "../../services/auth";
 import { PLATFORM_NAME, PLATFORM_TAGLINE } from "../../constants/brand";
@@ -76,10 +76,17 @@ export default function PlatformLayout({ children }) {
           <Item to="/platform/audit" icon={ShieldCheck} label="Audit log" onClick={close} />
         </nav>
 
-        <div className="p-3 border-t border-slate-800">
-          <p className="px-3 pb-2 text-xs text-slate-500 truncate">
-            {user?.username}
-          </p>
+        <div className="p-3 border-t border-slate-800 space-y-0.5">
+          {/* Own account sits with sign-out rather than in the nav above: this
+              is the one entry about the person, not about the platform. It is
+              also where someone looks when they want to change their password
+              in a hurry. */}
+          <Item
+            to="/platform/account"
+            icon={UserCog}
+            label={user?.username || "My account"}
+            onClick={close}
+          />
           <button
             onClick={signOut}
             className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-400 hover:text-white hover:bg-red-600/90 transition-colors text-sm font-medium"
@@ -132,7 +139,7 @@ function Item({ to, icon: Icon, label, end, onClick }) {
       }
     >
       <Icon size={15} className="flex-shrink-0" />
-      {label}
+      <span className="truncate">{label}</span>
     </NavLink>
   );
 }
