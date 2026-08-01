@@ -805,6 +805,108 @@ describe("erasing an operator, against the live backend", () => {
   }, 40000);
 });
 
+describe("the hotspot round trip, against the live backend", () => {
+  // Seeded hotspot subscribers. The development database had none at all until
+  // this flow was looked at, which is why none of it had ever been exercised.
+  const SKYLINK_RECEIPT = "TGX11AA001";
+  const BLUEWAVE_VOUCHER = "WIFI-7NYLUV";
+  const MESSAGE =
+    `${SKYLINK_RECEIPT} Confirmed. Ksh50.00 sent to SKYLINK WIFI for account ` +
+    "254711000101 on 1/8/26 at 10:15 AM. New M-PESA balance is Ksh1,234.00.";
+
+  // Skylink's portal token, already used by the hotspot page smoke test. The
+  // operators list deliberately does not expose public_token, so there is no
+  // way to look one up here and no reason to add one.
+  const skylinkToken = TENANT_TOKEN;
+
+  test("a whole pasted M-Pesa message connects the device", async () => {
+    localStorage.clear();
+    const { validateHotspotVoucher } = require("../services/hotspot");
+    const mac = `LT:00:00:${Date.now().toString(16).slice(-5, -3)}:01:01`;
+    const res = await validateHotspotVoucher({
+      tenantToken: skylinkToken, code: MESSAGE, mac,
+    });
+    expect(res.detail).toMatch(/granted/i);
+    expect(res.expires_at).toBeTruthy();
+  }, 40000);
+
+  test("a voucher does not work on another operator's portal", async () => {
+    localStorage.clear();
+    const { validateHotspotVoucher } = require("../services/hotspot");
+    await expect(
+      validateHotspotVoucher({
+        tenantToken: skylinkToken,
+        code: BLUEWAVE_VOUCHER,
+        mac: "LT:00:00:00:02:02",
+      })
+    ).rejects.toMatchObject({ response: { status: 400 } });
+  }, 40000);
+
+  test("a device with time left is known, and can be put back online", async () => {
+    localStorage.clear();
+    const { fetchHotspotDeviceStatus, reconnectHotspotDevice } =
+      require("../services/hotspot");
+    const { validateHotspotVoucher } = require("../services/hotspot");
+
+    const mac = "LT:00:00:00:03:03";
+    await validateHotspotVoucher({
+      tenantToken: skylinkToken, code: MESSAGE, mac,
+    }).catch(() => {});
+
+    const status = await fetchHotspotDeviceStatus({ tenantToken: skylinkToken, mac });
+    expect(status.status).toBe("active");
+    // What the confirmation screen shows a returning device.
+    expect(status.voucher_code).toBeTruthy();
+    expect(status.package).toBeTruthy();
+
+    const back = await reconnectHotspotDevice({ tenantToken: skylinkToken, mac });
+    expect(back.status).toBe("allowed");
+  }, 60000);
+
+  test("an unknown device is not granted anything", async () => {
+    localStorage.clear();
+    const { fetchHotspotDeviceStatus } = require("../services/hotspot");
+    const status = await fetchHotspotDeviceStatus({
+      tenantToken: skylinkToken, mac: "LT:99:99:99:99:99",
+    });
+    expect(status.status).toBe("not_found");
+  }, 40000);
+});
+
+describe("the M-Pesa ledger, against the live backend", () => {
+  test("an operator can look up their own transactions", async () => {
+    authAs(adminTokens);
+    const { fetchMpesaTransactions } = require("../services/dashboard");
+    const page = await fetchMpesaTransactions({ pageSize: 5 });
+    expect(page).toHaveProperty("count");
+    expect(Array.isArray(page.results)).toBe(true);
+  }, 40000);
+
+  test("filtering by outcome narrows it", async () => {
+    authAs(adminTokens);
+    const { fetchMpesaTransactions } = require("../services/dashboard");
+    const failed = await fetchMpesaTransactions({ status: "failed", pageSize: 50 });
+    failed.results.forEach((t) => expect(t.status).toBe("failed"));
+  }, 40000);
+});
+
+describe("finding a hotspot subscriber, against the live backend", () => {
+  test("a voucher code finds its owner", async () => {
+    authAs(adminTokens);
+    const { fetchCustomers } = require("../services/customers");
+
+    // Whichever seeded hotspot subscriber this operator has.
+    const hotspot = await fetchCustomers({ connectionType: "hotspot", pageSize: 5 });
+    expect(hotspot.count).toBeGreaterThan(0);
+
+    const withCode = hotspot.results.find((c) => c.voucher_code);
+    expect(withCode).toBeTruthy();
+
+    const found = await fetchCustomers({ search: withCode.voucher_code });
+    expect(found.results.map((c) => c.id)).toContain(withCode.id);
+  }, 40000);
+});
+
 describe("operator picker against the live backend", () => {
   test("lists real operators and requires a reason", async () => {
     authAs(ownerTokens);

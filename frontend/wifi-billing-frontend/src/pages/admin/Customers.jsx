@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import toast from "react-hot-toast";
@@ -21,9 +21,20 @@ const SORT_FIELDS = {
   full_name: "Name",
   phone: "Phone",
   connection_type: "Type",
+  // Whatever this subscriber is actually identified by. A hotspot customer has
+  // no PPPoE username, so the old columns showed them a name, a phone and a
+  // blank — and the code they and the operator are both holding was nowhere.
+  identifier: "Code / username",
   status: "Status",
   created_at: "Joined",
 };
+
+const COLS = Object.keys(SORT_FIELDS).length + 1;
+
+const identifierOf = (c) =>
+  c.connection_type === "hotspot"
+    ? c.voucher_code || c.hotspot_username || ""
+    : c.pppoe_username || "";
 
 function SortIcon({ field, sortField, sortDir }) {
   if (sortField !== field) return <ChevronsUpDown size={13} className="text-slate-500" />;
@@ -33,11 +44,12 @@ function SortIcon({ field, sortField, sortDir }) {
 }
 
 function exportCSV(customers) {
-  const headers = ["Name", "Phone", "Type", "Status", "Joined"];
+  const headers = ["Name", "Phone", "Type", "Code / username", "Status", "Joined"];
   const rows = customers.map((c) => [
     c.full_name,
     c.phone,
     c.connection_type,
+    identifierOf(c),
     c.status,
     new Date(c.created_at).toLocaleDateString(),
   ]);
@@ -70,19 +82,35 @@ export default function Customers() {
   const onStatus = (v) => { setStatusFilter(v); setPage(1); };
   const onType   = (v) => { setTypeFilter(v); setPage(1); };
 
-  const { data, isLoading, isError } = useQuery({
+  const { data, isLoading, isError, error } = useQuery({
     queryKey: ["customers", page, debouncedSearch, statusFilter, typeFilter],
     queryFn: () =>
       fetchCustomers({ page, pageSize: PAGE_SIZE, search: debouncedSearch, status: statusFilter, connectionType: typeFilter }),
     placeholderData: (prev) => prev,
   });
 
+  /**
+   * Asking for a page that no longer exists.
+   *
+   * Every filter here resets to page 1, so this is not reachable by the
+   * obvious route — but a bookmarked URL, a back button, or rows disappearing
+   * underneath a stale tab all land on it, and DRF answers "Invalid page" with
+   * a 404. That rendered as "Failed to load customers. Check your connection",
+   * which sends someone to look at their network over an empty page.
+   */
+  const pastTheEnd = error?.response?.status === 404 && page > 1;
+  useEffect(() => {
+    if (pastTheEnd) setPage(1);
+  }, [pastTheEnd]);
+
   // Client-side sort on current page results
   const sorted = useMemo(() => {
     if (!data?.results) return [];
+    const value = (c) =>
+      sortField === "identifier" ? identifierOf(c) : c[sortField];
     return [...data.results].sort((a, b) => {
-      const va = (a[sortField] ?? "").toString().toLowerCase();
-      const vb = (b[sortField] ?? "").toString().toLowerCase();
+      const va = (value(a) ?? "").toString().toLowerCase();
+      const vb = (value(b) ?? "").toString().toLowerCase();
       if (va < vb) return sortDir === "asc" ? -1 : 1;
       if (va > vb) return sortDir === "asc" ? 1 : -1;
       return 0;
@@ -158,7 +186,7 @@ export default function Customers() {
             <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
             <input
               type="text"
-              placeholder="Search by name, phone, or PPPoE username…"
+              placeholder="Name, phone, username, voucher code, M-Pesa receipt, or MAC…"
               value={search}
               onChange={(e) => onSearch(e.target.value)}
               className="w-full pl-9 pr-4 py-2 text-sm border border-white/15 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
@@ -184,10 +212,13 @@ export default function Customers() {
           </select>
         </div>
 
-        {/* Error */}
-        {isError && (
+        {/* Error. Not always the connection — say which. */}
+        {isError && !pastTheEnd && (
           <div className="bg-red-500/10 border border-red-500/30 rounded-xl px-5 py-4 text-red-300 text-sm">
-            Failed to load customers. Check your connection and try again.
+            {error?.response?.status === 403
+              ? "You don't have permission to view customers."
+              : error?.response?.data?.detail ||
+                "Couldn't load customers. Check your connection and try again."}
           </div>
         )}
 
@@ -219,7 +250,7 @@ export default function Customers() {
                   <SkeletonTable rows={PAGE_SIZE} cols={6} />
                 ) : sorted.length === 0 ? (
                   <tr>
-                    <td colSpan={6}>
+                    <td colSpan={COLS}>
                       <EmptyState
                         icon={<Users size={24} />}
                         title="No customers found"
@@ -252,6 +283,15 @@ export default function Customers() {
                       <td className="px-4 py-3 text-slate-300">{c.phone}</td>
                       <td className="px-4 py-3">
                         <StatusBadge status={c.connection_type} />
+                      </td>
+                      <td className="px-4 py-3">
+                        {identifierOf(c) ? (
+                          <code className="font-mono text-xs text-slate-300">
+                            {identifierOf(c)}
+                          </code>
+                        ) : (
+                          <span className="text-xs text-slate-600">—</span>
+                        )}
                       </td>
                       <td className="px-4 py-3">
                         <StatusBadge status={c.status} />

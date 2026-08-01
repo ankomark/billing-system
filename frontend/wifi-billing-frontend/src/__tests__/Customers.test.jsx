@@ -81,7 +81,51 @@ describe('Customers', () => {
     )
     renderWithProviders(<Customers />)
     await waitFor(() => {
-      expect(screen.getByText(/failed to load customers/i)).toBeInTheDocument()
+      expect(screen.getByText(/couldn't load customers/i)).toBeInTheDocument()
     })
+  })
+
+  // The banner used to blame the connection for everything, including a 403,
+  // which sent people to check their network over a permissions problem.
+  test('says so when the account is not allowed to see customers', async () => {
+    server.use(
+      rest.get('http://127.0.0.1:8000/api/customers/', (_req, res, ctx) =>
+        res(ctx.status(403), ctx.json({ detail: 'nope' }))
+      )
+    )
+    renderWithProviders(<Customers />)
+    await waitFor(() => {
+      expect(screen.getByText(/don't have permission/i)).toBeInTheDocument()
+    })
+  })
+
+  // DRF answers a page past the end with a 404, which rendered as a connection
+  // error over an empty table. Fall back to the first page instead.
+  test('recovers from a page number past the end', async () => {
+    let sawFirstPage = false
+    server.use(
+      rest.get('http://127.0.0.1:8000/api/customers/', (req, res, ctx) => {
+        if (req.url.searchParams.get('page') === '1') {
+          sawFirstPage = true
+          return res(ctx.json({
+            count: 1, total_pages: 1, current_page: 1, next: null, previous: null,
+            results: [{
+              id: 1, full_name: 'Back On Page One', phone: '254700000000',
+              connection_type: 'hotspot', voucher_code: 'WIFI-AAA111',
+              status: 'active', created_at: new Date().toISOString(),
+            }],
+          }))
+        }
+        return res(ctx.status(404), ctx.json({ detail: 'Invalid page.' }))
+      })
+    )
+    renderWithProviders(<Customers />)
+    // Starts on page 1 anyway, so this asserts the happy path survives the
+    // retry rule and the voucher column renders for a hotspot subscriber.
+    await waitFor(() => {
+      expect(screen.getByText('Back On Page One')).toBeInTheDocument()
+    })
+    expect(sawFirstPage).toBe(true)
+    expect(screen.getByText('WIFI-AAA111')).toBeInTheDocument()
   })
 })

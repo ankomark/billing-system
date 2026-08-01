@@ -21,6 +21,7 @@ const Packages         = lazy(() => import("./pages/admin/Packages"));
 const PackageForm      = lazy(() => import("./pages/admin/PackageForm"));
 const UnpaidInvoices   = lazy(() => import("./pages/admin/UnpaidInvoices"));
 const FailedMpesa      = lazy(() => import("./pages/admin/FailedMpesa"));
+const MpesaTransactions = lazy(() => import("./pages/admin/MpesaTransactions"));
 const PPPoESessions    = lazy(() => import("./pages/admin/PPPoESessions"));
 const Routers          = lazy(() => import("./pages/admin/Routers"));
 const Stations         = lazy(() => import("./pages/admin/Stations"));
@@ -142,6 +143,7 @@ export default function App() {
         <Route path="/admin/packages/:id"           element={<Admin roles={SUPER_ROLES}><PackageForm /></Admin>} />
         <Route path="/admin/invoices/unpaid"        element={<Admin><UnpaidInvoices /></Admin>} />
         <Route path="/admin/mpesa/failed"           element={<Admin roles={SUPER_ROLES}><FailedMpesa /></Admin>} />
+        <Route path="/admin/mpesa/transactions"     element={<Admin><MpesaTransactions /></Admin>} />
 
         {/* Admin — network */}
         <Route path="/admin/pppoe/sessions"         element={<Admin><PPPoESessions /></Admin>} />

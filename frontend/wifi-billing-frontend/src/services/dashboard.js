@@ -14,6 +14,24 @@ export const fetchFailedMpesa = async () => {
   const res = await api.get("dashboard/mpesa/failed/");
   return res.data;
 };
+
+/**
+ * The whole M-Pesa ledger, not only what went wrong.
+ *
+ * Covers both connection types — it is one callback endpoint, and the
+ * connection type belongs to whoever the payment resolved to.
+ */
+export const fetchMpesaTransactions = async ({
+  page = 1, pageSize = 25, search = "", status = "", connectionType = "", days = "",
+} = {}) => {
+  const params = { page, page_size: pageSize };
+  if (search) params.search = search;
+  if (status) params.status = status;
+  if (connectionType) params.connection_type = connectionType;
+  if (days) params.days = days;
+  const res = await api.get("mpesa/transactions/", { params });
+  return res.data;
+};
 export async function fetchAdminUsageDaily(days = 7) {
   const res = await api.get("admin/usage/daily/", { params: { days } });
   return res.data;

@@ -34,6 +34,7 @@ from .views import (
     UnpaidInvoicesView,
     PendingInvoicesView,
     FailedMpesaTransactionsView,
+    MpesaTransactionsView,
     DailyRevenueView,
 
     # M-Pesa
@@ -141,6 +142,8 @@ urlpatterns = [
     path("api/dashboard/invoices/unpaid/",  UnpaidInvoicesView.as_view(),           name="unpaid-invoices"),
     path("api/dashboard/invoices/pending/", PendingInvoicesView.as_view(),          name="pending-invoices"),
     path("api/dashboard/mpesa/failed/",     FailedMpesaTransactionsView.as_view(),  name="failed-mpesa"),
+    # Every transaction, not only the ones that went wrong.
+    path("api/mpesa/transactions/",         MpesaTransactionsView.as_view(),        name="mpesa-transactions"),
 
     # ─── M-Pesa ──────────────────────────────────────────────────────────────
     path("api/mpesa/stk-push/",     MpesaSTKPushView.as_view(),     name="mpesa-stk-push"),

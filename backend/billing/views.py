@@ -35,7 +35,11 @@ from .analytics import (
 )
 from django.utils.dateparse import parse_datetime
 from .dashboards import (unpaid_invoices,pending_invoices,failed_mpesa_transactions,)
-from .serializers import (InvoiceDashboardSerializer,MpesaTransactionDashboardSerializer,)
+from .serializers import (
+    InvoiceDashboardSerializer,
+    MpesaTransactionDashboardSerializer,
+    MpesaTransactionSerializer,
+)
 from .pagination import StandardPagination
 from billing.models import Voucher
 from billing.tasks.mpesa_tasks import initiate_stk_push_task
@@ -252,7 +256,18 @@ class CustomerViewSet(viewsets.ModelViewSet):
     serializer_class = CustomerSerializer
     permission_classes = [IsTenantAdminOrReadOnlyMember]
     filter_backends = [SearchFilter]
-    search_fields = ["full_name", "phone", "pppoe_username"]
+    # A hotspot subscriber has no pppoe_username, so searching by the only
+    # identifiers they actually have — the code on their receipt, the device
+    # they are sitting behind — matched nothing at all. Which is exactly what
+    # an operator is holding when someone reads a code down the phone.
+    search_fields = [
+        "full_name",
+        "phone",
+        "pppoe_username",
+        "hotspot_username",
+        "subscriptions__vouchers__code",
+        "payments__reference",
+    ]
 
     def get_serializer_class(self):
         # Only the detail page needs subscriptions/vouchers. Writes keep using
@@ -279,9 +294,11 @@ class CustomerViewSet(viewsets.ModelViewSet):
             .order_by("-created_at")
         )
 
-        if self.action == "retrieve":
-            # Prefetch what CustomerDetailSerializer walks, so rendering the
-            # detail page stays at a fixed number of queries.
+        if self.action in ("retrieve", "list"):
+            # Prefetch what the serializers walk, so rendering stays at a fixed
+            # number of queries. The list needs it too now that a row carries
+            # the subscriber's voucher — without it that is one extra query per
+            # customer on a paginated page.
             qs = qs.prefetch_related(
                 Prefetch(
                     "subscriptions",
@@ -700,6 +717,74 @@ class FailedMpesaTransactionsView(APIView):
         page = paginator.paginate_queryset(qs, request)
         serializer = MpesaTransactionDashboardSerializer(page, many=True)
         return paginator.get_paginated_response(serializer.data)
+
+
+class MpesaTransactionsView(APIView):
+    """
+    Every M-Pesa transaction this operator has seen, searchable.
+
+    The rows have been recorded since the callback was written — receipt,
+    amount, phone, the full raw payload, whether it was applied and why not —
+    and the only ones ever shown were the failures. An operator holding a
+    receipt number a customer read out over the phone had nowhere to type it.
+
+    Covers both connection types: it is one callback endpoint, and the
+    connection type is a property of whoever the payment resolved to, not of
+    the transaction.
+    """
+    permission_classes = [IsTenantMember]
+
+    def get(self, request):
+        qs = (
+            MpesaTransaction.objects
+            .select_related(
+                "invoice", "invoice__customer", "payment", "payment__customer")
+            .order_by("-created_at")
+        )
+
+        status_filter = request.GET.get("status")
+        if status_filter in ("success", "failed"):
+            qs = qs.filter(status=status_filter)
+
+        processed = request.GET.get("processed")
+        if processed in ("true", "false"):
+            qs = qs.filter(processed=(processed == "true"))
+
+        conn = request.GET.get("connection_type")
+        if conn in ("pppoe", "hotspot"):
+            # Through whichever link resolved. A transaction that never
+            # attached to anybody has no connection type and is excluded, which
+            # is right: filtering by one means asking about subscribers.
+            qs = qs.filter(
+                Q(payment__customer__connection_type=conn)
+                | Q(invoice__customer__connection_type=conn)
+            )
+
+        search = (request.GET.get("search") or "").strip()
+        if search:
+            qs = qs.filter(
+                Q(mpesa_receipt__icontains=search)
+                | Q(phone_number__icontains=search)
+                | Q(account_reference__icontains=search)
+                | Q(payment__customer__full_name__icontains=search)
+                | Q(invoice__customer__full_name__icontains=search)
+            )
+
+        days = request.GET.get("days")
+        if days:
+            try:
+                qs = qs.filter(
+                    created_at__gte=timezone.now() - timezone.timedelta(days=int(days))
+                )
+            except (TypeError, ValueError):
+                pass
+
+        paginator = StandardPagination()
+        page = paginator.paginate_queryset(qs.distinct(), request)
+        return paginator.get_paginated_response(
+            MpesaTransactionSerializer(page, many=True).data
+        )
+
 
 class HotspotVoucherValidateView(APIView):
     permission_classes = [permissions.AllowAny]

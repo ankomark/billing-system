@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Users, Package, FileText, AlertCircle,
   Settings, MessageSquare, LogOut, Activity, Router,
   RefreshCw, Search, Wifi, ShieldAlert, HeartPulse, X,
-  UserPlus, CreditCard, UserCog, MapPin, TrendingUp,
+  UserPlus, CreditCard, UserCog, MapPin, TrendingUp, Receipt,
 } from "lucide-react";
 
 export default function AdminSidebar({ open, onClose }) {
@@ -84,6 +84,7 @@ export default function AdminSidebar({ open, onClose }) {
           )}
           <NavItem to="/admin/packages"        icon={Package}       label="Packages"        onClick={onClose} />
           <NavItem to="/admin/invoices/unpaid" icon={FileText}      label="Unpaid Invoices" onClick={onClose} />
+          <NavItem to="/admin/mpesa/transactions" icon={Receipt}    label="M-Pesa Payments" onClick={onClose} />
           <NavItem to="/admin/mpesa/failed"    icon={AlertCircle}   label="M-Pesa Errors"  onClick={onClose} />
 
           <SectionLabel label="Network" />

@@ -5824,3 +5824,195 @@ class MpesaMessageAsVoucherTests(TwoOperatorMixin, TestCase):
             Voucher.objects.all_tenants().filter(pk=self.voucher.pk).delete()
         resp = self.validate(self.MESSAGE, "AA:BB:CC:11:00:04")
         self.assertEqual(resp.status_code, 400)
+
+
+
+# =====================================================
+# 33. Finding a payment, and finding a hotspot subscriber
+# =====================================================
+
+class MpesaLedgerTests(TwoOperatorMixin, TestCase):
+    """
+    Reading the M-Pesa ledger, which until now could only be read when it had
+    gone wrong.
+    """
+
+    URL = "/api/mpesa/transactions/"
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        for receipt, ok in (("RCPTOK0001", True), ("RCPTNO0001", False)):
+            d = self.data["t1"]
+            with tenant_context(d["tenant"]):
+                MpesaTransaction.objects.create(
+                    tenant=d["tenant"],
+                    mpesa_receipt=receipt,
+                    amount=Decimal("500.00"),
+                    phone_number="254711000101",
+                    account_reference=d["invoice"].invoice_number,
+                    invoice=d["invoice"],
+                    raw_payload={},
+                    status="success" if ok else "failed",
+                    processed=ok,
+                    error_message="" if ok else "Amount mismatch",
+                )
+        with tenant_context(self.t2):
+            MpesaTransaction.objects.create(
+                tenant=self.t2, mpesa_receipt="OTHER00001", amount=Decimal("10.00"),
+                phone_number="254722000201", raw_payload={}, status="success",
+                processed=True,
+            )
+
+    def test_an_operator_sees_every_transaction_of_theirs(self):
+        resp = self.auth(self.admin1).get(self.URL)
+        self.assertEqual(resp.status_code, 200)
+        receipts = {r["mpesa_receipt"] for r in resp.data["results"]}
+        self.assertEqual(receipts, {"RCPTOK0001", "RCPTNO0001"})
+
+    def test_an_operator_never_sees_another_operators(self):
+        """The property that matters most in a payments view."""
+        resp = self.auth(self.admin1).get(self.URL)
+        receipts = {r["mpesa_receipt"] for r in resp.data["results"]}
+        self.assertNotIn("OTHER00001", receipts)
+
+    def test_a_receipt_can_be_looked_up(self):
+        """What an operator is holding when a customer reads one out."""
+        resp = self.auth(self.admin1).get(self.URL, {"search": "RCPTOK0001"})
+        self.assertEqual(len(resp.data["results"]), 1)
+        self.assertEqual(resp.data["results"][0]["mpesa_receipt"], "RCPTOK0001")
+
+    def test_searching_by_phone_works(self):
+        resp = self.auth(self.admin1).get(self.URL, {"search": "254711000101"})
+        self.assertEqual(len(resp.data["results"]), 2)
+
+    def test_failures_can_be_isolated(self):
+        resp = self.auth(self.admin1).get(self.URL, {"status": "failed"})
+        self.assertEqual(len(resp.data["results"]), 1)
+        self.assertEqual(resp.data["results"][0]["error_message"], "Amount mismatch")
+
+    def test_a_row_says_who_it_was(self):
+        resp = self.auth(self.admin1).get(self.URL, {"search": "RCPTOK0001"})
+        row = resp.data["results"][0]
+        self.assertEqual(row["customer"], self.data["t1"]["customer"].full_name)
+        self.assertEqual(row["connection_type"], "pppoe")
+        self.assertEqual(row["invoice_number"], self.data["t1"]["invoice"].invoice_number)
+
+    def test_a_subscriber_cannot_read_the_ledger(self):
+        customer_user = User.objects.create_user(
+            username="sub_reader", password="pw", role=User.CUSTOMER, tenant=self.t1)
+        resp = self.auth(customer_user).get(self.URL)
+        self.assertEqual(resp.status_code, 403)
+
+
+class HotspotCustomerSearchTests(TwoOperatorMixin, TestCase):
+    """
+    A hotspot subscriber has no PPPoE username, so the customer search matched
+    them on name and phone alone — and the code on their receipt, the one thing
+    both they and the operator are actually holding, found nothing.
+    """
+
+    URL = "/api/customers/"
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        d = self.data["t1"]
+        with tenant_context(self.t1):
+            d["customer"].connection_type = "hotspot"
+            d["customer"].pppoe_username = ""
+            d["customer"].hotspot_username = "AA:BB:CC:DD:EE:FF"
+            d["customer"].save()
+            sub = d["sub"]
+            sub.expiry_date = timezone.now() + timezone.timedelta(days=2)
+            sub.save()
+            self.voucher = Voucher.objects.create(
+                tenant=self.t1, code="WIFI-FIND01", subscription=sub,
+                expires_at=sub.expiry_date,
+            )
+            Payment.objects.create(
+                tenant=self.t1, customer=d["customer"], subscription=sub,
+                amount=Decimal("50.00"), method="mpesa", reference="RCPTFIND01",
+            )
+
+    def search(self, term):
+        resp = self.auth(self.admin1).get(self.URL, {"search": term})
+        self.assertEqual(resp.status_code, 200, resp.data)
+        return resp.data["results"]
+
+    def test_a_voucher_code_finds_its_subscriber(self):
+        rows = self.search("WIFI-FIND01")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["id"], self.data["t1"]["customer"].id)
+
+    def test_an_mpesa_receipt_finds_its_subscriber(self):
+        rows = self.search("RCPTFIND01")
+        self.assertEqual(len(rows), 1)
+
+    def test_a_device_mac_finds_its_subscriber(self):
+        rows = self.search("AA:BB:CC:DD:EE:FF")
+        self.assertEqual(len(rows), 1)
+
+    def test_the_row_carries_the_voucher(self):
+        """
+        The newest active one. Paying mints a voucher, so a subscriber who has
+        renewed holds several — showing the oldest would send them to reception
+        with a code that no longer works.
+        """
+        with tenant_context(self.t1):
+            newest = (
+                Voucher.objects.filter(subscription=self.data["t1"]["sub"], is_active=True)
+                .order_by("-created_at").first()
+            )
+        rows = self.search("WIFI-FIND01")
+        self.assertEqual(rows[0]["voucher_code"], newest.code)
+        self.assertEqual(rows[0]["hotspot_username"], "AA:BB:CC:DD:EE:FF")
+
+    def test_the_search_still_does_not_reach_across_operators(self):
+        """It joins more tables now; it must not join its way out of a tenant."""
+        rows = self.search(self.data["t2"]["customer"].full_name)
+        self.assertEqual(rows, [])
+
+    def test_one_customer_appears_once_despite_the_joins(self):
+        """
+        Searching across subscriptions and payments multiplies rows. A customer
+        with three payments must not be listed three times.
+        """
+        with tenant_context(self.t1):
+            for n in range(3):
+                Payment.objects.create(
+                    tenant=self.t1, customer=self.data["t1"]["customer"],
+                    subscription=self.data["t1"]["sub"],
+                    amount=Decimal("50.00"), method="mpesa",
+                    reference=f"RCPTDUP{n:03d}",
+                )
+        rows = self.search(self.data["t1"]["customer"].full_name)
+        self.assertEqual(len(rows), 1)
+
+    def test_the_voucher_column_does_not_cost_a_query_per_row(self):
+        """
+        The serializer walks each customer's subscriptions and their vouchers.
+        Without prefetching that is two queries per row, which is invisible on
+        a seeded test and painful on a real page of 25.
+        """
+        with tenant_context(self.t1):
+            for n in range(6):
+                c = Customer.objects.create(
+                    tenant=self.t1, full_name=f"HS {n}", phone=f"2547330000{n:02d}",
+                    connection_type="hotspot")
+                s = Subscription.objects.create(
+                    tenant=self.t1, customer=c, package=self.data["t1"]["package"],
+                    expiry_date=timezone.now() + timezone.timedelta(days=1))
+                Voucher.objects.create(
+                    tenant=self.t1, code=f"WIFI-BULK{n:02d}", subscription=s,
+                    expires_at=s.expiry_date)
+
+        client = self.auth(self.admin1)
+        client.get(self.URL)  # warm any per-connection setup
+        with CaptureQueriesContext(connection) as ctx:
+            resp = client.get(self.URL)
+        self.assertEqual(resp.status_code, 200)
+        self.assertLess(
+            len(ctx.captured_queries), 15,
+            f"{len(ctx.captured_queries)} queries for one page — prefetch lost",
+        )

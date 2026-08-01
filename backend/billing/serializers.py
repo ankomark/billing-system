@@ -11,6 +11,12 @@ from .models import (
 
 
 class CustomerSerializer(serializers.ModelSerializer):
+    # The identifier a hotspot subscriber actually has. Without it the list
+    # shows a name, a phone and a PPPoE username that is always blank for
+    # them — searching for someone by the code on their receipt found them,
+    # and then the row gave no sign of why.
+    voucher_code = serializers.SerializerMethodField()
+
     class Meta:
         model = Customer
         # Explicit field list — never auto-expose new model fields without review
@@ -23,6 +29,7 @@ class CustomerSerializer(serializers.ModelSerializer):
             "pppoe_username",
             "pppoe_password",
             "hotspot_username",
+            "voucher_code",
             "router",
             "custom_data_cap_gb",
             "created_at",
@@ -30,6 +37,20 @@ class CustomerSerializer(serializers.ModelSerializer):
         extra_kwargs = {
             "pppoe_password": {"write_only": True},
         }
+
+    def get_voucher_code(self, obj):
+        if obj.connection_type != "hotspot":
+            return None
+        # Prefetched by the list view, so this costs no query per row.
+        vouchers = [
+            v
+            for sub in obj.subscriptions.all()
+            for v in sub.vouchers.all()
+            if v.is_active
+        ]
+        if not vouchers:
+            return None
+        return max(vouchers, key=lambda v: v.created_at).code
 
     def validate_hotspot_username(self, value):
         """
@@ -200,6 +221,52 @@ class MpesaTransactionDashboardSerializer(serializers.ModelSerializer):
             "error_message",
             "created_at",
         )
+
+
+class MpesaTransactionSerializer(serializers.ModelSerializer):
+    """
+    A transaction with who it turned out to be.
+
+    The dashboard serializer above carries only what a failure needs. Reading
+    the ledger is a different job: the operator is usually holding a receipt
+    number a customer read out and wants to know whether it arrived, what it
+    paid for and which kind of connection it was.
+    """
+    customer = serializers.SerializerMethodField()
+    customer_id = serializers.SerializerMethodField()
+    connection_type = serializers.SerializerMethodField()
+    invoice_number = serializers.CharField(
+        source="invoice.invoice_number", read_only=True, default=None)
+
+    class Meta:
+        model = MpesaTransaction
+        fields = (
+            "id", "mpesa_receipt", "phone_number", "account_reference",
+            "amount", "status", "processed", "error_message", "created_at",
+            "customer", "customer_id", "connection_type", "invoice_number",
+        )
+
+    def _customer(self, obj):
+        # Either link may be the one that resolved: a failed transaction never
+        # became a Payment, and one that arrived for an already-paid invoice
+        # has the invoice but no payment of its own.
+        if obj.payment_id and obj.payment:
+            return obj.payment.customer
+        if obj.invoice_id and obj.invoice:
+            return obj.invoice.customer
+        return None
+
+    def get_customer(self, obj):
+        c = self._customer(obj)
+        return c.full_name if c else None
+
+    def get_customer_id(self, obj):
+        c = self._customer(obj)
+        return c.id if c else None
+
+    def get_connection_type(self, obj):
+        c = self._customer(obj)
+        return c.connection_type if c else None
 
 
 class UserProfileSerializer(serializers.ModelSerializer):
