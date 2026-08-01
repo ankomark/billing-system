@@ -94,7 +94,7 @@ export default function AccessLookup() {
         <div>
           <h1 className="text-2xl font-bold text-white tracking-tight">Access Lookup</h1>
           <p className="text-slate-400 text-sm mt-1">
-            Search by voucher code, M-Pesa receipt, or customer phone number
+            Voucher code, M-Pesa receipt, phone number, PPPoE username, or device MAC
           </p>
         </div>
 
@@ -104,7 +104,7 @@ export default function AccessLookup() {
             <input
               type="text"
               className="flex-1 border border-white/15 bg-slate-950 text-slate-100 placeholder-slate-600 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
-              placeholder="WIFI-XXXXXX  ·  QK12345678  ·  2547XXXXXXXX"
+              placeholder="WIFI-XXXXXX · QK12345678 · 2547XXXXXXXX · SKY-1001"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={handleKeyDown}

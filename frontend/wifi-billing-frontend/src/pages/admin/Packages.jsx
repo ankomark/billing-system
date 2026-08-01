@@ -7,6 +7,8 @@ import AdminLayout from "../../components/admin/AdminLayout";
 import { SkeletonTable } from "../../components/ui/Skeleton";
 import { useConfirm } from "../../components/ui/ConfirmModal";
 import { fetchPackages, deletePackage } from "../../services/packages";
+import { getUser } from "../../services/auth";
+import { isOperatorAdmin } from "../../constants/roles";
 
 const PAGE_SIZE = 25;
 
@@ -15,6 +17,9 @@ export default function Packages() {
   const qc = useQueryClient();
   const { confirm, ConfirmDialog } = useConfirm();
   const [page, setPage] = useState(1);
+  // Staff may read the catalogue; only an admin may change it. Every one of
+  // these buttons produced a confirm dialog and then a 403 toast.
+  const canEdit = isOperatorAdmin(getUser()?.role);
 
   const { data, isLoading, isError, refetch, isFetching } = useQuery({
     queryKey: ["packages", page],
@@ -67,13 +72,15 @@ export default function Packages() {
               <RefreshCw size={12} className={isFetching ? "animate-spin" : ""} />
               Refresh
             </button>
-            <button
-              onClick={() => navigate("/admin/packages/new")}
-              className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 transition-colors"
-            >
-              <Plus size={15} />
-              Add Package
-            </button>
+            {canEdit && (
+              <button
+                onClick={() => navigate("/admin/packages/new")}
+                className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 transition-colors"
+              >
+                <Plus size={15} />
+                Add Package
+              </button>
+            )}
           </div>
         </div>
 
@@ -115,18 +122,24 @@ export default function Packages() {
                       </td>
                       <td className="px-6 py-4">
                         <div className="flex items-center gap-3">
-                          <button
-                            onClick={() => navigate(`/admin/packages/${p.id}`)}
-                            className="text-blue-600 hover:text-blue-800 text-xs font-medium transition-colors"
-                          >
-                            Edit
-                          </button>
-                          <button
-                            onClick={() => handleDelete(p)}
-                            className="text-red-500 hover:text-red-300 text-xs font-medium transition-colors"
-                          >
-                            Delete
-                          </button>
+                          {canEdit ? (
+                            <>
+                              <button
+                                onClick={() => navigate(`/admin/packages/${p.id}`)}
+                                className="text-blue-600 hover:text-blue-800 text-xs font-medium transition-colors"
+                              >
+                                Edit
+                              </button>
+                              <button
+                                onClick={() => handleDelete(p)}
+                                className="text-red-500 hover:text-red-300 text-xs font-medium transition-colors"
+                              >
+                                Delete
+                              </button>
+                            </>
+                          ) : (
+                            <span className="text-xs text-slate-600">—</span>
+                          )}
                         </div>
                       </td>
                     </tr>

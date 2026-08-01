@@ -33,3 +33,15 @@ export function homeFor(role) {
   if (role === CUSTOMER) return "/customer/pppoe";
   return "/admin/dashboard";
 }
+
+/**
+ * May this account change things, or only look?
+ *
+ * The sidebar answered this with its own `role !== "tenant_staff"` and the
+ * pages did not answer it at all — so operator staff were shown Add Customer
+ * and Delete buttons that could only ever produce a 403. One answer, in the
+ * same file as the roles themselves.
+ */
+export function isOperatorAdmin(role) {
+  return OPERATOR_ADMIN_ROLES.includes(role);
+}

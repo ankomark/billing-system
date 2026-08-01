@@ -2234,9 +2234,17 @@ class AdminAccessLookupView(APIView):
             })
 
         # --------------------------------------------------
-        # 3️⃣ Phone number lookup
+        # 3️⃣ Phone number, PPPoE username, or device MAC
         # --------------------------------------------------
-        customer = Customer.objects.filter(phone=query).first()
+        # The username and the MAC were missing. This page exists for someone
+        # standing at a counter reading out whatever they have, and for a
+        # PPPoE subscriber — most subscribers — that is their username. The
+        # page could not find the commonest kind of access it is named after.
+        customer = (
+            Customer.objects.filter(phone=query).first()
+            or Customer.objects.filter(pppoe_username__iexact=query).first()
+            or Customer.objects.filter(hotspot_username__iexact=query).first()
+        )
 
         if customer:
             sub = (
@@ -2255,8 +2263,14 @@ class AdminAccessLookupView(APIView):
             pkg = sub.package
             voucher = sub.vouchers.filter(is_active=True).first()
 
+            matched = "phone"
+            if customer.pppoe_username and customer.pppoe_username.lower() == query.lower():
+                matched = "pppoe_username"
+            elif customer.hotspot_username and customer.hotspot_username.lower() == query.lower():
+                matched = "device"
+
             return Response({
-                "type": "phone",
+                "type": matched,
                 "customer": {
                     "id": customer.id,
                     "name": customer.full_name,

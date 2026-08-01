@@ -6738,3 +6738,172 @@ class CustomerPortalTests(TwoOperatorMixin, TestCase):
                      "/api/system/settings/", "/api/admin/pppoe/sessions/"):
             with self.subTest(path=path):
                 self.assertEqual(client.get(path).status_code, 403)
+
+
+# =====================================================
+# 39. The operator console, as both roles that use it
+# =====================================================
+
+class AccessLookupTests(TwoOperatorMixin, TestCase):
+    """
+    The page someone opens with a customer standing in front of them, reading
+    out whatever they have.
+
+    It searched voucher code, M-Pesa receipt and phone — not the PPPoE
+    username, which is the only identifier most subscribers have, and not the
+    device MAC. The page named after looking up access could not look up the
+    commonest kind of it.
+    """
+
+    URL = "/api/admin/access-lookup/"
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        d = self.data["t1"]
+        with tenant_context(self.t1):
+            d["customer"].pppoe_username = "SKY-9001"
+            d["customer"].save()
+            self.sub = d["sub"]
+            self.sub.expiry_date = timezone.now() + timezone.timedelta(days=5)
+            self.sub.status = "active"
+            self.sub.save()
+
+            self.hotspot = Customer.objects.create(
+                tenant=self.t1, full_name="HS One", phone="254733000001",
+                connection_type="hotspot", hotspot_username="AA:BB:CC:11:22:33")
+            hs_sub = Subscription.objects.create(
+                tenant=self.t1, customer=self.hotspot, package=d["package"],
+                expiry_date=timezone.now() + timezone.timedelta(days=1))
+            Voucher.objects.create(
+                tenant=self.t1, code="WIFI-LOOK01", subscription=hs_sub,
+                expires_at=hs_sub.expiry_date)
+
+    def look(self, q, user=None):
+        return self.auth(user or self.admin1).get(self.URL, {"q": q})
+
+    def test_a_pppoe_username_finds_its_subscriber(self):
+        resp = self.look("SKY-9001")
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(resp.data["customer"]["name"], "t1-customer")
+        self.assertEqual(resp.data["type"], "pppoe_username")
+
+    def test_a_username_is_not_case_sensitive(self):
+        """Read off a screen and typed by hand, at a counter."""
+        self.assertEqual(self.look("sky-9001").status_code, 200)
+
+    def test_a_device_mac_finds_its_subscriber(self):
+        resp = self.look("AA:BB:CC:11:22:33")
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(resp.data["customer"]["name"], "HS One")
+        self.assertEqual(resp.data["type"], "device")
+
+    def test_the_older_ways_still_work(self):
+        for query, kind in (("WIFI-LOOK01", "voucher"),
+                            ("254733000001", "phone")):
+            with self.subTest(query=query):
+                resp = self.look(query)
+                self.assertEqual(resp.status_code, 200, resp.data)
+                self.assertEqual(resp.data["type"], kind)
+
+    def test_a_username_does_not_reach_across_operators(self):
+        """It joins on more fields now; it must not join out of the tenant."""
+        with tenant_context(self.t2):
+            self.data["t2"]["customer"].pppoe_username = "SKY-9002"
+            self.data["t2"]["customer"].save()
+        self.assertEqual(self.look("SKY-9002").status_code, 404)
+
+    def test_an_unknown_query_is_still_a_clean_miss(self):
+        self.assertEqual(self.look("nothing-like-this").status_code, 404)
+
+    def test_operator_staff_may_look_someone_up(self):
+        """The support desk is the whole point of the staff role."""
+        staff = User.objects.create_user(
+            username="look_staff", password="pw", role=User.TENANT_STAFF,
+            tenant=self.t1, is_staff=True)
+        self.assertEqual(self.look("SKY-9001", user=staff).status_code, 200)
+
+
+class OperatorRoleSurfaceTests(TwoOperatorMixin, TestCase):
+    """
+    What each role that can sign into the operator console may actually read.
+
+    The customer portal shipped a page whose own users were forbidden from the
+    endpoint it fetched, and the silence made it look like there was simply no
+    data. These pin the same question for the console: a page a role can open
+    is a page whose reads that role can make.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        self.staff = User.objects.create_user(
+            username="surface_staff", password="pw", role=User.TENANT_STAFF,
+            tenant=self.t1, is_staff=True)
+
+    # Every read behind a page operator staff can open.
+    STAFF_READABLE = [
+        "/api/reports/revenue/",
+        "/api/admin/usage/daily/",
+        "/api/reports/analytics/",
+        "/api/customers/",
+        "/api/packages/",
+        "/api/dashboard/invoices/unpaid/",
+        "/api/mpesa/transactions/",
+        "/api/dashboard/mpesa/failed/",
+        "/api/admin/pppoe/sessions/",
+        "/api/admin/routers/",
+        "/api/admin/routers/health/",
+        "/api/admin/routers/events/",
+        "/api/admin/routers/failovers/",
+        "/api/auth/profile/",
+    ]
+
+    # Behind a page only an admin can open.
+    ADMIN_ONLY = [
+        "/api/system/settings/",
+        "/api/users/",
+        "/api/stations/",
+        "/api/platform/my-account/",
+        "/api/platform/invoices/",
+    ]
+
+    def test_staff_can_read_every_page_they_can_open(self):
+        client = self.auth(self.staff)
+        for path in self.STAFF_READABLE:
+            with self.subTest(path=path):
+                self.assertLess(
+                    client.get(path).status_code, 400,
+                    "the router admits staff to this page but the API refuses them",
+                )
+
+    def test_staff_cannot_read_what_only_an_admin_may_open(self):
+        client = self.auth(self.staff)
+        for path in self.ADMIN_ONLY:
+            with self.subTest(path=path):
+                self.assertEqual(client.get(path).status_code, 403)
+
+    def test_an_admin_can_read_all_of_it(self):
+        client = self.auth(self.admin1)
+        for path in self.STAFF_READABLE + self.ADMIN_ONLY:
+            with self.subTest(path=path):
+                self.assertLess(client.get(path).status_code, 400)
+
+    def test_staff_may_look_but_not_change(self):
+        """The split the staff role exists for."""
+        client = self.auth(self.staff)
+        self.assertEqual(client.get("/api/customers/").status_code, 200)
+        self.assertEqual(
+            client.post("/api/customers/",
+                        {"full_name": "Nope", "phone": "254700999999",
+                         "connection_type": "pppoe"}, format="json").status_code,
+            403)
+        self.assertEqual(
+            client.delete(f"/api/customers/{self.data['t1']['customer'].id}/").status_code,
+            403)
+
+    def test_nothing_here_reaches_the_other_operator(self):
+        client = self.auth(self.admin1)
+        rows = client.get("/api/customers/").data["results"]
+        self.assertTrue(rows)
+        self.assertNotIn("t2-customer", {r["full_name"] for r in rows})

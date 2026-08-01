@@ -22,8 +22,20 @@ jest.mock('react-router-dom', () => ({
   useNavigate: () => mockNavigate,
 }))
 
+/**
+ * Who is signed in decides what this page offers. Staff may read the list;
+ * only an admin may add or delete, and the buttons follow that — they used to
+ * be shown to everyone and produced a confirm dialog followed by a 403.
+ */
+const signInAs = (role) =>
+  localStorage.setItem('user', JSON.stringify({ username: 'u', role }))
+
 describe('Customers', () => {
-  beforeEach(() => mockNavigate.mockReset())
+  beforeEach(() => {
+    mockNavigate.mockReset()
+    localStorage.clear()
+    signInAs('tenant_admin')
+  })
 
   test('renders customer rows from paginated API response', async () => {
     renderWithProviders(<Customers />)
@@ -71,6 +83,19 @@ describe('Customers', () => {
     const viewBtn = await screen.findByTitle('View details')
     fireEvent.click(viewBtn)
     expect(mockNavigate).toHaveBeenCalledWith('/admin/customers/1')
+  })
+
+  test('hides add and delete from operator staff', async () => {
+    signInAs('tenant_staff')
+    renderWithProviders(<Customers />)
+    await screen.findByTitle('View details')
+    expect(screen.queryByTitle('Delete customer')).not.toBeInTheDocument()
+    expect(screen.queryByText('Add Customer')).not.toBeInTheDocument()
+  })
+
+  test('shows add and delete to an operator admin', async () => {
+    renderWithProviders(<Customers />)
+    expect(await screen.findByTitle('Delete customer')).toBeInTheDocument()
   })
 
   test('shows error banner when API fails', async () => {

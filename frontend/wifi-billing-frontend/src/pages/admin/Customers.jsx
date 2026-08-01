@@ -14,6 +14,8 @@ import StatusBadge from "../../components/ui/StatusBadge";
 import EmptyState from "../../components/ui/EmptyState";
 import useDebounce from "../../hooks/useDebounce";
 import { fetchCustomers, deleteCustomer } from "../../services/customers";
+import { getUser } from "../../services/auth";
+import { isOperatorAdmin } from "../../constants/roles";
 
 const PAGE_SIZE = 25;
 
@@ -67,6 +69,9 @@ export default function Customers() {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const { confirm, ConfirmDialog } = useConfirm();
+  // Staff may read the list; only an admin may change it. Showing them the
+  // buttons anyway meant a confirm dialog followed by a 403 toast.
+  const canEdit = isOperatorAdmin(getUser()?.role);
 
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
@@ -170,13 +175,15 @@ export default function Customers() {
                 Export
               </button>
             )}
-            <button
-              onClick={() => navigate("/admin/customers/new")}
-              className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 transition-colors"
-            >
-              <Plus size={15} />
-              Add Customer
-            </button>
+            {canEdit && (
+              <button
+                onClick={() => navigate("/admin/customers/new")}
+                className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 transition-colors"
+              >
+                <Plus size={15} />
+                Add Customer
+              </button>
+            )}
           </div>
         </div>
 
@@ -260,7 +267,7 @@ export default function Customers() {
                             : "Add your first customer to get started."
                         }
                         action={
-                          !debouncedSearch && !statusFilter && !typeFilter && (
+                          canEdit && !debouncedSearch && !statusFilter && !typeFilter && (
                             <button
                               onClick={() => navigate("/admin/customers/new")}
                               className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 transition-colors"
@@ -310,13 +317,15 @@ export default function Customers() {
                           >
                             <Eye size={15} />
                           </button>
-                          <button
-                            onClick={() => handleDelete(c)}
-                            className="p-1.5 rounded-lg text-slate-500 hover:text-red-300 hover:bg-red-500/10 transition-colors"
-                            title="Delete customer"
-                          >
-                            <Trash2 size={15} />
-                          </button>
+                          {canEdit && (
+                            <button
+                              onClick={() => handleDelete(c)}
+                              className="p-1.5 rounded-lg text-slate-500 hover:text-red-300 hover:bg-red-500/10 transition-colors"
+                              title="Delete customer"
+                            >
+                              <Trash2 size={15} />
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>

@@ -143,7 +143,12 @@ export default function App() {
         <Route path="/admin/packages/new"           element={<Admin roles={SUPER_ROLES}><PackageForm /></Admin>} />
         <Route path="/admin/packages/:id"           element={<Admin roles={SUPER_ROLES}><PackageForm /></Admin>} />
         <Route path="/admin/invoices/unpaid"        element={<Admin><UnpaidInvoices /></Admin>} />
-        <Route path="/admin/mpesa/failed"           element={<Admin roles={SUPER_ROLES}><FailedMpesa /></Admin>} />
+        {/* Read-only diagnostics, and the sidebar has always offered both to
+            staff — who were then bounced by the route while the API allowed
+            them. Two of the three layers already agreed; this was the odd
+            one out. Reading is the day-to-day work the staff role exists
+            for. */}
+        <Route path="/admin/mpesa/failed"           element={<Admin><FailedMpesa /></Admin>} />
         <Route path="/admin/mpesa/transactions"     element={<Admin><MpesaTransactions /></Admin>} />
 
         {/* Admin — network */}
@@ -151,7 +156,7 @@ export default function App() {
         <Route path="/admin/routers"                element={<Admin><Routers /></Admin>} />
         <Route path="/admin/stations"               element={<Admin roles={SUPER_ROLES}><Stations /></Admin>} />
         <Route path="/admin/router-health"          element={<Admin><RouterHealth /></Admin>} />
-        <Route path="/admin/failover-logs"          element={<Admin roles={SUPER_ROLES}><FailoverLogs /></Admin>} />
+        <Route path="/admin/failover-logs"          element={<Admin><FailoverLogs /></Admin>} />
         <Route path="/admin/usage-alerts"           element={<Admin><UsageAlerts /></Admin>} />
 
         {/* Admin — communications */}
