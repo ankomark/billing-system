@@ -3,15 +3,19 @@ import api from "../../services/api";
 
 export default function PPPoEUsage() {
   const [data, setData] = useState(null);
+  const [failed, setFailed] = useState(false);
   const [loading, setLoading] = useState(true);
 
   const loadUsage = async () => {
     try {
-      const res = await api.get("/pppoe/usage/");
+      const res = await api.get("pppoe/usage/");
       setData(res.data);
-    } catch (err) {
-      console.error("Failed to fetch PPPoE usage", err);
-      setData({ connected: false });
+      setFailed(false);
+    } catch {
+      // A failed request used to be reported as "PPPoE not connected", so a
+      // blip on the way to the API read as the customer's internet being
+      // down. Those are different problems and only one of them is theirs.
+      setFailed(true);
     } finally {
       setLoading(false);
     }
@@ -28,6 +32,14 @@ export default function PPPoEUsage() {
       <p className="text-center text-sm text-gray-500 mt-4">
         Checking connection status…
       </p>
+    );
+  }
+
+  if (failed) {
+    return (
+      <div className="mt-6 rounded bg-slate-100 p-4 text-center text-sm text-slate-600">
+        Couldn't check your connection just now — retrying.
+      </div>
     );
   }
 

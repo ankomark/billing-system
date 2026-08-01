@@ -51,6 +51,8 @@ from .views import (
 
     # PPPoE — customer
     PPPoECustomerPortalView,
+    PPPoEPackagesView,
+    PPPoERenewalStatusView,
     PPPoERenewView,
     PppoeStatusView,
     PPPoELiveStatusView,
@@ -177,6 +179,10 @@ urlpatterns = [
 
     # ─── PPPoE — customer portal ─────────────────────────────────────────────
     path("api/pppoe/portal/",        PPPoECustomerPortalView.as_view(), name="pppoe-portal"),
+    # A subscriber may read the catalogue they can renew onto. /api/packages/
+    # is operator staff only, so the renew page used to 403 and show nothing.
+    path("api/pppoe/packages/",      PPPoEPackagesView.as_view(),       name="pppoe-packages"),
+    path("api/pppoe/renewal-status/", PPPoERenewalStatusView.as_view(), name="pppoe-renewal-status"),
     path("api/pppoe/renew/",         PPPoERenewView.as_view(),          name="pppoe-renew"),
     path("api/pppoe/live-status/",   PPPoELiveStatusView.as_view(),     name="pppoe-live-status"),
     path("api/pppoe/control/",       PPPoEControlView.as_view(),        name="pppoe-control"),

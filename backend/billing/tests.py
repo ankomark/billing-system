@@ -1961,10 +1961,12 @@ class PublicEndpointScopingTests(TwoOperatorMixin, TestCase):
                 def json(self): return {"ResponseCode": "0"}
             return R()
 
+        # Renewing queues the push rather than making it. It used to call
+        # Safaricom inside the request — a worker held for however long Daraja
+        # took, on a page a customer is watching — so the call this test cares
+        # about now happens in the task, and that is where it is followed.
         client = self.auth(user)
-        with override_settings(PLATFORM_BASE_URL="https://billing.example.com"), \
-             patch("billing.mpesa_client.get_mpesa_access_token", return_value="tok"), \
-             patch("billing.mpesa_client.requests.post", side_effect=fake_post):
+        with patch("billing.views.initiate_stk_push_task.delay") as queued:
             resp = client.post(
                 "/api/pppoe/renew/",
                 {"package_id": self.data["t2"]["package"].id, "phone": "254700000000"},
@@ -1972,6 +1974,14 @@ class PublicEndpointScopingTests(TwoOperatorMixin, TestCase):
             )
 
         self.assertEqual(resp.status_code, 200, getattr(resp, "data", None))
+        self.assertTrue(queued.called, "the renewal never reached the payment task")
+        invoice_id, phone = queued.call_args.args
+
+        with override_settings(PLATFORM_BASE_URL="https://billing.example.com"), \
+             patch("billing.mpesa_client.get_mpesa_access_token", return_value="tok"), \
+             patch("billing.mpesa_client.requests.post", side_effect=fake_post):
+            initiate_stk_push_task(invoice_id, phone)
+
         self.assertIn(self.t2.public_token, captured["callback"])
 
 
@@ -6537,3 +6547,194 @@ class HotspotPollThrottleTests(TwoOperatorMixin, TestCase):
         poll = int(rates["hotspot_poll"].split("/")[0])
         guess = int(rates["hotspot_public"].split("/")[0])
         self.assertGreater(poll, guess)
+
+
+# =====================================================
+# 38. The subscriber's own portal
+# =====================================================
+
+class CustomerPortalTests(TwoOperatorMixin, TestCase):
+    """
+    The two pages a PPPoE subscriber actually uses.
+
+    Renewing was broken end to end. The page listed packages from an operator
+    endpoint that answers 403 for a subscriber — with nothing catching it, so
+    the list was silently empty and the button permanently disabled — and had
+    it worked, paying navigated to a route that was never registered, landing
+    the customer on the 404 page with their money gone.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+
+        for tag in ("t1", "t2"):
+            d = self.data[tag]
+            with tenant_context(d["tenant"]):
+                d["customer"].pppoe_username = f"{tag}-user"
+                d["customer"].pppoe_password = "secret"
+                d["customer"].save()
+                d["user"] = User.objects.create_user(
+                    username=f"{tag}_sub", password="pw",
+                    role=User.CUSTOMER, tenant=d["tenant"])
+                d["customer"].user = d["user"]
+                d["customer"].save(update_fields=["user"])
+                d["hotspot_pkg"] = Package.objects.create(
+                    tenant=d["tenant"], name=f"{tag}-hotspot",
+                    download_speed=5, upload_speed=5, price=Decimal("50.00"),
+                    duration_value=1, duration_unit="hours",
+                    monthly_data_cap_gb=0, is_hotspot=True)
+
+        self.sub_user = self.data["t1"]["user"]
+
+    # ---- the catalogue -----------------------------------------------------
+
+    def test_a_subscriber_can_list_what_they_may_renew_onto(self):
+        resp = self.auth(self.sub_user).get("/api/pppoe/packages/")
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertTrue(resp.data["results"], "the renew page has nothing to show")
+
+    def test_the_operator_catalogue_stays_shut(self):
+        """
+        The reason this endpoint exists rather than widening that one: the
+        admin serializer is fields = "__all__".
+        """
+        self.assertEqual(
+            self.auth(self.sub_user).get("/api/packages/").status_code, 403)
+
+    def test_only_this_operators_packages_are_offered(self):
+        names = {p["name"] for p in
+                 self.auth(self.sub_user).get("/api/pppoe/packages/").data["results"]}
+        self.assertIn("t1-package", names)
+        self.assertNotIn("t2-package", names)
+
+    def test_hotspot_packages_are_not_offered_to_a_pppoe_line(self):
+        names = {p["name"] for p in
+                 self.auth(self.sub_user).get("/api/pppoe/packages/").data["results"]}
+        self.assertNotIn("t1-hotspot", names)
+
+    def test_the_catalogue_exposes_no_internal_columns(self):
+        """A subscriber sees a price list, not the model."""
+        row = self.auth(self.sub_user).get("/api/pppoe/packages/").data["results"][0]
+        for leaked in ("tenant", "monthly_data_cap_gb_raw", "created_at"):
+            self.assertNotIn(leaked, row)
+
+    # ---- renewing ----------------------------------------------------------
+
+    def _configure_mpesa(self, tenant):
+        with tenant_context(tenant):
+            for key in ("MPESA_CONSUMER_KEY", "MPESA_CONSUMER_SECRET",
+                        "MPESA_SHORTCODE", "MPESA_PASSKEY"):
+                SystemSetting.objects.update_or_create(
+                    tenant=tenant, key=key, defaults={"value": "x"})
+        clear_settings_cache(tenant=tenant)
+
+    def test_renewing_queues_the_prompt_rather_than_waiting_on_safaricom(self):
+        """
+        This called Daraja inside the request: a worker held for however long
+        Safaricom took, on a page a customer is watching, and a slow answer
+        became a timeout with the subscription already created.
+        """
+        self._configure_mpesa(self.t1)
+        with patch("billing.views.initiate_stk_push_task.delay") as queued, \
+             patch("billing.views.initiate_stk_push") as direct:
+            resp = self.auth(self.sub_user).post(
+                "/api/pppoe/renew/",
+                {"package_id": self.data["t1"]["package"].id, "phone": "0712345678"},
+                format="json")
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertTrue(queued.called)
+        self.assertFalse(direct.called, "still calling Safaricom in the request")
+
+    def test_renewing_returns_the_invoice_the_next_page_needs(self):
+        self._configure_mpesa(self.t1)
+        with patch("billing.views.initiate_stk_push_task.delay"):
+            resp = self.auth(self.sub_user).post(
+                "/api/pppoe/renew/",
+                {"package_id": self.data["t1"]["package"].id, "phone": "0712345678"},
+                format="json")
+        self.assertTrue(resp.data["invoice_number"])
+
+    def test_an_operator_with_no_mpesa_says_so_immediately(self):
+        resp = self.auth(self.sub_user).post(
+            "/api/pppoe/renew/",
+            {"package_id": self.data["t1"]["package"].id, "phone": "0712345678"},
+            format="json")
+        self.assertEqual(resp.status_code, 503)
+        self.assertIn("cannot accept payments", resp.data["detail"])
+
+    def test_no_ghost_subscription_when_payments_are_unconfigured(self):
+        before = Subscription.objects.all_tenants().filter(
+            customer=self.data["t1"]["customer"]).count()
+        self.auth(self.sub_user).post(
+            "/api/pppoe/renew/",
+            {"package_id": self.data["t1"]["package"].id, "phone": "0712345678"},
+            format="json")
+        self.assertEqual(
+            Subscription.objects.all_tenants().filter(
+                customer=self.data["t1"]["customer"]).count(),
+            before, "a failed renewal left a subscription behind")
+
+    def test_a_pppoe_line_cannot_be_renewed_onto_hotspot_pricing(self):
+        self._configure_mpesa(self.t1)
+        resp = self.auth(self.sub_user).post(
+            "/api/pppoe/renew/",
+            {"package_id": self.data["t1"]["hotspot_pkg"].id, "phone": "0712345678"},
+            format="json")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_another_operators_package_cannot_be_renewed_onto(self):
+        self._configure_mpesa(self.t1)
+        resp = self.auth(self.sub_user).post(
+            "/api/pppoe/renew/",
+            {"package_id": self.data["t2"]["package"].id, "phone": "0712345678"},
+            format="json")
+        self.assertEqual(resp.status_code, 404)
+
+    # ---- waiting for the money ---------------------------------------------
+
+    def test_a_subscriber_can_watch_their_own_renewal(self):
+        invoice = self.data["t1"]["invoice"]
+        resp = self.auth(self.sub_user).get(
+            "/api/pppoe/renewal-status/", {"ref": invoice.invoice_number})
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(resp.data["status"], ("unpaid", "pending", "paid"))
+
+    def test_a_subscriber_cannot_watch_somebody_elses(self):
+        """
+        Scoped to the caller's own invoices, which is why this one needs no
+        token where the hotspot equivalent does.
+        """
+        other = self.data["t2"]["invoice"]
+        resp = self.auth(self.sub_user).get(
+            "/api/pppoe/renewal-status/", {"ref": other.invoice_number})
+        self.assertEqual(resp.data["status"], "not_found")
+
+    def test_a_paid_renewal_reports_the_new_expiry(self):
+        invoice = self.data["t1"]["invoice"]
+        with tenant_context(self.t1):
+            invoice.payment_status = "paid"
+            invoice.save(update_fields=["payment_status"])
+        resp = self.auth(self.sub_user).get(
+            "/api/pppoe/renewal-status/", {"ref": invoice.invoice_number})
+        self.assertEqual(resp.data["status"], "paid")
+        self.assertTrue(resp.data["expires_at"])
+
+    # ---- the portal itself -------------------------------------------------
+
+    def test_a_subscriber_reads_only_their_own_account(self):
+        resp = self.auth(self.sub_user).get("/api/pppoe/portal/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["customer"]["full_name"], "t1-customer")
+
+    def test_operator_staff_cannot_use_the_subscriber_portal_as_a_backdoor(self):
+        """It reads customer_profile, and staff have none."""
+        resp = self.auth(self.admin1).get("/api/pppoe/portal/")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_a_subscriber_cannot_reach_the_operator_console(self):
+        client = self.auth(self.sub_user)
+        for path in ("/api/customers/", "/api/mpesa/transactions/",
+                     "/api/system/settings/", "/api/admin/pppoe/sessions/"):
+            with self.subTest(path=path):
+                self.assertEqual(client.get(path).status_code, 403)

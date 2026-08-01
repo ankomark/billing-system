@@ -1,5 +1,5 @@
-import api from "../../services/api";
 import { useState } from "react";
+import { reconnectPppoe } from "../../services/customerPortal";
 
 export default function PPPoEControls({ onAction }) {
   const [loading, setLoading] = useState(false);
@@ -10,14 +10,17 @@ export default function PPPoEControls({ onAction }) {
     setMessage("");
 
     try {
-      await api.post("/pppoe/reconnect/");
-      setMessage("Reconnecting internet…");
+      await reconnectPppoe();
+      setMessage("Reconnecting… this takes a few seconds.");
 
-      // Refresh portal data
-      if (onAction) onAction();
+      // The work is queued, so the portal has nothing new to say for a moment.
+      // Refreshing immediately showed the old state and looked like nothing
+      // happened.
+      if (onAction) setTimeout(onAction, 4000);
     } catch (err) {
-      console.error(err);
-      setMessage("Reconnect failed. Please try again.");
+      setMessage(
+        err.response?.data?.detail || "Reconnect failed. Please try again."
+      );
     } finally {
       setLoading(false);
     }

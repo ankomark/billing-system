@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import api from "../../services/api";
 import { useNavigate } from "react-router-dom";
+import { fetchPortal } from "../../services/customerPortal";
 import PPPoELiveStatus from "./PPPoEUsage";
 import PPPoEControls from "./PPPoEControls";
 import PPPoEUsageGraph from "../../components/usage/PPPoEUsageGraph";
@@ -12,10 +12,14 @@ export default function PPPoEPortal() {
 
   const loadData = async () => {
     try {
-      const res = await api.get("pppoe/portal/");
-      setData(res.data);
-    } catch {
-      setError("Failed to load PPPoE information");
+      setData(await fetchPortal());
+      setError("");
+    } catch (e) {
+      setError(
+        e.response?.status === 404
+          ? "This login is not linked to a PPPoE account."
+          : "Couldn't load your account. Check your connection."
+      );
     }
   };
 
@@ -25,10 +29,20 @@ export default function PPPoEPortal() {
     return () => clearInterval(interval);
   }, []);
 
-  if (error) {
+  // An error used to be terminal: a red line, no retry, nothing to press. On a
+  // page that polls every thirty seconds anyway, one blip stranded the customer.
+  if (error && !data) {
     return (
-      <div className="min-h-screen flex items-center justify-center text-red-600">
-        {error}
+      <div className="min-h-screen flex items-center justify-center bg-slate-100 p-6">
+        <div className="bg-white rounded-2xl shadow p-6 max-w-sm w-full text-center">
+          <p className="text-red-600 text-sm mb-4">{error}</p>
+          <button
+            onClick={loadData}
+            className="w-full rounded-xl bg-blue-600 py-2.5 text-sm font-semibold text-white"
+          >
+            Try again
+          </button>
+        </div>
       </div>
     );
   }
@@ -70,10 +84,23 @@ export default function PPPoEPortal() {
           <p><b>Name:</b> {data.customer.full_name}</p>
           <p><b>Phone:</b> {data.customer.phone}</p>
 
+          {/* Both halves, or an honest explanation. A blank line where the
+              password should be reads as a rendering fault; it means the
+              credentials were never generated, which is something support can
+              actually fix. */}
           <div className="bg-gray-100 p-4 rounded">
             <p className="font-semibold">PPPoE Credentials</p>
-            <p className="font-mono">{data.pppoe.username}</p>
-            <p className="font-mono">{data.pppoe.password}</p>
+            {data.pppoe.username && data.pppoe.password ? (
+              <>
+                <p className="font-mono">{data.pppoe.username}</p>
+                <p className="font-mono">{data.pppoe.password}</p>
+              </>
+            ) : (
+              <p className="text-xs text-slate-500 mt-1">
+                Your router credentials have not been issued yet. Please contact
+                support.
+              </p>
+            )}
           </div>
 
           <p><b>Package:</b> {data.package.name}</p>

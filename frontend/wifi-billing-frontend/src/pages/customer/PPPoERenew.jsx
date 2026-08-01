@@ -1,9 +1,13 @@
 import { useState, useEffect } from "react";
-import api from "../../services/api";
 import { useNavigate } from "react-router-dom";
+import {
+  fetchRenewalPackages,
+  renewSubscription,
+} from "../../services/customerPortal";
 
 export default function PPPoERenew() {
   const [packages, setPackages] = useState([]);
+  const [loadingPackages, setLoadingPackages] = useState(true);
   const [phone, setPhone]       = useState("");
   const [selected, setSelected] = useState(null);
   const [loading, setLoading]   = useState(false);
@@ -11,8 +15,19 @@ export default function PPPoERenew() {
   const navigate = useNavigate();
 
   useEffect(() => {
-    // packages/ is paginated — use .results
-    api.get("packages/").then((res) => setPackages(res.data.results || res.data));
+    let cancelled = false;
+    // This called `packages/`, which is operator staff only. Every subscriber
+    // got a 403, and with no catch the page silently showed an empty list and
+    // a disabled button — the renew flow could not be started at all.
+    fetchRenewalPackages()
+      .then((list) => { if (!cancelled) setPackages(list); })
+      .catch(() => {
+        if (!cancelled) {
+          setError("Couldn't load the packages. Please try again in a moment.");
+        }
+      })
+      .finally(() => { if (!cancelled) setLoadingPackages(false); });
+    return () => { cancelled = true; };
   }, []);
 
   const handleRenew = async () => {
@@ -20,8 +35,14 @@ export default function PPPoERenew() {
     if (!phone.trim()) { setError("Please enter your M-Pesa phone number"); return; }
     setError(""); setLoading(true);
     try {
-      const res = await api.post("pppoe/renew/", { package_id: selected.id, phone });
-      navigate(`/customer/pppoe/status?subscription=${res.data.subscription_id}`);
+      const { invoice_number: reference } = await renewSubscription({
+        packageId: selected.id,
+        phone: phone.trim(),
+      });
+      // By invoice, and to a route that exists. This used to send people to
+      // /customer/pppoe/status?subscription=…, which was never routed — so
+      // the last thing a subscriber saw after paying was the 404 page.
+      navigate(`/customer/pppoe/status?ref=${encodeURIComponent(reference)}`);
     } catch (err) {
       setError(err.response?.data?.detail || "Payment failed to start. Please try again.");
     } finally {
@@ -56,6 +77,17 @@ export default function PPPoERenew() {
         {/* Package selection */}
         <p className="text-sm font-medium text-slate-700 mb-2">Choose Package</p>
         <div className="space-y-2 mb-6">
+          {loadingPackages && (
+            <>
+              <div className="h-[74px] animate-pulse rounded-xl bg-slate-100" />
+              <div className="h-[74px] animate-pulse rounded-xl bg-slate-100" />
+            </>
+          )}
+          {!loadingPackages && packages.length === 0 && !error && (
+            <p className="rounded-xl bg-slate-50 p-4 text-center text-sm text-slate-500">
+              No packages are available right now. Please contact support.
+            </p>
+          )}
           {packages.map((pkg) => (
             <button
               key={pkg.id}
@@ -71,7 +103,7 @@ export default function PPPoERenew() {
                 <div>
                   <p className="font-semibold text-slate-800">{pkg.name}</p>
                   <p className="text-xs text-slate-500 mt-0.5">
-                    {pkg.download_speed}/{pkg.upload_speed} Mbps · {pkg.duration_value} {pkg.duration_unit}
+                    {pkg.download_speed}/{pkg.upload_speed} Mbps · {pkg.duration}
                   </p>
                 </div>
                 <p className="font-bold text-blue-600 text-lg">KES {pkg.price}</p>

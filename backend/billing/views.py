@@ -1137,6 +1137,76 @@ class PPPoECustomerPortalView(APIView):
             "expiry_date": subscription.expiry_date,
             "server_time": timezone.now(),
         })
+class PPPoEPackagesView(APIView):
+    """
+    What a subscriber may renew onto.
+
+    The renew page fetched /api/packages/, which is operator staff only, so
+    every subscriber got a 403 and — because nothing caught it — an empty list
+    with a disabled button and no error. A PPPoE customer could not renew at
+    all.
+
+    Its own endpoint rather than widening that one: the admin serializer is
+    fields = "__all__", so pointing subscribers at it would hand them every
+    column the model ever grows. This returns the same explicit, public field
+    list the hotspot portal uses, scoped to the operator the subscriber
+    belongs to.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        customer = getattr(request.user, "customer_profile", None)
+        if customer is None:
+            return Response({"detail": "Customer profile not found"}, status=404)
+
+        from .serializers import PublicPackageSerializer
+
+        packages = (
+            Package.objects.all_tenants()
+            .filter(tenant_id=customer.tenant_id, is_hotspot=False)
+            .order_by("price")
+        )
+        return Response({"results": PublicPackageSerializer(packages, many=True).data})
+
+
+class PPPoERenewalStatusView(APIView):
+    """
+    Whether a renewal has been paid.
+
+    Scoped to the caller's own invoices, so unlike the hotspot equivalent it
+    needs no token — a subscriber is authenticated, and one subscriber cannot
+    address another's invoice.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [HotspotPollThrottle]
+
+    def get(self, request):
+        customer = getattr(request.user, "customer_profile", None)
+        reference = request.GET.get("ref")
+        if customer is None or not reference:
+            return Response({"status": "not_found"})
+
+        invoice = (
+            Invoice.objects.all_tenants()
+            .select_related("subscription")
+            .filter(tenant_id=customer.tenant_id,
+                    customer_id=customer.id,
+                    invoice_number=reference)
+            .first()
+        )
+        if invoice is None:
+            return Response({"status": "not_found"})
+
+        if invoice.payment_status != "paid":
+            return Response({"status": invoice.payment_status})
+
+        return Response({
+            "status": "paid",
+            "expires_at": invoice.subscription.expiry_date,
+            "package": getattr(invoice.subscription.package, "name", None),
+        })
+
+
 class PPPoERenewView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -1153,7 +1223,16 @@ class PPPoERenewView(APIView):
         except Customer.DoesNotExist:
             return Response({"detail": "Customer not found"}, status=404)
 
-        package = get_object_or_404(Package, id=package_id)
+        # Scoped to this subscriber's operator, and PPPoE only. Neither was
+        # checked: a package id from the hotspot catalogue renewed a PPPoE
+        # line onto an hour of hotspot access, at hotspot pricing.
+        package = (
+            Package.objects.all_tenants()
+            .filter(id=package_id, tenant_id=customer.tenant_id, is_hotspot=False)
+            .first()
+        )
+        if package is None:
+            return Response({"detail": "That package is not available."}, status=404)
 
         # === 1️⃣ CREATE RENEWAL SUBSCRIPTION ===
         subscription = Subscription.objects.create(
@@ -1166,31 +1245,40 @@ class PPPoERenewView(APIView):
         # === 2️⃣ GET THE AUTOMATICALLY CREATED INVOICE ===
         invoice = subscription.invoice
 
-        # Mark invoice pending
-        invoice.payment_status = "pending"
-        invoice.save()
+        # Deliberately NOT marked pending here. The task does that itself,
+        # inside select_for_update, because the same flag is its duplicate
+        # guard — an invoice already "pending" is one it refuses to push
+        # again. Setting it first therefore meant every renewal was blocked by
+        # a guard against itself and no prompt was ever sent.
 
         # === 3️⃣ TRIGGER DARAJA STK PUSH ===
-        try:
-            # tenant must be explicit: callback_url_for() needs the operator's
-            # public_token to derive their callback, and without it this raised
-            # PaymentsNotConfigured even for a fully configured operator.
-            stk_response = initiate_stk_push(
-                phone_number=phone,
-                amount=invoice.total_amount,
-                account_reference=invoice.invoice_number,
-                description="PPPoE Subscription Renewal",
-                tenant=customer.tenant,
-            )
-        except Exception as e:
-            subscription.delete()  # cascade-deletes the invoice, prevents ghost record
+        #
+        # Queued, not called here. This was a synchronous request to Safaricom
+        # inside the customer's own request: a gunicorn worker held for however
+        # long Daraja took, on a page someone is watching, and a slow response
+        # became a timeout with the subscription already created. Every other
+        # payment path in this codebase already goes through the task, which
+        # also retries.
+        #
+        # Configuration is still checked up front, because "cannot take
+        # payments" is an answer the customer should get now rather than after
+        # waiting for a prompt that will never arrive.
+        from billing.mpesa_client import missing_mpesa_keys
+
+        missing = missing_mpesa_keys(tenant=customer.tenant)
+        if missing:
+            subscription.delete()  # cascade-deletes the invoice, no ghost record
+            logger.warning("[pppoe] %s cannot take payments: missing %s",
+                           customer.tenant, missing)
             return Response(
-                {"detail": f"STK Push failed: {e}"},
-                status=500
+                {"detail": "This provider cannot accept payments yet."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
+
+        initiate_stk_push_task.delay(invoice.id, phone)
         
         return Response({
-            "detail": "STK Push Initiated",
+            "detail": "Check your phone for the M-Pesa prompt.",
             "invoice_number": invoice.invoice_number,
             "subscription_id": subscription.id,
         })

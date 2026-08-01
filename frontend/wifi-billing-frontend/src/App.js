@@ -37,6 +37,7 @@ const Users            = lazy(() => import("./pages/admin/Users"));
 // Customer
 const PPPoEPortal      = lazy(() => import("./pages/customer/PPPoEPortal"));
 const PPPoERenew       = lazy(() => import("./pages/customer/PPPoERenew"));
+const PPPoERenewStatus = lazy(() => import("./pages/customer/PPPoERenewStatus"));
 
 // Hotspot (public)
 const HotspotPackages  = lazy(() => import("./pages/hotspot/HotspotPackages"));
@@ -179,6 +180,9 @@ export default function App() {
         {/* Customer portal */}
         <Route path="/customer/pppoe"               element={<Customer><PPPoEPortal /></Customer>} />
         <Route path="/customer/pppoe/renew"         element={<Customer><PPPoERenew /></Customer>} />
+        {/* Where renewing lands. This route did not exist, so paying ended
+            on the 404 page. */}
+        <Route path="/customer/pppoe/status"        element={<Customer><PPPoERenewStatus /></Customer>} />
 
         {/* 404 */}
         <Route path="*" element={<NotFound />} />
