@@ -6907,3 +6907,297 @@ class OperatorRoleSurfaceTests(TwoOperatorMixin, TestCase):
         rows = client.get("/api/customers/").data["results"]
         self.assertTrue(rows)
         self.assertNotIn("t2-customer", {r["full_name"] for r in rows})
+
+
+# =====================================================
+# 40. Support contacts, and selling at the counter
+# =====================================================
+
+class SupportContactTests(TwoOperatorMixin, TestCase):
+    """
+    A customer at a hotspot has no internet and no other way to ask for help,
+    so the portal has to carry the operator's numbers. Two of them, because one
+    is a person and people are sometimes unreachable.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+
+    def portal(self, tenant):
+        return APIClient().get(f"/api/hotspot/packages/?t={tenant.public_token}")
+
+    def test_both_numbers_reach_the_portal(self):
+        self.t1.support_phone = "0722111222"
+        self.t1.support_phone_2 = "0733444555"
+        self.t1.save(update_fields=["support_phone", "support_phone_2"])
+        self.assertEqual(
+            self.portal(self.t1).data["support_phones"],
+            ["0722111222", "0733444555"],
+        )
+
+    def test_one_number_is_fine(self):
+        self.t1.support_phone = "0722111222"
+        self.t1.save(update_fields=["support_phone"])
+        self.assertEqual(self.portal(self.t1).data["support_phones"], ["0722111222"])
+
+    def test_none_is_an_empty_list_not_a_blank_entry(self):
+        """The portal hides the block; a button dialling nothing is worse."""
+        self.assertEqual(self.portal(self.t1).data["support_phones"], [])
+
+    def test_a_second_number_alone_still_shows(self):
+        self.t1.support_phone_2 = "0733444555"
+        self.t1.save(update_fields=["support_phone_2"])
+        self.assertEqual(self.portal(self.t1).data["support_phones"], ["0733444555"])
+
+    def test_numbers_belong_to_one_operator(self):
+        self.t1.support_phone = "0722111222"
+        self.t1.save(update_fields=["support_phone"])
+        self.assertEqual(self.portal(self.t2).data["support_phones"], [])
+
+    def test_an_operator_can_set_their_own(self):
+        """
+        These lived on the tenant and only the platform owner could write
+        them, so an operator could not publish their own support number.
+        """
+        resp = self.auth(self.admin1).put(
+            "/api/system/settings/",
+            {"SUPPORT_PHONE": "0700111222", "SUPPORT_PHONE_2": "0700333444"},
+            format="json")
+        self.assertIn(resp.status_code, (200, 202), resp.data)
+        self.t1.refresh_from_db()
+        self.assertEqual(self.t1.support_phone, "0700111222")
+        self.assertEqual(self.t1.support_phone_2, "0700333444")
+
+    def test_they_come_back_on_the_settings_page(self):
+        self.t1.support_phone = "0700111222"
+        self.t1.save(update_fields=["support_phone"])
+        data = self.auth(self.admin1).get("/api/system/settings/").data
+        self.assertEqual(data["SUPPORT_PHONE"], "0700111222")
+        self.assertIn("SUPPORT_PHONE_2", data)
+
+    def test_operator_staff_cannot_change_them(self):
+        staff = User.objects.create_user(
+            username="sup_staff", password="pw", role=User.TENANT_STAFF,
+            tenant=self.t1, is_staff=True)
+        resp = self.auth(staff).put(
+            "/api/system/settings/", {"SUPPORT_PHONE": "0700000000"}, format="json")
+        self.assertEqual(resp.status_code, 403)
+
+
+class CounterSaleTests(TwoOperatorMixin, TestCase):
+    """
+    Creating a hotspot customer produced a row with a MAC, no subscription and
+    no voucher — marked active, with no access, and nothing on screen to hand
+    over. An operator taking cash from someone in front of them could not
+    finish the job.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        with tenant_context(self.t1):
+            self.pkg = Package.objects.create(
+                tenant=self.t1, name="t1-counter", download_speed=5, upload_speed=5,
+                price=Decimal("50.00"), duration_value=3, duration_unit="hours",
+                monthly_data_cap_gb=0, is_hotspot=True)
+
+    def create(self, **extra):
+        body = {
+            "full_name": "Walk In",
+            "phone": "254799000100",
+            "connection_type": "hotspot",
+        }
+        body.update(extra)
+        return self.auth(self.admin1).post("/api/customers/", body, format="json")
+
+    def test_a_package_and_cash_produces_a_usable_code(self):
+        resp = self.create(package=self.pkg.id, paid_with="cash")
+        self.assertEqual(resp.status_code, 201, resp.data)
+        self.assertTrue(resp.data["voucher_code"], "nothing to hand the customer")
+        self.assertTrue(resp.data["subscription_id"])
+
+    def test_the_code_is_real_and_redeems(self):
+        code = self.create(package=self.pkg.id, paid_with="cash").data["voucher_code"]
+        resp = APIClient().post(
+            f"/api/hotspot/validate/?t={self.t1.public_token}",
+            {"code": code, "mac_address": "CC:DD:EE:FF:00:01"}, format="json")
+        self.assertEqual(resp.status_code, 200, resp.data)
+
+    def test_the_subscription_runs_for_the_package_duration(self):
+        resp = self.create(package=self.pkg.id, paid_with="cash")
+        with tenant_context(self.t1):
+            sub = Subscription.objects.get(id=resp.data["subscription_id"])
+        hours = (sub.expiry_date - timezone.now()).total_seconds() / 3600
+        self.assertGreater(hours, 2.5)
+        self.assertLess(hours, 3.5)
+
+    def test_without_a_package_nothing_changes(self):
+        """The old behaviour, for an operator recording somebody to bill later."""
+        resp = self.create()
+        self.assertEqual(resp.status_code, 201)
+        self.assertIsNone(resp.data.get("voucher_code"))
+        with tenant_context(self.t1):
+            self.assertFalse(
+                Subscription.objects.filter(customer_id=resp.data["id"]).exists())
+
+    def test_a_package_without_payment_leaves_an_invoice_and_no_code(self):
+        """Sold on credit: they owe for it, and are not online yet."""
+        resp = self.create(package=self.pkg.id)
+        self.assertEqual(resp.status_code, 201, resp.data)
+        self.assertIsNone(resp.data["voucher_code"])
+        with tenant_context(self.t1):
+            sub = Subscription.objects.get(id=resp.data["subscription_id"])
+            self.assertEqual(sub.invoice.payment_status, "unpaid")
+
+    def test_another_operators_package_cannot_be_sold(self):
+        resp = self.create(package=self.data["t2"]["package"].id, paid_with="cash")
+        self.assertEqual(resp.status_code, 201)
+        self.assertIn("provisioning_error", resp.data)
+        self.assertIsNone(resp.data.get("voucher_code"))
+
+    def test_the_payment_is_recorded_against_this_operator(self):
+        resp = self.create(package=self.pkg.id, paid_with="cash")
+        with tenant_context(self.t1):
+            payment = Payment.objects.get(subscription_id=resp.data["subscription_id"])
+        self.assertEqual(payment.tenant_id, self.t1.id)
+        self.assertEqual(payment.method, "cash")
+
+    def test_operator_staff_cannot_sell(self):
+        """Creating a customer is a change, and staff may only read."""
+        staff = User.objects.create_user(
+            username="sale_staff", password="pw", role=User.TENANT_STAFF,
+            tenant=self.t1, is_staff=True)
+        resp = self.auth(staff).post(
+            "/api/customers/",
+            {"full_name": "Nope", "phone": "254799000101",
+             "connection_type": "hotspot", "package": self.pkg.id,
+             "paid_with": "cash"},
+            format="json")
+        self.assertEqual(resp.status_code, 403)
+
+
+# =====================================================
+# 41. Giving access away
+# =====================================================
+
+class CompAccessTests(TwoOperatorMixin, TestCase):
+    """
+    Somebody paid and did not get online, or was let down twice, and is
+    standing there wanting what they already paid for.
+
+    Before this the only ways to help were to record a payment that never
+    happened — putting money in the books nobody received — or to do nothing.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        d = self.data["t1"]
+        with tenant_context(self.t1):
+            self.hotspot = Customer.objects.create(
+                tenant=self.t1, full_name="Let Down", phone="254799000200",
+                connection_type="hotspot")
+            self.hs_pkg = Package.objects.create(
+                tenant=self.t1, name="t1-comp-hs", download_speed=5, upload_speed=5,
+                price=Decimal("50.00"), duration_value=3, duration_unit="hours",
+                monthly_data_cap_gb=0, is_hotspot=True)
+        self.pppoe = d["customer"]
+
+    def comp(self, customer, package=None, reason="Paid Tuesday, never got online",
+             user=None):
+        body = {"reason": reason}
+        if package is not None:
+            body["package_id"] = package.id
+        return self.auth(user or self.admin1).post(
+            f"/api/admin/customers/{customer.id}/comp/", body, format="json")
+
+    # ---- it works ----------------------------------------------------------
+
+    def test_a_hotspot_customer_gets_a_usable_code(self):
+        resp = self.comp(self.hotspot, self.hs_pkg)
+        self.assertEqual(resp.status_code, 201, resp.data)
+        self.assertTrue(resp.data["voucher_code"])
+
+    def test_the_free_code_actually_redeems(self):
+        code = self.comp(self.hotspot, self.hs_pkg).data["voucher_code"]
+        resp = APIClient().post(
+            f"/api/hotspot/validate/?t={self.t1.public_token}",
+            {"code": code, "mac_address": "EE:FF:00:11:22:33"}, format="json")
+        self.assertEqual(resp.status_code, 200, resp.data)
+
+    def test_a_pppoe_line_is_restored_without_a_code(self):
+        """Payment.save() already does the right thing per connection type."""
+        resp = self.comp(self.pppoe, self.data["t1"]["package"])
+        self.assertEqual(resp.status_code, 201, resp.data)
+        self.assertIsNone(resp.data["voucher_code"])
+        self.assertEqual(resp.data["connection_type"], "pppoe")
+
+    # ---- and costs nothing -------------------------------------------------
+
+    def test_it_adds_nothing_to_revenue(self):
+        """The whole point: they get the thing, the books do not gain money."""
+        from django.db.models import Sum
+
+        self.comp(self.hotspot, self.hs_pkg)
+        with tenant_context(self.t1):
+            comped = Payment.objects.filter(method="comp")
+            self.assertEqual(comped.count(), 1)
+            self.assertEqual(comped.aggregate(t=Sum("amount"))["t"], Decimal("0.00"))
+
+    def test_it_is_still_countable(self):
+        """
+        Recorded as a payment of zero rather than as no payment, so free
+        internet appears in the figures instead of vanishing.
+        """
+        self.comp(self.hotspot, self.hs_pkg)
+        with tenant_context(self.t1):
+            payment = Payment.objects.get(method="comp")
+        self.assertEqual(payment.amount, Decimal("0.00"))
+        self.assertIn("never got online", payment.reference)
+
+    def test_the_giveaway_is_on_the_record(self):
+        self.comp(self.hotspot, self.hs_pkg, reason="Second outage this week")
+        log = AdminActionLog.objects.filter(action=AdminActionLog.COMP_VOUCHER).first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.actor, self.admin1)
+        self.assertEqual(log.target_label, "Let Down")
+        self.assertIn("Second outage this week", log.detail)
+
+    # ---- the guards --------------------------------------------------------
+
+    def test_a_reason_is_required(self):
+        """In three months the question will be why."""
+        resp = self.comp(self.hotspot, self.hs_pkg, reason="   ")
+        self.assertEqual(resp.status_code, 400)
+        with tenant_context(self.t1):
+            self.assertFalse(Payment.objects.filter(method="comp").exists())
+
+    def test_a_package_is_required(self):
+        resp = self.comp(self.hotspot, None)
+        self.assertEqual(resp.status_code, 400)
+
+    def test_operator_staff_cannot_give_away_the_product(self):
+        """
+        Staff may read the console all day. Giving away what the business
+        sells is a decision about money.
+        """
+        staff = User.objects.create_user(
+            username="comp_staff", password="pw", role=User.TENANT_STAFF,
+            tenant=self.t1, is_staff=True)
+        resp = self.comp(self.hotspot, self.hs_pkg, user=staff)
+        self.assertEqual(resp.status_code, 403)
+
+    def test_another_operators_customer_cannot_be_comped(self):
+        resp = self.comp(self.data["t2"]["customer"], self.hs_pkg)
+        self.assertEqual(resp.status_code, 404)
+
+    def test_another_operators_package_cannot_be_given(self):
+        resp = self.comp(self.hotspot, self.data["t2"]["package"])
+        self.assertEqual(resp.status_code, 400)
+
+    def test_a_subscriber_cannot_comp_themselves(self):
+        sub_user = User.objects.create_user(
+            username="comp_cust", password="pw", role=User.CUSTOMER, tenant=self.t1)
+        resp = self.comp(self.hotspot, self.hs_pkg, user=sub_user)
+        self.assertEqual(resp.status_code, 403)

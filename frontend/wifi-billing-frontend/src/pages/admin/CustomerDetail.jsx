@@ -4,6 +4,9 @@ import { useState } from "react";
 import toast from "react-hot-toast";
 import { ArrowLeft, Edit, Router as RouterIcon } from "lucide-react";
 import AdminLayout from "../../components/admin/AdminLayout";
+import CompAccessModal from "../../components/admin/CompAccessModal";
+import { getUser } from "../../services/auth";
+import { isOperatorAdmin } from "../../constants/roles";
 import { useConfirm } from "../../components/ui/ConfirmModal";
 import StatusBadge from "../../components/ui/StatusBadge";
 import { Skeleton, SkeletonText } from "../../components/ui/Skeleton";
@@ -65,6 +68,11 @@ export default function CustomerDetail() {
     }
   };
 
+  const [comping, setComping] = useState(false);
+  // Giving away what the business sells is a decision about money, so it
+  // belongs to whoever answers for the money.
+  const canComp = isOperatorAdmin(getUser()?.role);
+
   const handleResendVoucher = async () => {
     setActionLoading(true);
     try {
@@ -115,6 +123,12 @@ export default function CustomerDetail() {
 
   return (
     <AdminLayout>
+      <CompAccessModal
+        open={comping}
+        customer={customer}
+        onClose={() => setComping(false)}
+        onDone={() => qc.invalidateQueries({ queryKey: ["customer", id] })}
+      />
       <div className="space-y-6 max-w-3xl">
         <ConfirmDialog />
 
@@ -170,6 +184,11 @@ export default function CustomerDetail() {
             {customer.connection_type === "hotspot" && (
               <Btn color="blue" onClick={handleResendVoucher} loading={actionLoading}>
                 Resend Voucher
+              </Btn>
+            )}
+            {canComp && (
+              <Btn color="green" onClick={() => setComping(true)} loading={false}>
+                Give free access
               </Btn>
             )}
           </div>

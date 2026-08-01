@@ -33,6 +33,22 @@ export const suspendOrResumeCustomer = async (id, action) => {
   return res.data;
 };
 
+/**
+ * Give a customer access without charging for it.
+ *
+ * Recorded as a payment of zero with method "comp", so it runs the same path
+ * as any sale — voucher minted, access provisioned — while adding nothing to
+ * revenue and staying countable in the figures. Admin only; a reason is
+ * required.
+ */
+export const compAccess = async (customerId, { packageId, reason }) => {
+  const res = await api.post(`admin/customers/${customerId}/comp/`, {
+    package_id: packageId,
+    reason,
+  });
+  return res.data; // { detail, voucher_code, expires_at, connection_type }
+};
+
 export const resendVoucher = async (customerId) => {
   const res = await api.post(`admin/customers/${customerId}/resend-voucher/`);
   return res.data;

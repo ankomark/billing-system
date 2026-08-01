@@ -22,6 +22,8 @@ const EMPTY = {
   BLESSEDTEXTS_SENDER_ID: "",
   WHATSAPP_TOKEN: "",
   WHATSAPP_PHONE_ID: "",
+  SUPPORT_PHONE: "",
+  SUPPORT_PHONE_2: "",
 };
 
 export default function SystemSettings() {
@@ -189,6 +191,32 @@ export default function SystemSettings() {
               <Field label="Phone Number ID"  name="WHATSAPP_PHONE_ID" value={form.WHATSAPP_PHONE_ID} onChange={handleChange} />
             </div>
             <TestBtn label="Test WhatsApp" color="violet" loading={testing === "whatsapp"} onClick={() => runTest("whatsapp")} />
+          </Section>
+
+          {/* Support numbers */}
+          <Section title="Support contacts">
+            <p className="text-sm text-slate-400">
+              Shown on your captive portal, directly under the packages. A
+              customer standing at a hotspot has no internet and no other way to
+              reach you — two numbers, because one person is sometimes
+              unreachable.
+            </p>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field
+                label="Support number"
+                name="SUPPORT_PHONE"
+                value={form.SUPPORT_PHONE}
+                onChange={handleChange}
+                placeholder="0722 000 000"
+              />
+              <Field
+                label="Second number"
+                name="SUPPORT_PHONE_2"
+                value={form.SUPPORT_PHONE_2}
+                onChange={handleChange}
+                placeholder="0733 000 000"
+              />
+            </div>
           </Section>
 
           <button

@@ -390,8 +390,8 @@ class OperatorUpdateSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Tenant
-        fields = ("name", "business_name", "support_phone", "pppoe_prefix",
-                  "contact_email", "contact_phone")
+        fields = ("name", "business_name", "support_phone", "support_phone_2",
+                  "pppoe_prefix", "contact_email", "contact_phone")
         extra_kwargs = {f: {"required": False} for f in fields}
 
 
@@ -411,6 +411,11 @@ class SystemSettingSerializer(serializers.Serializer):
     WHATSAPP_TOKEN        = serializers.CharField(required=False, allow_blank=True)
     WHATSAPP_PHONE_ID     = serializers.CharField(required=False, allow_blank=True)
     WHATSAPP_API_VERSION  = serializers.CharField(required=False, allow_blank=True)
+
+    # Not SystemSetting rows — these live on the tenant, and the view applies
+    # them there. Declared here so one form saves everything on the page.
+    SUPPORT_PHONE   = serializers.CharField(max_length=20, required=False, allow_blank=True)
+    SUPPORT_PHONE_2 = serializers.CharField(max_length=20, required=False, allow_blank=True)
 
 
 class BroadcastSerializer(serializers.Serializer):

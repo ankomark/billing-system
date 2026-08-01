@@ -42,7 +42,11 @@ class Tenant(models.Model):
     # Public identity used in subscriber notifications. Replaces the hardcoded
     # "Skylink" strings currently baked into the payment and onboarding paths.
     business_name = models.CharField(max_length=120, blank=True)
-    support_phone = models.CharField(max_length=20, blank=True)
+    # Two, because one is a person and people are sometimes unreachable. The
+    # captive portal shows whichever are set, and a customer standing at a
+    # hotspot with no internet has no other way to ask for help.
+    support_phone   = models.CharField(max_length=20, blank=True)
+    support_phone_2 = models.CharField(max_length=20, blank=True)
     pppoe_prefix  = models.CharField(
         max_length=10,
         default="NET",
@@ -231,6 +235,7 @@ class AdminActionLog(models.Model):
     CONFIGURE_PAYMENTS = "configure_payments"
     CHANGE_PLAN = "change_plan"
     DELETE_OPERATOR = "delete_operator"
+    COMP_VOUCHER = "comp_voucher"
 
     ACTION_CHOICES = (
         (RESET_PASSWORD, "Reset password"),
@@ -1127,6 +1132,13 @@ class Payment(TenantScopedModel):
         ("cash", "Cash"),
         ("mpesa", "M-Pesa"),
         ("bank", "Bank"),
+        # Given away: a customer who paid and did not get online, or was let
+        # down twice. Recorded as a payment of zero rather than as no payment
+        # at all, so it runs the same path as any other — voucher minted,
+        # access provisioned, invoice settled — while adding nothing to
+        # revenue and appearing in revenue_by_method as its own row with a
+        # count and no money. Free internet should be countable.
+        ("comp", "Free (no charge)"),
     )
 
     customer = models.ForeignKey(Customer, on_delete=models.CASCADE, related_name="payments")

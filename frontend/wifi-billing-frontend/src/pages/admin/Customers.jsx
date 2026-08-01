@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import toast from "react-hot-toast";
 import {
@@ -73,8 +73,11 @@ export default function Customers() {
   // buttons anyway meant a confirm dialog followed by a 403 toast.
   const canEdit = isOperatorAdmin(getUser()?.role);
 
+  // Arriving from the dashboard's search, so the results are already there
+  // rather than an empty page and the same query typed twice.
+  const [params] = useSearchParams();
   const [page, setPage] = useState(1);
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(params.get("search") || "");
   const [statusFilter, setStatusFilter] = useState("");
   const [typeFilter, setTypeFilter] = useState("");
   const [sortField, setSortField] = useState("created_at");

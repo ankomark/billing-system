@@ -18,6 +18,11 @@ const INITIAL = {
   router: "",
   custom_data_cap_gb: "",
   status: "active",
+  // Selling at the counter. Optional: leave the package unset and this
+  // behaves exactly as it did.
+  package: "",
+  paid_with: "",
+  payment_reference: "",
 };
 
 function Field({ label, required, error, children }) {
@@ -109,6 +114,17 @@ export default function CustomerForm() {
     }
   }, [existing]);
 
+  // The catalogue, for selling at the counter. Only hotspot packages: a
+  // walk-in buying an hour of WiFi is not renewing a home line.
+  const { data: packageData } = useQuery({
+    queryKey: ["packages", "hotspot"],
+    queryFn: async () => (await api.get("packages/", { params: { page_size: 100 } })).data,
+    staleTime: 5 * 60 * 1000,
+  });
+  const hotspotPackages = (packageData?.results ?? []).filter((p) => p.is_hotspot);
+
+  const [issued, setIssued] = useState(null);
+
   const set = (field) => (e) => {
     setForm((f) => ({ ...f, [field]: e.target.value }));
     if (errors[field]) setErrors((e) => { const n = { ...e }; delete n[field]; return n; });
@@ -134,6 +150,18 @@ export default function CustomerForm() {
       if (form.pppoe_password) payload.pppoe_password = form.pppoe_password;
     } else {
       if (form.hotspot_username) payload.hotspot_username = form.hotspot_username.trim();
+      // Creating a hotspot customer used to leave them with no subscription
+      // and no voucher — active, with no access, and nothing on screen to
+      // give them. Sending a package makes the sale in the same request.
+      if (!isEdit && form.package) {
+        payload.package = Number(form.package);
+        if (form.paid_with) {
+          payload.paid_with = form.paid_with;
+          if (form.payment_reference) {
+            payload.payment_reference = form.payment_reference.trim();
+          }
+        }
+      }
     }
 
     setSaving(true);
@@ -144,8 +172,22 @@ export default function CustomerForm() {
         qc.invalidateQueries({ queryKey: ["customer", id] });
       } else {
         const created = await createCustomer(payload);
-        toast.success("Customer created successfully");
         qc.invalidateQueries({ queryKey: ["customers"] });
+
+        if (created.provisioning_error) {
+          // The customer exists; the sale did not complete. Say which, rather
+          // than a success toast over a half-finished job.
+          toast.error(`Customer created, but no access: ${created.provisioning_error}`);
+        } else if (created.voucher_code) {
+          // Hold them here with the code on screen. Navigating away from the
+          // one moment it is visible is how a counter sale ends with a
+          // customer holding nothing.
+          setIssued({ code: created.voucher_code, id: created.id });
+          setSaving(false);
+          return;
+        } else {
+          toast.success("Customer created successfully");
+        }
         navigate(`/admin/customers/${created.id}`);
         return;
       }
@@ -176,6 +218,52 @@ export default function CustomerForm() {
           <Skeleton className="h-8 w-48" />
           <div className="rounded-xl border border-white/10 bg-slate-900/80 shadow-lg shadow-black/20 p-6 space-y-4">
             {[...Array(6)].map((_, i) => <Skeleton key={i} className="h-10 w-full" />)}
+          </div>
+        </div>
+      </AdminLayout>
+    );
+  }
+
+  /**
+   * The code, on screen, before anything navigates.
+   *
+   * A counter sale ends with the operator reading a code out to the person in
+   * front of them. Going straight to the customer page after creating them
+   * meant the one moment it was visible was also the moment it was replaced.
+   */
+  if (issued) {
+    return (
+      <AdminLayout>
+        <div className="max-w-md">
+          <div className="rounded-2xl border border-emerald-500/25 bg-emerald-500/10 p-6 text-center">
+            <p className="text-xs font-semibold uppercase tracking-wider text-emerald-300">
+              Access code
+            </p>
+            <p className="my-3 select-all font-mono text-3xl font-bold tracking-wider text-white">
+              {issued.code}
+            </p>
+            <p className="text-sm text-emerald-200">
+              Read this out to the customer. It works on the first device that
+              uses it, and only that one.
+            </p>
+          </div>
+
+          <div className="mt-4 flex gap-3">
+            <button
+              onClick={() => navigate(`/admin/customers/${issued.id}`)}
+              className="flex-1 rounded-xl bg-blue-600 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-blue-700"
+            >
+              Open customer
+            </button>
+            <button
+              onClick={() => {
+                setIssued(null);
+                setForm({ ...INITIAL, connection_type: "hotspot" });
+              }}
+              className="flex-1 rounded-xl border border-white/15 py-2.5 text-sm font-semibold text-slate-200 transition-colors hover:bg-white/5"
+            >
+              Sell another
+            </button>
           </div>
         </div>
       </AdminLayout>
@@ -279,13 +367,52 @@ export default function CustomerForm() {
                 )}
 
                 {form.connection_type === "hotspot" && (
-                  <Field label="Hotspot Username / MAC" error={errors.hotspot_username}>
-                    <Input
-                      value={form.hotspot_username}
-                      onChange={set("hotspot_username")}
-                      placeholder="Bound on first use"
-                    />
-                  </Field>
+                  <>
+                    <Field label="Device MAC" error={errors.hotspot_username}>
+                      <Input
+                        value={form.hotspot_username}
+                        onChange={set("hotspot_username")}
+                        placeholder="Leave blank — bound on first use"
+                      />
+                    </Field>
+
+                    {!isEdit && (
+                      <>
+                        <Field label="Package" error={errors.package}>
+                          <Select value={form.package} onChange={set("package")}>
+                            <option value="">None — create the customer only</option>
+                            {hotspotPackages.map((p) => (
+                              <option key={p.id} value={p.id}>
+                                {p.name} · KES {Number(p.price).toLocaleString()}
+                              </option>
+                            ))}
+                          </Select>
+                        </Field>
+
+                        {form.package && (
+                          <>
+                            <Field label="Paid with" error={errors.paid_with}>
+                              <Select value={form.paid_with} onChange={set("paid_with")}>
+                                <option value="">Not paid yet — invoice only</option>
+                                <option value="cash">Cash</option>
+                                <option value="mpesa">M-Pesa</option>
+                                <option value="bank">Bank</option>
+                              </Select>
+                            </Field>
+                            {form.paid_with === "mpesa" && (
+                              <Field label="M-Pesa receipt" error={errors.payment_reference}>
+                                <Input
+                                  value={form.payment_reference}
+                                  onChange={set("payment_reference")}
+                                  placeholder="TGX11AA001"
+                                />
+                              </Field>
+                            )}
+                          </>
+                        )}
+                      </>
+                    )}
+                  </>
                 )}
               </div>
             </div>

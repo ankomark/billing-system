@@ -288,7 +288,62 @@ class CustomerViewSet(viewsets.ModelViewSet):
             blocked = tenant.plan_limit_exceeded("customers")
             if blocked:
                 return Response({"detail": blocked}, status=status.HTTP_402_PAYMENT_REQUIRED)
-        return super().create(request, *args, **kwargs)
+
+        package_id = request.data.get("package")
+        paid_with = request.data.get("paid_with")
+
+        response = super().create(request, *args, **kwargs)
+        if response.status_code != status.HTTP_201_CREATED or not package_id:
+            return response
+
+        # Selling at the counter.
+        #
+        # Creating a hotspot customer used to produce a row with a MAC, no
+        # subscription and no voucher — marked active with no access, and
+        # nothing in the interface to give them a code. An operator taking cash
+        # from someone standing in front of them had no way to finish the job.
+        #
+        # Optional: without a package this behaves exactly as it always did.
+        customer = Customer.objects.filter(id=response.data["id"]).first()
+        package = Package.objects.filter(id=package_id).first()
+        if customer is None or package is None:
+            response.data["provisioning_error"] = "That package is not available."
+            return response
+
+        try:
+            with transaction.atomic():
+                subscription = Subscription.objects.create(
+                    tenant_id=customer.tenant_id,
+                    customer=customer,
+                    package=package,
+                )
+                if paid_with in ("cash", "mpesa", "bank"):
+                    # Payment.save() is what mints the voucher and provisions
+                    # access, so recording it is the whole point rather than
+                    # bookkeeping after the fact.
+                    Payment.objects.create(
+                        tenant_id=customer.tenant_id,
+                        customer=customer,
+                        subscription=subscription,
+                        amount=package.price,
+                        method=paid_with,
+                        reference=(request.data.get("payment_reference") or "").strip(),
+                    )
+        except Exception as exc:
+            logger.exception("[provision] %s could not be set up", customer)
+            response.data["provisioning_error"] = str(exc)
+            return response
+
+        voucher = (
+            Voucher.objects.all_tenants()
+            .filter(tenant_id=customer.tenant_id, subscription=subscription)
+            .order_by("-created_at")
+            .first()
+        )
+        response.data["subscription_id"] = subscription.id
+        response.data["expires_at"] = subscription.expiry_date
+        response.data["voucher_code"] = voucher.code if voucher else None
+        return response
 
     def get_queryset(self):
         qs = (
@@ -898,6 +953,91 @@ class HotspotVoucherValidateView(APIView):
             status=status.HTTP_200_OK,
         )
 
+class CompAccessView(APIView):
+    """
+    Give a customer access without charging for it.
+
+    The case this exists for: somebody paid and did not get online, or was let
+    down twice, and is standing there wanting the thing they already paid for.
+    Until now the only ways to help were to record a payment that never
+    happened — putting money in the books that nobody received — or to do
+    nothing.
+
+    Admin only. Staff may read the console all day, but giving away what the
+    business sells is a decision about money, and it belongs to whoever answers
+    for the money.
+
+    A reason is required. This is the operator writing off a sale, and in three
+    months the question will be why.
+
+    Works for both connection types because Payment.save() already does: a
+    hotspot customer gets a voucher, a PPPoE line gets its access restored.
+    """
+    permission_classes = [IsTenantAdmin]
+
+    def post(self, request, customer_id):
+        customer = Customer.objects.filter(id=customer_id).first()
+        if customer is None:
+            return Response({"detail": "Customer not found"}, status=404)
+
+        reason = (request.data.get("reason") or "").strip()
+        if not reason:
+            return Response(
+                {"detail": "Say why this is free — it is the answer to a question "
+                           "somebody will ask later."},
+                status=400,
+            )
+
+        package = (
+            Package.objects.filter(id=request.data.get("package_id")).first()
+            if request.data.get("package_id") else None
+        )
+        if package is None:
+            return Response({"detail": "Choose a package."}, status=400)
+
+        try:
+            with transaction.atomic():
+                subscription = Subscription.objects.create(
+                    tenant_id=customer.tenant_id,
+                    customer=customer,
+                    package=package,
+                )
+                # Zero, and marked as given. Revenue is untouched; the row
+                # exists so the giveaway can be counted and questioned.
+                Payment.objects.create(
+                    tenant_id=customer.tenant_id,
+                    customer=customer,
+                    subscription=subscription,
+                    amount=Decimal("0.00"),
+                    method="comp",
+                    reference=reason[:100],
+                )
+        except Exception as exc:
+            logger.exception("[comp] could not comp %s", customer)
+            return Response({"detail": f"Could not issue this: {exc}"}, status=500)
+
+        record_admin_action(
+            request.user,
+            AdminActionLog.COMP_VOUCHER,
+            target_tenant=customer.tenant,
+            label=customer.full_name,
+            detail=f"{package.name} at no charge — {reason}",
+        )
+
+        voucher = (
+            Voucher.objects.all_tenants()
+            .filter(tenant_id=customer.tenant_id, subscription=subscription)
+            .order_by("-created_at")
+            .first()
+        )
+        return Response({
+            "detail": f"{package.name} given to {customer.full_name} at no charge.",
+            "voucher_code": voucher.code if voucher else None,
+            "expires_at": subscription.expiry_date,
+            "connection_type": customer.connection_type,
+        }, status=201)
+
+
 class CustomerSuspendResumeView(APIView):
     permission_classes = [IsTenantMember]
 
@@ -1364,6 +1504,11 @@ class SystemSettingsView(APIView):
 
             data["TENANT_TOKEN"] = tenant.public_token
             data["BUSINESS_NAME"] = tenant.business_name or tenant.name
+            # Editable here, and nowhere else an operator can reach: these
+            # lived on the tenant and only the platform owner could set them,
+            # so an operator could not publish their own support number.
+            data["SUPPORT_PHONE"] = tenant.support_phone
+            data["SUPPORT_PHONE_2"] = tenant.support_phone_2
             data["MPESA_MISSING"] = missing_mpesa_keys(tenant=tenant)
             try:
                 data["MPESA_CALLBACK_URL_EFFECTIVE"] = callback_url_for(tenant=tenant)
@@ -1378,6 +1523,20 @@ class SystemSettingsView(APIView):
         serializer.is_valid(raise_exception=True)
 
         tenant = getattr(request.user, "tenant", None)
+
+        # Support numbers live on the tenant, not in SystemSetting, so they are
+        # applied here rather than in the key/value loop below.
+        support_fields = {
+            f: serializer.validated_data.pop(f)
+            for f in ("SUPPORT_PHONE", "SUPPORT_PHONE_2")
+            if f in serializer.validated_data
+        }
+        if support_fields and tenant is not None:
+            if "SUPPORT_PHONE" in support_fields:
+                tenant.support_phone = support_fields["SUPPORT_PHONE"].strip()
+            if "SUPPORT_PHONE_2" in support_fields:
+                tenant.support_phone_2 = support_fields["SUPPORT_PHONE_2"].strip()
+            tenant.save(update_fields=["support_phone", "support_phone_2"])
 
         for key, value in serializer.validated_data.items():
             if value == "********":
@@ -2594,9 +2753,15 @@ class HotspotPackagesView(APIView):
         # No banner, and deliberately nothing image-shaped at all. A portal
         # visitor's only working route is the walled garden, so the page is
         # kept to markup — the fastest image is the one nobody asks for.
+        # Whichever are set, in order. A list rather than two keys so the
+        # portal renders what it is given instead of deciding which of two
+        # fields is worth showing.
+        support = [n for n in (tenant.support_phone, tenant.support_phone_2) if n]
+
         return Response({
             "provider": tenant.business_name or tenant.name,
-            "support_phone": tenant.support_phone or "",
+            "support_phone": tenant.support_phone or "",   # kept for older portals
+            "support_phones": support,
             "results": PublicPackageSerializer(packages, many=True).data,
         })
 
