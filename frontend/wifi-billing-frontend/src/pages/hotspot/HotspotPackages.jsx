@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
-import PortalBanner from "../../components/hotspot/PortalBanner";
 import {
   fetchHotspotPackages,
   fetchHotspotDeviceStatus,
@@ -132,21 +131,25 @@ export default function HotspotPackages() {
   return (
     <div className="min-h-screen bg-slate-100">
       <div className="mx-auto w-full max-w-2xl px-4 py-5 sm:py-8">
-        {/* Rendered before the packages have loaded, so the slowest thing on
-            the page starts fetching first and finishes last without holding
-            anything up. */}
-        <PortalBanner banner={data?.banner} provider={data?.provider} />
+        {/* No images above the fold, deliberately.
+            There was a banner slot here. It was lazy and outside the data
+            path, so it did not block the packages — but on a captive portal
+            the visitor's only working route is the walled garden, and the
+            fastest image is still the one nobody asks for. */}
+        <header className="mb-4 text-center">
+          <h1 className="text-lg font-bold text-slate-800 sm:text-xl">
+            {data?.provider || "WiFi"}
+          </h1>
+          <p className="mt-0.5 text-sm text-slate-500">
+            Pick a package and pay with M-Pesa. You'll be online in under a minute.
+          </p>
+        </header>
 
         <RedeemPanel mac={mac} tenantToken={tenantToken} navigate={navigate} />
 
-        <div className="mb-4 mt-6 text-center">
-          <h1 className="text-lg font-bold text-slate-800 sm:text-xl">
-            Choose a package
-          </h1>
-          {data?.provider && (
-            <p className="mt-0.5 text-sm text-slate-500">{data.provider}</p>
-          )}
-        </div>
+        <h2 className="mb-3 mt-6 text-center text-sm font-semibold uppercase tracking-wider text-slate-500">
+          Packages
+        </h2>
 
         {loading ? (
           <div className="grid gap-3 sm:grid-cols-2">

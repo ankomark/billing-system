@@ -412,14 +412,6 @@ class SystemSettingSerializer(serializers.Serializer):
     WHATSAPP_PHONE_ID     = serializers.CharField(required=False, allow_blank=True)
     WHATSAPP_API_VERSION  = serializers.CharField(required=False, allow_blank=True)
 
-    # The captive portal's banner. Two images because a phone held upright and
-    # a laptop are different shapes, and one image stretched to both is how a
-    # banner ends up looking like a mistake. Both optional — with neither set
-    # the portal shows the platform's own panel instead of a broken frame.
-    HOTSPOT_BANNER_PORTRAIT  = serializers.URLField(required=False, allow_blank=True)
-    HOTSPOT_BANNER_LANDSCAPE = serializers.URLField(required=False, allow_blank=True)
-    HOTSPOT_BANNER_LINK      = serializers.URLField(required=False, allow_blank=True)
-
 
 class BroadcastSerializer(serializers.Serializer):
     channel      = serializers.ChoiceField(choices=["sms", "whatsapp"])

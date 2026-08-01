@@ -18,11 +18,11 @@
     .container { width: 100%; max-width: 420px; }
 
     /* ── Brand ── */
-    .brand { text-align: center; margin-bottom: 2rem; }
+    .brand { text-align: center; margin-bottom: 1.5rem; }
     .brand-icon {
       display: inline-flex; align-items: center; justify-content: center;
-      width: 64px; height: 64px; background: #2563eb;
-      border-radius: 18px; margin-bottom: 1rem; box-shadow: 0 8px 32px rgba(37,99,235,.5);
+      width: 56px; height: 56px; background: #2563eb;
+      border-radius: 16px; margin-bottom: .75rem; box-shadow: 0 8px 32px rgba(37,99,235,.5);
     }
     .brand h1 { color: #fff; font-size: 1.5rem; font-weight: 700; letter-spacing: -.5px; }
     .brand p { color: #94a3b8; font-size: .875rem; margin-top: .25rem; }
@@ -44,7 +44,7 @@
     /* ── Tabs ── */
     .tabs { display: flex; border-bottom: 1px solid #e2e8f0; }
     .tab {
-      flex: 1; padding: 1rem; text-align: center; font-size: .875rem;
+      flex: 1; padding: .8125rem; text-align: center; font-size: .875rem;
       font-weight: 600; cursor: pointer; color: #64748b;
       border-bottom: 2px solid transparent; margin-bottom: -1px;
       transition: color .15s, border-color .15s;
@@ -52,19 +52,19 @@
     .tab.active { color: #2563eb; border-color: #2563eb; }
 
     /* ── Tab content ── */
-    .tab-content { display: none; padding: 1.75rem; }
+    .tab-content { display: none; padding: 1.25rem; }
     .tab-content.active { display: block; }
 
     /* ── Form elements ── */
     label {
       display: block; font-size: .8125rem; font-weight: 600;
-      color: #374151; margin-bottom: .5rem;
+      color: #374151; margin-bottom: .375rem;
     }
     input[type="text"], input[type="password"], textarea {
       width: 100%; border: 1.5px solid #d1d5db; border-radius: 10px;
-      padding: .75rem 1rem; font-size: .9375rem; color: #111827;
+      padding: .625rem .75rem; font-size: .9375rem; color: #111827;
       outline: none; transition: border-color .15s, box-shadow .15s;
-      letter-spacing: .1em;
+      letter-spacing: .1em; line-height: 1.4;
       font-family: inherit; resize: none;
     }
     input[type="text"]:focus, input[type="password"]:focus, textarea:focus {
@@ -72,14 +72,14 @@
     }
     input::placeholder, textarea::placeholder { color: #9ca3af; letter-spacing: normal; }
 
-    .input-hint { font-size: .75rem; color: #6b7280; margin-top: .4rem; }
+    .input-hint { font-size: .75rem; color: #6b7280; margin-top: .375rem; line-height: 1.4; }
 
     /* ── Buttons ── */
     .btn {
       display: flex; align-items: center; justify-content: center; gap: .5rem;
-      width: 100%; padding: .875rem; border: none; border-radius: 10px;
+      width: 100%; padding: .8125rem; border: none; border-radius: 10px;
       font-size: .9375rem; font-weight: 700; cursor: pointer;
-      transition: background .15s, opacity .15s; margin-top: 1rem;
+      transition: background .15s, opacity .15s; margin-top: .875rem;
     }
     .btn-primary { background: #2563eb; color: #fff; }
     .btn-primary:hover { background: #1d4ed8; }
@@ -111,13 +111,13 @@
     .package-info {
       background: linear-gradient(135deg, #eff6ff, #e0e7ff);
       border: 1px solid #bfdbfe; border-radius: 12px;
-      padding: 1.25rem; margin-bottom: 1rem;
+      padding: 1rem; margin-bottom: .875rem;
     }
-    .package-info h3 { font-size: 1rem; font-weight: 700; color: #1e40af; margin-bottom: .25rem; }
-    .package-info p { font-size: .8125rem; color: #3730a3; line-height: 1.5; }
+    .package-info h3 { font-size: .9375rem; font-weight: 700; color: #1e40af; margin-bottom: .25rem; }
+    .package-info p { font-size: .8125rem; color: #3730a3; line-height: 1.45; }
 
     /* ── Footer ── */
-    .footer { text-align: center; color: #64748b; font-size: .75rem; padding: 1rem 1.75rem; }
+    .footer { text-align: center; color: #64748b; font-size: .75rem; padding: .75rem 1.25rem; }
     .footer a { color: #2563eb; text-decoration: none; }
     .footer a:hover { text-decoration: underline; }
   </style>
@@ -188,16 +188,13 @@
       <textarea
         id="voucherCode"
         rows="2"
-        placeholder="WIFI-XXXXXX — or paste your whole M-Pesa message"
+        placeholder="WIFI-XXXXXX or your M-Pesa message"
         autocomplete="off"
         autocapitalize="characters"
         spellcheck="false"
         oninput="clearMsg()"
       ></textarea>
-      <p class="input-hint">
-        Paste the M-Pesa message Safaricom sent you, or type the code from your
-        SMS. Either works.
-      </p>
+      <p class="input-hint">Paste the whole M-Pesa message — we'll find it.</p>
 
       <button class="btn btn-primary" id="connectBtn" onclick="handleConnect()">
         <span id="btnText">Connect to Internet</span>
@@ -223,7 +220,7 @@
     <div id="tab-buy" class="tab-content">
       <div class="package-info">
         <h3>Get Connected in Minutes</h3>
-        <p>Pay with M-Pesa and you are online straight away. Keep the message Safaricom sends you — pasting it here reconnects this phone until your time runs out.</p>
+        <p>Pay with M-Pesa and you are online straight away. Keep the message — pasting it here reconnects this phone later.</p>
       </div>
       <button class="btn btn-primary" onclick="goToPayment()">
         <svg width="18" height="18" fill="none" stroke="#fff" stroke-width="2.5" viewBox="0 0 24 24">

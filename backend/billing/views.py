@@ -1248,9 +1248,6 @@ class SystemSettingsView(APIView):
         "BLESSEDTEXTS_SENDER_ID",
         "WHATSAPP_TOKEN",
         "WHATSAPP_PHONE_ID",
-        "HOTSPOT_BANNER_PORTRAIT",
-        "HOTSPOT_BANNER_LANDSCAPE",
-        "HOTSPOT_BANNER_LINK",
     ]
 
     def get(self, request):
@@ -2487,22 +2484,12 @@ class HotspotPackagesView(APIView):
         )
         from .serializers import PublicPackageSerializer
 
-        # The banner is the operator's own, and every part of it is optional.
-        # Returned as plain values rather than omitted when unset, so the
-        # portal has one shape to render and decides for itself whether there
-        # is anything to show.
-        banner = {
-            key.lower().replace("hotspot_banner_", ""): get_setting(
-                key, default="", tenant=tenant) or None
-            for key in ("HOTSPOT_BANNER_PORTRAIT",
-                        "HOTSPOT_BANNER_LANDSCAPE",
-                        "HOTSPOT_BANNER_LINK")
-        }
-
+        # No banner, and deliberately nothing image-shaped at all. A portal
+        # visitor's only working route is the walled garden, so the page is
+        # kept to markup — the fastest image is the one nobody asks for.
         return Response({
             "provider": tenant.business_name or tenant.name,
             "support_phone": tenant.support_phone or "",
-            "banner": banner,
             "results": PublicPackageSerializer(packages, many=True).data,
         })
 

@@ -6100,9 +6100,10 @@ class HotspotPortalCorsTests(TestCase):
 
 class HotspotPortalPayloadTests(TwoOperatorMixin, TestCase):
     """
-    The portal renders from one request. Whatever it needs before it can draw
-    the top of the page has to arrive in that request, or the page reflows
-    under someone's thumb.
+    The portal renders from one request, and that request must carry nothing
+    image-shaped. A visitor there has no internet except the walled garden, so
+    the page is markup only — a banner slot briefly lived here and was removed
+    for exactly that reason.
     """
 
     def setUp(self):
@@ -6117,48 +6118,15 @@ class HotspotPortalPayloadTests(TwoOperatorMixin, TestCase):
     def portal(self, tenant):
         return APIClient().get(f"/api/hotspot/packages/?t={tenant.public_token}")
 
-    def set_banner(self, tenant, **values):
-        with tenant_context(tenant):
-            for key, value in values.items():
-                SystemSetting.objects.update_or_create(
-                    tenant=tenant, key=key, defaults={"value": value})
-        clear_settings_cache(tenant=tenant)
-
-    def test_an_operator_with_no_banner_gets_a_defined_shape(self):
+    def test_the_payload_carries_no_image_urls(self):
         """
-        Nulls rather than a missing key, so the portal has one thing to render
-        and decides for itself whether there is anything to show.
+        The reason the banner was removed. Anything here that resolves to an
+        image is a request a customer with no internet has to make before the
+        page is usable, so there must not be one.
         """
-        resp = self.portal(self.t1)
-        self.assertEqual(resp.status_code, 200)
-        self.assertEqual(
-            resp.data["banner"],
-            {"portrait": None, "landscape": None, "link": None},
-        )
-
-    def test_both_orientations_come_back(self):
-        self.set_banner(
-            self.t1,
-            HOTSPOT_BANNER_PORTRAIT="https://cdn.example.com/tall.jpg",
-            HOTSPOT_BANNER_LANDSCAPE="https://cdn.example.com/wide.jpg",
-            HOTSPOT_BANNER_LINK="https://example.com/offer",
-        )
-        banner = self.portal(self.t1).data["banner"]
-        self.assertEqual(banner["portrait"], "https://cdn.example.com/tall.jpg")
-        self.assertEqual(banner["landscape"], "https://cdn.example.com/wide.jpg")
-        self.assertEqual(banner["link"], "https://example.com/offer")
-
-    def test_one_orientation_alone_is_allowed(self):
-        """Most operators will have one image, not two."""
-        self.set_banner(self.t1, HOTSPOT_BANNER_LANDSCAPE="https://cdn.example.com/wide.jpg")
-        banner = self.portal(self.t1).data["banner"]
-        self.assertIsNone(banner["portrait"])
-        self.assertEqual(banner["landscape"], "https://cdn.example.com/wide.jpg")
-
-    def test_a_banner_belongs_to_one_operator(self):
-        """The portal is public, so the wrong banner is the wrong business."""
-        self.set_banner(self.t1, HOTSPOT_BANNER_LANDSCAPE="https://cdn.example.com/skylink.jpg")
-        self.assertIsNone(self.portal(self.t2).data["banner"]["landscape"])
+        body = json.dumps(self.portal(self.t1).data).lower()
+        for shape in ("banner", ".jpg", ".png", ".webp", ".gif", "image"):
+            self.assertNotIn(shape, body, f"{shape!r} is back in the portal payload")
 
     def test_the_support_number_is_carried(self):
         """The portal's footer offers it; it had nowhere to read it from."""
@@ -6175,30 +6143,6 @@ class HotspotPortalPayloadTests(TwoOperatorMixin, TestCase):
         names = {p["name"] for p in self.portal(self.t1).data["results"]}
         self.assertIn("t1-hotspot", names)
         self.assertNotIn("t1-package", names)
-
-    def test_an_operator_can_set_their_own_banner(self):
-        resp = self.auth(self.admin1).put(
-            "/api/system/settings/",
-            {"HOTSPOT_BANNER_LANDSCAPE": "https://cdn.example.com/mine.jpg"},
-            format="json",
-        )
-        self.assertIn(resp.status_code, (200, 202))
-        clear_settings_cache(tenant=self.t1)
-        self.assertEqual(
-            self.portal(self.t1).data["banner"]["landscape"],
-            "https://cdn.example.com/mine.jpg",
-        )
-
-    def test_a_banner_must_be_a_url(self):
-        """Anything else renders as a broken image on every customer's phone."""
-        resp = self.auth(self.admin1).put(
-            "/api/system/settings/", {"HOTSPOT_BANNER_LANDSCAPE": "not a url"}, format="json")
-        self.assertEqual(resp.status_code, 400)
-
-
-# =====================================================
-# 36. The pages that live on the router
-# =====================================================
 
 class MikrotikPortalPageTests(TestCase):
     """
