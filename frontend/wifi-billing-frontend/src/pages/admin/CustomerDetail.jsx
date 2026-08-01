@@ -2,7 +2,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import toast from "react-hot-toast";
-import { ArrowLeft, Edit, Router as RouterIcon } from "lucide-react";
+import { ArrowLeft, Edit, Router as RouterIcon, Gift } from "lucide-react";
 import AdminLayout from "../../components/admin/AdminLayout";
 import CompAccessModal from "../../components/admin/CompAccessModal";
 import { getUser } from "../../services/auth";
@@ -187,9 +187,20 @@ export default function CustomerDetail() {
               </Btn>
             )}
             {canComp && (
-              <Btn color="green" onClick={() => setComping(true)} loading={false}>
+              /*
+                Outlined, not filled. Every other button on this row is a solid
+                colour, and this one was solid emerald — which on a row of
+                primaries reads as the recommended thing to do. It is the
+                operator writing off a sale. It should be findable and it
+                should not be inviting.
+              */
+              <button
+                onClick={() => setComping(true)}
+                className="inline-flex items-center gap-2 rounded-lg border border-emerald-500/40 px-4 py-2 text-sm font-semibold text-emerald-300 transition-colors hover:bg-emerald-500/10"
+              >
+                <Gift size={14} aria-hidden="true" />
                 Give free access
-              </Btn>
+              </button>
             )}
           </div>
         </div>

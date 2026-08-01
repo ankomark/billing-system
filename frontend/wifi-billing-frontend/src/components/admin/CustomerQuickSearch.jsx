@@ -116,10 +116,17 @@ export default function CustomerQuickSearch() {
                       <ArrowRight size={14} className="flex-shrink-0 text-slate-600" />
                     </button>
                     {canComp && (
+                      /*
+                        Divided from the row it sits beside. The row already
+                        ends with an arrow meaning "open this"; a second grey
+                        glyph against it read as part of the same cluster
+                        rather than as a different action on the same person.
+                      */
                       <button
                         onClick={() => setGifting(c)}
                         title="Give free access"
-                        className="flex-shrink-0 rounded-lg p-2 text-slate-500 transition-colors hover:bg-emerald-500/10 hover:text-emerald-300"
+                        aria-label={`Give ${c.full_name} free access`}
+                        className="ml-1 flex-shrink-0 rounded-lg border-l border-white/10 py-2 pl-3 pr-2 text-slate-600 transition-colors hover:text-emerald-300"
                       >
                         <Gift size={15} />
                       </button>

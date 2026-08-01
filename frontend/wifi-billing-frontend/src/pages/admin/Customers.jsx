@@ -336,6 +336,7 @@ export default function Customers() {
                               onClick={() => setGifting(c)}
                               className="p-1.5 rounded-lg text-slate-500 hover:text-emerald-300 hover:bg-emerald-500/10 transition-colors"
                               title="Give free access"
+                              aria-label={`Give ${c.full_name} free access`}
                             >
                               <Gift size={15} />
                             </button>
