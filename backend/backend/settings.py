@@ -241,6 +241,36 @@ else:
         "CORS_ALLOWED_ORIGINS", "http://localhost:3000"
     ).split(",")
 
+# The captive portal is a different origin, and there is no list to put it on.
+#
+# mikrotik-hotspot/login.html runs on the router and calls /hotspot/validate/
+# cross-origin. Its origin is whatever address that particular MikroTik answers
+# on — 10.5.50.1, 192.168.88.1, login.hotspot — which differs per operator and
+# per site, so it can never be enumerated in CORS_ALLOWED_ORIGINS.
+#
+# Without this the preflight returns 200 with no Access-Control-Allow-Origin,
+# the browser refuses, and the voucher login on every router is dead while the
+# server logs look perfectly healthy. Exactly how the impersonation headers
+# shipped broken. The live test suite cannot see it either — it uses axios's
+# Node adapter and performs no preflight — so this is pinned by a backend test.
+#
+# A captive portal is always on a private address, so the rule is bounded to
+# RFC1918 and the MikroTik hotspot hostnames. It grants a page on one of those
+# addresses nothing it could not already reach: authentication here is a bearer
+# token in a header, never a cookie (DEFAULT_AUTHENTICATION_CLASSES is JWT
+# only), and cross-origin script cannot read one.
+_PRIVATE_ORIGINS = [
+    r"^https?://10(\.\d{1,3}){3}(:\d+)?$",
+    r"^https?://172\.(1[6-9]|2\d|3[01])(\.\d{1,3}){2}(:\d+)?$",
+    r"^https?://192\.168(\.\d{1,3}){2}(:\d+)?$",
+    # MikroTik's own hotspot hostnames.
+    r"^https?://([\w-]+\.)?hotspot(:\d+)?$",
+]
+
+CORS_ALLOWED_ORIGIN_REGEXES = _PRIVATE_ORIGINS + [
+    r.strip() for r in os.getenv("CORS_ALLOWED_ORIGIN_REGEXES", "").split(",") if r.strip()
+]
+
 CORS_ALLOW_CREDENTIALS = True
 
 # The impersonation headers must be listed explicitly or a browser will not

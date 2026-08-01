@@ -1248,6 +1248,9 @@ class SystemSettingsView(APIView):
         "BLESSEDTEXTS_SENDER_ID",
         "WHATSAPP_TOKEN",
         "WHATSAPP_PHONE_ID",
+        "HOTSPOT_BANNER_PORTRAIT",
+        "HOTSPOT_BANNER_LANDSCAPE",
+        "HOTSPOT_BANNER_LINK",
     ]
 
     def get(self, request):
@@ -2483,8 +2486,23 @@ class HotspotPackagesView(APIView):
             .order_by("price")
         )
         from .serializers import PublicPackageSerializer
+
+        # The banner is the operator's own, and every part of it is optional.
+        # Returned as plain values rather than omitted when unset, so the
+        # portal has one shape to render and decides for itself whether there
+        # is anything to show.
+        banner = {
+            key.lower().replace("hotspot_banner_", ""): get_setting(
+                key, default="", tenant=tenant) or None
+            for key in ("HOTSPOT_BANNER_PORTRAIT",
+                        "HOTSPOT_BANNER_LANDSCAPE",
+                        "HOTSPOT_BANNER_LINK")
+        }
+
         return Response({
             "provider": tenant.business_name or tenant.name,
+            "support_phone": tenant.support_phone or "",
+            "banner": banner,
             "results": PublicPackageSerializer(packages, many=True).data,
         })
 

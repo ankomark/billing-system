@@ -22,6 +22,9 @@ const EMPTY = {
   BLESSEDTEXTS_SENDER_ID: "",
   WHATSAPP_TOKEN: "",
   WHATSAPP_PHONE_ID: "",
+  HOTSPOT_BANNER_PORTRAIT: "",
+  HOTSPOT_BANNER_LANDSCAPE: "",
+  HOTSPOT_BANNER_LINK: "",
 };
 
 export default function SystemSettings() {
@@ -189,6 +192,44 @@ export default function SystemSettings() {
               <Field label="Phone Number ID"  name="WHATSAPP_PHONE_ID" value={form.WHATSAPP_PHONE_ID} onChange={handleChange} />
             </div>
             <TestBtn label="Test WhatsApp" color="violet" loading={testing === "whatsapp"} onClick={() => runTest("whatsapp")} />
+          </Section>
+
+          {/* Captive portal banner */}
+          <Section title="Hotspot portal banner">
+            <p className="text-sm text-slate-400">
+              Shown at the top of your captive portal, above the packages. Two
+              images because a phone held upright and a laptop are different
+              shapes — one stretched to both looks like a mistake. Leave them
+              empty and the portal shows a plain welcome instead.
+            </p>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field
+                label="Portrait image URL"
+                name="HOTSPOT_BANNER_PORTRAIT"
+                value={form.HOTSPOT_BANNER_PORTRAIT}
+                onChange={handleChange}
+                placeholder="https://…/banner-tall.jpg"
+              />
+              <Field
+                label="Landscape image URL"
+                name="HOTSPOT_BANNER_LANDSCAPE"
+                value={form.HOTSPOT_BANNER_LANDSCAPE}
+                onChange={handleChange}
+                placeholder="https://…/banner-wide.jpg"
+              />
+            </div>
+            <Field
+              label="Link when tapped (optional)"
+              name="HOTSPOT_BANNER_LINK"
+              value={form.HOTSPOT_BANNER_LINK}
+              onChange={handleChange}
+              placeholder="https://your-offer-page"
+            />
+            <p className="text-xs text-slate-500">
+              Host these somewhere your customers can reach <em>before</em> they
+              are online — the same walled garden that serves the portal. An
+              image they cannot load is skipped, not left as a gap.
+            </p>
           </Section>
 
           <button

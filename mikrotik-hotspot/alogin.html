@@ -2,100 +2,356 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Skylink WiFi — Connected</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#0b1220">
+  <title>Connected</title>
   <style>
+    /*
+      Runs on the router, inside the walled garden, on a phone that does not
+      have working internet yet. So: no fonts, no frameworks, no CDN — every
+      byte here is served by the MikroTik itself. The only external request is
+      one API call for the voucher, to a host the walled garden already allows
+      because the login page calls it too.
+    */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --ink:        #e8eefc;
+      --ink-soft:   #93a3c0;
+      --ink-faint:  #64748b;
+      --line:       rgba(255,255,255,.10);
+      --surface:    rgba(255,255,255,.055);
+      --accent:     #38bdf8;
+      --accent-2:   #2563eb;
+      --good:       #34d399;
+    }
+
+    html { -webkit-text-size-adjust: 100%; }
+
     body {
       min-height: 100vh;
-      background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 50%, #0f172a 100%);
-      display: flex; align-items: center; justify-content: center;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      padding: 1rem;
+      min-height: 100dvh;
+      background: #0b1220;
+      background-image:
+        radial-gradient(90rem 50rem at 50% -20%, rgba(37,99,235,.28), transparent 60%),
+        radial-gradient(60rem 40rem at 100% 110%, rgba(56,189,248,.14), transparent 60%),
+        linear-gradient(180deg, #0b1220 0%, #0d1729 100%);
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      display: flex; justify-content: center;
+      padding: 1.25rem 1rem calc(1.25rem + env(safe-area-inset-bottom));
     }
-    .container { width: 100%; max-width: 400px; text-align: center; }
 
-    .icon-wrap {
+    .wrap { width: 100%; max-width: 30rem; }
+
+    /* ── Connected banner ─────────────────────────────────────── */
+    .hero { text-align: center; padding: .5rem 0 1.5rem; }
+
+    .tick {
       display: inline-flex; align-items: center; justify-content: center;
-      width: 80px; height: 80px; background: #16a34a;
-      border-radius: 50%; margin-bottom: 1.5rem;
-      box-shadow: 0 0 0 12px rgba(22,163,74,.15), 0 0 0 24px rgba(22,163,74,.07);
-      animation: pulse 2s ease-in-out infinite;
+      width: 4rem; height: 4rem; border-radius: 50%;
+      background: linear-gradient(160deg, #10b981, #059669);
+      box-shadow: 0 0 0 .5rem rgba(16,185,129,.12), 0 .75rem 2rem rgba(16,185,129,.3);
+      margin-bottom: 1rem;
+      animation: rise .5s cubic-bezier(.2,.8,.2,1) both;
     }
-    @keyframes pulse {
-      0%, 100% { box-shadow: 0 0 0 12px rgba(22,163,74,.15), 0 0 0 24px rgba(22,163,74,.07); }
-      50%       { box-shadow: 0 0 0 16px rgba(22,163,74,.1),  0 0 0 32px rgba(22,163,74,.04); }
+    @keyframes rise { from { opacity: 0; transform: translateY(.5rem) scale(.9); } }
+
+    .hero h1 {
+      font-size: clamp(1.5rem, 6vw, 1.875rem);
+      font-weight: 800; letter-spacing: -.02em;
     }
+    .hero p { color: var(--ink-soft); font-size: .9375rem; margin-top: .375rem; }
 
-    h1 { color: #fff; font-size: 1.75rem; font-weight: 800; margin-bottom: .5rem; }
-    .sub { color: #94a3b8; font-size: .9375rem; margin-bottom: 2rem; }
-
+    /* ── Cards ────────────────────────────────────────────────── */
     .card {
-      background: #fff; border-radius: 20px; padding: 1.75rem;
-      box-shadow: 0 24px 64px rgba(0,0,0,.35); margin-bottom: 1rem;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 1.125rem;
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      padding: 1.25rem;
+      margin-bottom: .875rem;
     }
 
-    .info-row {
-      display: flex; justify-content: space-between; align-items: center;
-      padding: .75rem 0; border-bottom: 1px solid #f1f5f9;
+    .card-label {
+      font-size: .6875rem; font-weight: 700; letter-spacing: .12em;
+      text-transform: uppercase; color: var(--ink-faint); margin-bottom: .75rem;
     }
-    .info-row:last-child { border-bottom: none; }
-    .info-label { font-size: .8125rem; color: #64748b; font-weight: 500; }
-    .info-value { font-size: .875rem; color: #1e293b; font-weight: 700; font-family: monospace; }
 
-    .btn-logout {
+    /* ── The voucher ──────────────────────────────────────────── */
+    /*
+      The whole reason this page changed. The code used to go out in one SMS
+      at purchase and appear nowhere else, and messaging credentials are
+      optional per operator — so for a customer of an operator without them,
+      the code they had paid for existed only in a database.
+    */
+    #voucherCard { display: none; border-color: rgba(56,189,248,.28); }
+    #voucherCard.show { display: block; }
+
+    .code-row { display: flex; gap: .5rem; align-items: stretch; }
+    .code {
+      flex: 1; min-width: 0;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: clamp(1.125rem, 5.5vw, 1.5rem); font-weight: 700;
+      letter-spacing: .08em; color: #bae6fd;
+      background: rgba(2,6,23,.55); border: 1px solid rgba(56,189,248,.22);
+      border-radius: .75rem; padding: .75rem .875rem;
+      display: flex; align-items: center;
+      overflow-x: auto; white-space: nowrap;
+      -webkit-user-select: all; user-select: all;
+    }
+    .copy {
+      flex-shrink: 0; width: 3.25rem;
+      background: linear-gradient(160deg, var(--accent), var(--accent-2));
+      border: none; border-radius: .75rem; color: #04121f;
+      font-weight: 700; font-size: .75rem; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: filter .15s, transform .1s;
+    }
+    .copy:active { transform: scale(.96); }
+    .copy.done { background: linear-gradient(160deg, #34d399, #059669); }
+    .hint { font-size: .75rem; color: var(--ink-soft); margin-top: .625rem; line-height: 1.5; }
+
+    /* ── Session facts ────────────────────────────────────────── */
+    .row {
+      display: flex; justify-content: space-between; align-items: baseline;
+      gap: 1rem; padding: .5rem 0; border-bottom: 1px solid rgba(255,255,255,.06);
+    }
+    .row:last-child { border-bottom: none; padding-bottom: 0; }
+    .row:first-of-type { padding-top: 0; }
+    .row dt { font-size: .8125rem; color: var(--ink-soft); }
+    .row dd {
+      font-size: .8125rem; font-weight: 600; text-align: right;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      word-break: break-all;
+    }
+    .row dd.ok { color: var(--good); }
+
+    /* ── Actions ──────────────────────────────────────────────── */
+    .btn {
       display: flex; align-items: center; justify-content: center; gap: .5rem;
-      width: 100%; padding: .875rem; background: #ef4444; color: #fff;
-      border: none; border-radius: 12px; font-size: .9375rem; font-weight: 700;
-      cursor: pointer; transition: background .15s; margin-top: 1rem;
-      text-decoration: none;
+      width: 100%; padding: .9375rem; border-radius: .875rem; border: none;
+      font-size: .9375rem; font-weight: 700; cursor: pointer;
+      text-decoration: none; transition: filter .15s, transform .1s;
     }
-    .btn-logout:hover { background: #dc2626; }
+    .btn:active { transform: scale(.99); }
+    .btn-primary {
+      background: linear-gradient(160deg, var(--accent), var(--accent-2));
+      color: #04121f; box-shadow: 0 .5rem 1.5rem rgba(37,99,235,.35);
+    }
+    .btn-ghost {
+      background: transparent; color: var(--ink-soft);
+      border: 1px solid var(--line); margin-top: .625rem;
+    }
 
-    .footer { color: #475569; font-size: .75rem; margin-top: 1rem; }
+    /* ── SmartBill ────────────────────────────────────────────── */
+    .promo {
+      margin-top: 1.25rem; text-align: center;
+      border: 1px solid var(--line); border-radius: 1.125rem;
+      background:
+        linear-gradient(180deg, rgba(37,99,235,.14), rgba(37,99,235,.03));
+      padding: 1.375rem 1.25rem;
+    }
+    .promo img {
+      width: 3.5rem; height: 3.5rem; border-radius: .875rem;
+      display: block; margin: 0 auto .75rem;
+      box-shadow: 0 .5rem 1.5rem rgba(0,0,0,.4);
+    }
+    .promo h2 {
+      font-size: .9375rem; font-weight: 700; letter-spacing: -.01em;
+      margin-bottom: .25rem;
+    }
+    .promo h2 span {
+      background: linear-gradient(90deg, #e8eefc, var(--accent));
+      -webkit-background-clip: text; background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .promo p { font-size: .8125rem; color: var(--ink-soft); line-height: 1.55; }
+    .promo .tag {
+      display: inline-block; margin-top: .75rem; font-size: .6875rem;
+      letter-spacing: .1em; text-transform: uppercase; color: var(--ink-faint);
+    }
+
+    footer { text-align: center; color: var(--ink-faint); font-size: .75rem; margin-top: 1rem; }
+    footer a { color: var(--accent); text-decoration: none; }
+
+    /* Landscape phones: the hero eats the whole screen otherwise. */
+    @media (max-height: 30rem) and (orientation: landscape) {
+      .hero { padding: .25rem 0 .875rem; }
+      .tick { width: 2.75rem; height: 2.75rem; margin-bottom: .5rem; }
+      .tick svg { width: 1.375rem; height: 1.375rem; }
+      .promo { padding: 1rem; }
+      .promo img { width: 2.5rem; height: 2.5rem; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+    }
   </style>
 </head>
 <body>
-<div class="container">
 
-  <div class="icon-wrap">
-    <svg width="40" height="40" fill="none" stroke="#fff" stroke-width="2.5"
-         stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24">
-      <polyline points="20 6 9 17 4 12"/>
-    </svg>
+<!-- ═══════════════════════════════════════════════════════════
+     CONFIGURATION — must match login.html
+     ═══════════════════════════════════════════════════════════ -->
+<script>
+  var API_BASE     = 'https://your-backend.com/api';  // ← no trailing slash
+  var TENANT_TOKEN = 'YOUR-OPERATOR-TOKEN';           // ← Admin → Settings
+</script>
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<div class="wrap">
+
+  <div class="hero">
+    <div class="tick">
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#fff"
+           stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="20 6 9 17 4 12"/>
+      </svg>
+    </div>
+    <h1>You're connected</h1>
+    <p id="sub">Your session is active. Enjoy the internet.</p>
   </div>
 
-  <h1>You're Connected!</h1>
-  <p class="sub">Welcome to Skylink WiFi. Enjoy your session.</p>
+  <!-- Shown once the voucher is known. Hidden if the lookup fails, rather
+       than showing an empty box that looks like something is broken. -->
+  <div class="card" id="voucherCard">
+    <p class="card-label">Your access code</p>
+    <div class="code-row">
+      <div class="code" id="code">—</div>
+      <button class="copy" id="copyBtn" type="button" aria-label="Copy access code">Copy</button>
+    </div>
+    <p class="hint" id="voucherHint">
+      Write this down. It reconnects this phone until your time runs out —
+      no need to pay again.
+    </p>
+  </div>
 
   <div class="card">
-    <div class="info-row">
-      <span class="info-label">Username</span>
-      <span class="info-value">$(username)</span>
-    </div>
-    <div class="info-row">
-      <span class="info-label">IP Address</span>
-      <span class="info-value">$(ip)</span>
-    </div>
-    <div class="info-row">
-      <span class="info-label">Session Time Left</span>
-      <span class="info-value" id="countdown">$(session-time-left)</span>
-    </div>
-
-    <a class="btn-logout" href="$(link-logout)">
-      <svg width="16" height="16" fill="none" stroke="#fff" stroke-width="2.5" viewBox="0 0 24 24">
-        <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
-        <polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>
-      </svg>
-      Disconnect
-    </a>
+    <p class="card-label">Session</p>
+    <dl>
+      <div class="row"><dt>Status</dt><dd class="ok">Online</dd></div>
+      <div class="row" id="pkgRow" style="display:none">
+        <dt>Package</dt><dd id="pkg">—</dd>
+      </div>
+      <div class="row"><dt>Time left</dt><dd id="left">$(session-time-left)</dd></div>
+      <div class="row"><dt>IP address</dt><dd>$(ip)</dd></div>
+      <div class="row"><dt>Device</dt><dd>$(mac)</dd></div>
+    </dl>
   </div>
 
-  <p class="footer">
-    <a href="$(link-status)" style="color:#60a5fa; text-decoration:none">View session status</a>
-    &nbsp;·&nbsp; Skylink WiFi
-  </p>
+  <a class="btn btn-primary" href="$(link-redirect)">
+    Start browsing
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+         stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+      <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
+    </svg>
+  </a>
+  <a class="btn btn-ghost" href="$(link-logout)">Disconnect</a>
+
+  <div class="promo">
+    <img src="smartbill.png" alt="SmartBill Solutions" width="56" height="56">
+    <h2><span>Powered by SmartBill Solutions</span></h2>
+    <p>
+      Billing, vouchers and M-Pesa for internet providers — packages sold
+      themselves, customers connected automatically, every shilling accounted
+      for.
+    </p>
+    <span class="tag">Smart solutions · Seamless billing</span>
+  </div>
+
+  <footer>
+    <a href="$(link-status)">Session details</a>
+  </footer>
 
 </div>
+
+<script>
+(function () {
+  var MAC = '$(mac)';
+
+  /* ── Copy, with a fallback ──────────────────────────────────
+     A captive portal is served over plain http as often as not, and
+     navigator.clipboard does not exist there. Selecting the text is the
+     fallback that always works — the code element is user-select:all. */
+  function copyCode() {
+    var el  = document.getElementById('code');
+    var btn = document.getElementById('copyBtn');
+    var text = el.textContent.trim();
+    if (!text || text === '—') return;
+
+    function done() {
+      btn.textContent = 'Copied';
+      btn.classList.add('done');
+      setTimeout(function () {
+        btn.textContent = 'Copy';
+        btn.classList.remove('done');
+      }, 2000);
+    }
+
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, selectFallback);
+    } else {
+      selectFallback();
+    }
+
+    function selectFallback() {
+      try {
+        var range = document.createRange();
+        range.selectNodeContents(el);
+        var sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        if (document.execCommand && document.execCommand('copy')) { done(); return; }
+      } catch (e) { /* fall through */ }
+      document.getElementById('voucherHint').textContent =
+        'Press and hold the code above to copy it.';
+    }
+  }
+  document.getElementById('copyBtn').addEventListener('click', copyCode);
+
+  /* ── Fetch the voucher ──────────────────────────────────────
+     Best effort. The page is already useful without it — they are online —
+     so a failure here shows nothing rather than an error the customer can
+     do nothing about. */
+  if (!API_BASE || API_BASE.indexOf('your-backend') !== -1 || !MAC || MAC.charAt(0) === '$') {
+    return;
+  }
+
+  var url = API_BASE + '/hotspot/status/?mac=' + encodeURIComponent(MAC)
+          + '&t=' + encodeURIComponent(TENANT_TOKEN);
+
+  var xhr = new XMLHttpRequest();
+  xhr.open('GET', url, true);
+  xhr.timeout = 8000;
+  xhr.onload = function () {
+    if (xhr.status !== 200) return;
+    var d;
+    try { d = JSON.parse(xhr.responseText); } catch (e) { return; }
+    if (d.status !== 'active') return;
+
+    if (d.voucher_code) {
+      document.getElementById('code').textContent = d.voucher_code;
+      document.getElementById('voucherCard').classList.add('show');
+    }
+    if (d.package) {
+      document.getElementById('pkg').textContent = d.package;
+      document.getElementById('pkgRow').style.display = 'flex';
+    }
+    if (d.expires_at) {
+      var when = new Date(d.expires_at);
+      if (!isNaN(when)) {
+        document.getElementById('sub').textContent =
+          'Active until ' + when.toLocaleString();
+      }
+    }
+  };
+  xhr.onerror = xhr.ontimeout = function () { /* stay quiet */ };
+  xhr.send();
+})();
+</script>
+
 </body>
 </html>

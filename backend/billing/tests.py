@@ -12,6 +12,8 @@ Coverage:
 """
 
 import json
+from pathlib import Path
+import re
 from decimal import Decimal
 from unittest import skipUnless
 from unittest.mock import MagicMock, patch
@@ -6016,3 +6018,338 @@ class HotspotCustomerSearchTests(TwoOperatorMixin, TestCase):
             len(ctx.captured_queries), 15,
             f"{len(ctx.captured_queries)} queries for one page — prefetch lost",
         )
+
+
+# =====================================================
+# 34. The captive portal is a different origin
+# =====================================================
+
+class HotspotPortalCorsTests(TestCase):
+    """
+    login.html runs on the MikroTik and calls the API cross-origin. Its origin
+    is whatever address that router answers on, which differs per operator and
+    per site — so it can never be listed in CORS_ALLOWED_ORIGINS.
+
+    Without the private-network rule the preflight returns 200 with no
+    Access-Control-Allow-Origin, the browser refuses, and voucher login is dead
+    on every router while the server logs look healthy. The same shape as the
+    impersonation headers, and invisible to the live suite for the same reason:
+    axios's Node adapter performs no preflight.
+    """
+
+    def preflight(self, origin, path="/api/hotspot/validate/", method="POST"):
+        return APIClient().options(
+            path,
+            HTTP_ORIGIN=origin,
+            HTTP_ACCESS_CONTROL_REQUEST_METHOD=method,
+            HTTP_ACCESS_CONTROL_REQUEST_HEADERS="content-type",
+        )
+
+    def assertAllowed(self, origin, **kw):
+        resp = self.preflight(origin, **kw)
+        self.assertEqual(
+            resp.headers.get("access-control-allow-origin"), origin,
+            f"{origin} was refused — the portal there cannot call the API",
+        )
+
+    def assertRefused(self, origin):
+        resp = self.preflight(origin)
+        self.assertIsNone(
+            resp.headers.get("access-control-allow-origin"),
+            f"{origin} was allowed and should not be",
+        )
+
+    @override_settings(DEBUG=False)
+    def test_the_addresses_a_mikrotik_actually_answers_on(self):
+        for origin in (
+            "http://10.5.50.1",
+            "http://192.168.88.1",
+            "http://172.16.0.1",
+            "http://172.31.255.254",
+            "http://login.hotspot",
+            "https://192.168.1.1",
+            "http://10.0.0.1:8080",
+        ):
+            with self.subTest(origin=origin):
+                self.assertAllowed(origin)
+
+    @override_settings(DEBUG=False)
+    def test_the_connected_page_can_read_device_status(self):
+        """alogin.html fetches the voucher from the same private origin."""
+        self.assertAllowed(
+            "http://10.5.50.1", path="/api/hotspot/status/", method="GET")
+
+    @override_settings(DEBUG=False)
+    def test_the_public_internet_is_still_not_allowed(self):
+        """The rule is bounded to private addresses, not opened to everyone."""
+        for origin in (
+            "http://8.8.8.8",
+            "https://evil.example.com",
+            "http://172.15.0.1",     # just below the RFC1918 block
+            "http://172.32.0.1",     # just above it
+            "http://10.5.50.1.evil.com",
+            "http://192.168.1.1.attacker.net",
+        ):
+            with self.subTest(origin=origin):
+                self.assertRefused(origin)
+
+
+# =====================================================
+# 35. What the captive portal is handed
+# =====================================================
+
+class HotspotPortalPayloadTests(TwoOperatorMixin, TestCase):
+    """
+    The portal renders from one request. Whatever it needs before it can draw
+    the top of the page has to arrive in that request, or the page reflows
+    under someone's thumb.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        with tenant_context(self.t1):
+            Package.objects.create(
+                tenant=self.t1, name="t1-hotspot", download_speed=5, upload_speed=5,
+                price=Decimal("50.00"), duration_value=24, duration_unit="hours",
+                monthly_data_cap_gb=0, is_hotspot=True)
+
+    def portal(self, tenant):
+        return APIClient().get(f"/api/hotspot/packages/?t={tenant.public_token}")
+
+    def set_banner(self, tenant, **values):
+        with tenant_context(tenant):
+            for key, value in values.items():
+                SystemSetting.objects.update_or_create(
+                    tenant=tenant, key=key, defaults={"value": value})
+        clear_settings_cache(tenant=tenant)
+
+    def test_an_operator_with_no_banner_gets_a_defined_shape(self):
+        """
+        Nulls rather than a missing key, so the portal has one thing to render
+        and decides for itself whether there is anything to show.
+        """
+        resp = self.portal(self.t1)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(
+            resp.data["banner"],
+            {"portrait": None, "landscape": None, "link": None},
+        )
+
+    def test_both_orientations_come_back(self):
+        self.set_banner(
+            self.t1,
+            HOTSPOT_BANNER_PORTRAIT="https://cdn.example.com/tall.jpg",
+            HOTSPOT_BANNER_LANDSCAPE="https://cdn.example.com/wide.jpg",
+            HOTSPOT_BANNER_LINK="https://example.com/offer",
+        )
+        banner = self.portal(self.t1).data["banner"]
+        self.assertEqual(banner["portrait"], "https://cdn.example.com/tall.jpg")
+        self.assertEqual(banner["landscape"], "https://cdn.example.com/wide.jpg")
+        self.assertEqual(banner["link"], "https://example.com/offer")
+
+    def test_one_orientation_alone_is_allowed(self):
+        """Most operators will have one image, not two."""
+        self.set_banner(self.t1, HOTSPOT_BANNER_LANDSCAPE="https://cdn.example.com/wide.jpg")
+        banner = self.portal(self.t1).data["banner"]
+        self.assertIsNone(banner["portrait"])
+        self.assertEqual(banner["landscape"], "https://cdn.example.com/wide.jpg")
+
+    def test_a_banner_belongs_to_one_operator(self):
+        """The portal is public, so the wrong banner is the wrong business."""
+        self.set_banner(self.t1, HOTSPOT_BANNER_LANDSCAPE="https://cdn.example.com/skylink.jpg")
+        self.assertIsNone(self.portal(self.t2).data["banner"]["landscape"])
+
+    def test_the_support_number_is_carried(self):
+        """The portal's footer offers it; it had nowhere to read it from."""
+        self.t1.support_phone = "254700111222"
+        self.t1.save(update_fields=["support_phone"])
+        self.assertEqual(self.portal(self.t1).data["support_phone"], "254700111222")
+
+    def test_an_unknown_portal_token_is_refused(self):
+        resp = APIClient().get("/api/hotspot/packages/?t=not-a-token")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_only_hotspot_packages_are_offered(self):
+        """The PPPoE catalogue is not for sale to a walk-up customer."""
+        names = {p["name"] for p in self.portal(self.t1).data["results"]}
+        self.assertIn("t1-hotspot", names)
+        self.assertNotIn("t1-package", names)
+
+    def test_an_operator_can_set_their_own_banner(self):
+        resp = self.auth(self.admin1).put(
+            "/api/system/settings/",
+            {"HOTSPOT_BANNER_LANDSCAPE": "https://cdn.example.com/mine.jpg"},
+            format="json",
+        )
+        self.assertIn(resp.status_code, (200, 202))
+        clear_settings_cache(tenant=self.t1)
+        self.assertEqual(
+            self.portal(self.t1).data["banner"]["landscape"],
+            "https://cdn.example.com/mine.jpg",
+        )
+
+    def test_a_banner_must_be_a_url(self):
+        """Anything else renders as a broken image on every customer's phone."""
+        resp = self.auth(self.admin1).put(
+            "/api/system/settings/", {"HOTSPOT_BANNER_LANDSCAPE": "not a url"}, format="json")
+        self.assertEqual(resp.status_code, 400)
+
+
+# =====================================================
+# 36. The pages that live on the router
+# =====================================================
+
+class MikrotikPortalPageTests(TestCase):
+    """
+    mikrotik-hotspot/ is uploaded to a router by hand and never imported by
+    anything, so nothing else in this suite touches it. A broken tag or a
+    mistyped MikroTik variable there does not fail a build — it renders as a
+    blank page in front of a customer standing at a counter.
+
+    These are the checks that survive that gap.
+    """
+
+    VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link",
+            "meta", "param", "source", "track", "wbr"}
+
+    # Everything MikroTik substitutes on a hotspot page. Anything else inside
+    # $(...) is a typo, and a typo ships as literal text.
+    KNOWN_VARS = {
+        "mac", "ip", "username", "password", "error", "if", "endif",
+        "link-login", "link-login-only", "link-logout", "link-status",
+        "link-orig", "link-redirect", "session-time-left", "uptime",
+        "uptime-secs", "idle-timeout", "refresh-timeout", "trial",
+        "chap-id", "chap-challenge", "hostname", "identity",
+        "bytes-in", "bytes-out", "bytes-in-nice", "bytes-out-nice",
+        "packets-in", "packets-out",
+        "limit-bytes-in", "limit-bytes-out",
+        "remain-bytes-in", "remain-bytes-out",
+    }
+
+    @property
+    def folder(self):
+        """
+        Beside the backend in a checkout; bind-mounted at the root in the
+        container, because the folder sits outside the Docker build context
+        and cannot be COPYed in. Both are checked so the tests run in either,
+        and the assertion below means neither can silently find nothing.
+        """
+        from django.conf import settings
+        root = Path(settings.BASE_DIR).parent
+        for candidate in (root / "mikrotik-hotspot", Path("/mikrotik-hotspot")):
+            if candidate.is_dir():
+                return candidate
+        return root / "mikrotik-hotspot"
+
+    def pages(self):
+        found = sorted(self.folder.glob("*.html"))
+        self.assertTrue(found, f"no portal pages under {self.folder}")
+        return found
+
+    def test_the_folder_is_where_it_is_expected(self):
+        names = {p.name for p in self.pages()}
+        self.assertIn("login.html", names)
+        self.assertIn("alogin.html", names)
+
+    def test_every_tag_is_closed(self):
+        from html.parser import HTMLParser
+
+        void = self.VOID
+
+        class Balance(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.stack, self.problems = [], []
+
+            def handle_starttag(self, tag, attrs):
+                if tag not in void:
+                    self.stack.append((tag, self.getpos()[0]))
+
+            def handle_endtag(self, tag):
+                if tag in void:
+                    return
+                if not self.stack:
+                    self.problems.append(f"line {self.getpos()[0]}: stray </{tag}>")
+                    return
+                opened, line = self.stack.pop()
+                if opened != tag:
+                    self.problems.append(
+                        f"line {self.getpos()[0]}: </{tag}> closes <{opened}> from line {line}")
+
+        for page in self.pages():
+            with self.subTest(page=page.name):
+                parser = Balance()
+                parser.feed(page.read_text(encoding="utf-8"))
+                unclosed = [f"<{t}> line {n}" for t, n in parser.stack]
+                self.assertEqual(parser.problems + unclosed, [])
+
+    def test_only_real_mikrotik_variables_are_used(self):
+        for page in self.pages():
+            with self.subTest(page=page.name):
+                used = set(re.findall(r"\$\(([a-z0-9-]+)\)", page.read_text(encoding="utf-8")))
+                self.assertEqual(
+                    used - self.KNOWN_VARS, set(),
+                    "these would render as literal text on the page",
+                )
+
+    def test_local_assets_exist(self):
+        """
+        The router serves only what is uploaded to it. A path that resolves in
+        the repository and not on the device is a broken image on every phone.
+        """
+        for page in self.pages():
+            for src in re.findall(r'src="(?!https?://|data:)([^"]+)"',
+                                  page.read_text(encoding="utf-8")):
+                with self.subTest(page=page.name, src=src):
+                    self.assertTrue((self.folder / src).exists(), f"{src} is not in the folder")
+
+    def test_the_logo_stays_small_enough_to_serve(self):
+        """
+        A captive portal is the one place a visitor has no working internet,
+        and MikroTik flash is small. The source logo is 2.2 MB; the copy here
+        must stay a fraction of that or it silently stops being uploadable.
+        """
+        logo = self.folder / "smartbill.png"
+        self.assertTrue(logo.exists())
+        self.assertLess(logo.stat().st_size, 120_000, "the portal logo has grown")
+
+    def test_pages_that_call_the_api_declare_both_config_values(self):
+        """
+        Spelled the same way in every file, or one page quietly talks to the
+        wrong place while the others work.
+        """
+        for page in self.pages():
+            text = page.read_text(encoding="utf-8")
+            if "API_BASE" not in text:
+                continue
+            with self.subTest(page=page.name):
+                for name in ("API_BASE", "TENANT_TOKEN"):
+                    self.assertRegex(text, rf"var {name}\s*=")
+
+    def test_every_page_is_built_for_a_phone(self):
+        for page in self.pages():
+            with self.subTest(page=page.name):
+                self.assertIn(
+                    '<meta name="viewport"', page.read_text(encoding="utf-8"),
+                    "without this it renders desktop-wide on a phone",
+                )
+
+    def test_the_code_box_can_take_a_whole_mpesa_message(self):
+        """
+        It was a 30-character text input — shorter than any M-Pesa message, so
+        the one thing a customer has on their phone could not be pasted in.
+        """
+        text = (self.folder / "login.html").read_text(encoding="utf-8")
+        box = re.search(r'<(input|textarea)[^>]*id="voucherCode"[^>]*>', text)
+        self.assertIsNotNone(box, "the code box is gone")
+        self.assertNotIn("maxlength", box.group(0))
+
+    def test_the_connected_page_shows_the_voucher(self):
+        """
+        The reason it was rewritten. Without messaging credentials — optional,
+        per operator — this is the only place the code is ever displayed.
+        """
+        text = (self.folder / "alogin.html").read_text(encoding="utf-8")
+        self.assertIn("voucher_code", text)
+        self.assertIn("/hotspot/status/", text)

@@ -60,16 +60,17 @@
       display: block; font-size: .8125rem; font-weight: 600;
       color: #374151; margin-bottom: .5rem;
     }
-    input[type="text"], input[type="password"] {
+    input[type="text"], input[type="password"], textarea {
       width: 100%; border: 1.5px solid #d1d5db; border-radius: 10px;
       padding: .75rem 1rem; font-size: .9375rem; color: #111827;
       outline: none; transition: border-color .15s, box-shadow .15s;
       letter-spacing: .1em;
+      font-family: inherit; resize: none;
     }
-    input[type="text"]:focus, input[type="password"]:focus {
+    input[type="text"]:focus, input[type="password"]:focus, textarea:focus {
       border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,.15);
     }
-    input::placeholder { color: #9ca3af; letter-spacing: normal; }
+    input::placeholder, textarea::placeholder { color: #9ca3af; letter-spacing: normal; }
 
     .input-hint { font-size: .75rem; color: #6b7280; margin-top: .4rem; }
 
@@ -170,24 +171,33 @@
 
     <!-- Tabs -->
     <div class="tabs">
-      <div class="tab active" onclick="switchTab('voucher')">I Have a Voucher</div>
+      <div class="tab active" onclick="switchTab('voucher')">I Have a Code</div>
       <div class="tab"        onclick="switchTab('buy')">Buy Data</div>
     </div>
 
     <!-- ── Voucher tab ── -->
     <div id="tab-voucher" class="tab-content active">
-      <label for="voucherCode">Enter your voucher code</label>
-      <input
+      <label for="voucherCode">Your code, or your M-Pesa message</label>
+      <!--
+        A textarea, and no maxlength. It was a 30-character text input, which
+        is shorter than any M-Pesa message — so the one thing a customer
+        actually has on their phone could not be pasted into it, and they were
+        left picking a ten-character receipt out of a paragraph by hand.
+        The backend finds the code inside the message.
+      -->
+      <textarea
         id="voucherCode"
-        type="text"
-        placeholder="WIFI-XXXXXX"
-        maxlength="30"
+        rows="2"
+        placeholder="WIFI-XXXXXX — or paste your whole M-Pesa message"
         autocomplete="off"
         autocapitalize="characters"
         spellcheck="false"
         oninput="clearMsg()"
-      />
-      <p class="input-hint">Received via SMS or WhatsApp after payment.</p>
+      ></textarea>
+      <p class="input-hint">
+        Paste the M-Pesa message Safaricom sent you, or type the code from your
+        SMS. Either works.
+      </p>
 
       <button class="btn btn-primary" id="connectBtn" onclick="handleConnect()">
         <span id="btnText">Connect to Internet</span>
@@ -205,7 +215,7 @@
           <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/>
           <line x1="12" y1="16" x2="12.01" y2="16"/>
         </svg>
-        <span id="errorText">Invalid or expired voucher.</span>
+        <span id="errorText">We couldn't match that code.</span>
       </div>
     </div>
 
@@ -213,7 +223,7 @@
     <div id="tab-buy" class="tab-content">
       <div class="package-info">
         <h3>Get Connected in Minutes</h3>
-        <p>Purchase a data bundle using M-Pesa. Your voucher code will be sent via SMS and WhatsApp immediately after payment.</p>
+        <p>Pay with M-Pesa and you are online straight away. Keep the message Safaricom sends you — pasting it here reconnects this phone until your time runs out.</p>
       </div>
       <button class="btn btn-primary" onclick="goToPayment()">
         <svg width="18" height="18" fill="none" stroke="#fff" stroke-width="2.5" viewBox="0 0 24 24">
@@ -222,7 +232,7 @@
         </svg>
         View Packages &amp; Pay
       </button>
-      <button class="btn btn-outline" onclick="switchTab('voucher')">Already have a voucher?</button>
+      <button class="btn btn-outline" onclick="switchTab('voucher')">Already have a code?</button>
     </div>
 
     <!-- Hidden MikroTik login form — submitted by JavaScript after validation -->
@@ -279,7 +289,7 @@
   function handleConnect() {
     var code = document.getElementById('voucherCode').value.trim();
     if (!code) {
-      showError('Please enter your voucher code.');
+      showError('Paste your M-Pesa message, or enter your code.');
       return;
     }
 
@@ -311,9 +321,9 @@
       } else {
         try {
           var err = JSON.parse(xhr.responseText);
-          showError(err.detail || 'Invalid or expired voucher. Please try again.');
+          showError(err.detail || "We couldn't match that. Check you pasted the whole message.");
         } catch(e) {
-          showError('Invalid or expired voucher. Please try again.');
+          showError("We couldn't match that. Check you pasted the whole message.");
         }
       }
     };
@@ -338,7 +348,12 @@
 
   /* ─── Allow Enter key to submit ─── */
   document.getElementById('voucherCode').addEventListener('keydown', function(e) {
-    if (e.key === 'Enter') handleConnect();
+    // Shift+Enter still inserts a newline, so a pasted multi-line message can
+    // be edited. A bare Enter is what someone typing a short code expects.
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleConnect();
+    }
   });
 
   /* ─── Auto-focus voucher field on load ─── */

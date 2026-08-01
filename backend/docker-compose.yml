@@ -12,6 +12,16 @@ x-app: &app
   image: wifi-billing-app:latest
   env_file:
     - .env
+  volumes:
+    # The captive-portal pages, which live at the repository root and so are
+    # outside this build context and cannot be COPYed in.
+    #
+    # They are uploaded to a MikroTik by hand and imported by nothing, so
+    # without this the tests that check them find no files and pass vacuously —
+    # which is worse than not having them. A broken tag or a mistyped MikroTik
+    # variable in there is a blank page in front of a paying customer, and this
+    # suite is the only thing that would ever notice.
+    - ../mikrotik-hotspot:/mikrotik-hotspot:ro
 
 services:
   postgres:
