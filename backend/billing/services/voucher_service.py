@@ -63,7 +63,11 @@ def _mac_allowed(sub: Subscription, mac_address: Optional[str]) -> bool:
     return True
 
 
-def validate_voucher(code: str, mac_address: Optional[str] = None) -> Optional[Subscription]:
+def validate_voucher(
+    code: str,
+    mac_address: Optional[str] = None,
+    tenant=None,
+) -> Optional[Subscription]:
     """
     Validate hotspot access token.
 
@@ -73,6 +77,23 @@ def validate_voucher(code: str, mac_address: Optional[str] = None) -> Optional[S
 
     Returns:
         Subscription if valid, else None
+
+    `tenant` is which operator's portal the code was presented on, and it is
+    not optional in practice. The only caller is a public AllowAny endpoint, so
+    no middleware has set a tenant context and these managers run unscoped —
+    at the database too, because the RLS policy deliberately allows everything
+    when app.current_tenant_id is unset, which is what lets platform staff and
+    Celery run cross-tenant.
+
+    The effect, before this argument existed: one operator's voucher validated
+    on another operator's captive portal and granted access. Verified against
+    the running stack, not theorised — BlueWave's WIFI-7NYLUV came back
+    "Access granted" through Skylink's portal and bound a device MAC to a
+    BlueWave subscriber.
+
+    Passing None still searches every operator, which is correct for a trusted
+    internal caller and wrong for a public one. Callers that cannot establish
+    an operator must refuse rather than pass None.
 
     IMPORTANT:
     - This function DOES NOT bind MAC address.
@@ -87,11 +108,13 @@ def validate_voucher(code: str, mac_address: Optional[str] = None) -> Optional[S
     # 1) Try Voucher.code
     # ---------------------------------------------------------
     voucher = (
-        Voucher.objects
+        Voucher.objects.all_tenants()
         .select_related("subscription", "subscription__customer")
         .filter(code=code)
-        .first()
     )
+    if tenant is not None:
+        voucher = voucher.filter(tenant=tenant)
+    voucher = voucher.first()
 
     if voucher:
         # Must be active
@@ -120,13 +143,15 @@ def validate_voucher(code: str, mac_address: Optional[str] = None) -> Optional[S
     # ---------------------------------------------------------
     # 2) Fallback: treat M-Pesa receipt as voucher
     # ---------------------------------------------------------
-    payment = (
-        Payment.objects
+    payments = (
+        Payment.objects.all_tenants()
         .select_related("subscription", "subscription__customer")
         .filter(reference=code)
         .order_by("-paid_at", "-id")
-        .first()
     )
+    if tenant is not None:
+        payments = payments.filter(tenant=tenant)
+    payment = payments.first()
 
     if not payment:
         return None

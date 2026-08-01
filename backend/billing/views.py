@@ -715,7 +715,25 @@ class HotspotVoucherValidateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        subscription = validate_voucher(code)
+        # Which operator's portal this code was presented on. Without it the
+        # lookup searches every operator on the platform, and one operator's
+        # voucher grants access through another's portal — the same ambiguity
+        # _hotspot_customer_for() already refuses to guess at, on the same
+        # single-operator fallback.
+        tenant = _public_tenant(request)
+        if tenant is None:
+            logger.warning(
+                "[hotspot] voucher validation without a resolvable operator "
+                "while %s exist — refusing rather than searching all of them.",
+                Tenant.objects.count(),
+            )
+            return Response(
+                {"detail": "We couldn't identify your internet provider. "
+                           "Please reconnect through the WiFi login page."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        subscription = validate_voucher(code, tenant=tenant)
         if not subscription:
             return Response(
                 {"detail": "Invalid or expired voucher"},

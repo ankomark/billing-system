@@ -41,6 +41,7 @@ from billing.mpesa_client import (
     payments_configured,
 )
 from billing.services.pppoe_service import generate_pppoe_credentials
+from billing.services.voucher_service import validate_voucher
 from billing.tasks.mpesa_tasks import initiate_stk_push_task
 from billing.tasks.platform_billing_tasks import (
     generate_tenant_invoices,
@@ -1913,8 +1914,12 @@ class PublicEndpointScopingTests(TwoOperatorMixin, TestCase):
         a_customer.hotspot_username = ""
         a_customer.save(update_fields=["hotspot_username"])
 
+        # The portal identifies whose it is. It used to be able to omit this,
+        # which is precisely what let a voucher cross operators — see
+        # VoucherTenantScopeTests. What this test is about is unchanged: A's
+        # own voucher, on A's own portal, must not be blocked by B.
         resp = self.client.post(
-            "/api/hotspot/validate/",
+            f"/api/hotspot/validate/?t={self.t1.public_token}",
             {"code": a_voucher.code, "mac_address": self.MAC},
             format="json",
         )
@@ -5598,3 +5603,117 @@ class OperatorDeletionTests(PlatformBillingMixin, TestCase):
         resp = self.auth(self.owner).delete(
             "/api/platform/operators/999999/", {"confirm": "x"}, format="json")
         self.assertEqual(resp.status_code, 404)
+
+
+# =====================================================
+# 31. Whose voucher is it
+# =====================================================
+
+class VoucherTenantScopeTests(TwoOperatorMixin, TestCase):
+    """
+    A voucher belongs to one operator and must only work on that operator's
+    portal.
+
+    validate_voucher() searched every operator on the platform. The endpoint
+    that calls it is public, so no middleware sets a tenant context and the
+    managers run unscoped — and the RLS policy allows everything when
+    app.current_tenant_id is unset, by design, because that is what lets
+    platform staff and Celery run cross-tenant. Both layers were therefore
+    open at once.
+
+    Verified against the running stack before it was fixed: presenting
+    BlueWave's voucher on Skylink's captive portal answered "Access granted"
+    and bound a device MAC to a BlueWave subscriber.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        self.vouchers = {}
+        for tag in ("t1", "t2"):
+            d = self.data[tag]
+            with tenant_context(d["tenant"]):
+                d["customer"].connection_type = "hotspot"
+                d["customer"].pppoe_username = ""
+                d["customer"].save()
+                sub = d["sub"]
+                sub.expiry_date = timezone.now() + timezone.timedelta(days=5)
+                sub.status = "active"
+                sub.save()
+                self.vouchers[tag] = Voucher.objects.create(
+                    tenant=d["tenant"],
+                    code=f"WIFI-{tag.upper()}0001",
+                    subscription=sub,
+                    expires_at=sub.expiry_date,
+                )
+                Payment.objects.create(
+                    tenant=d["tenant"], customer=d["customer"], subscription=sub,
+                    amount=Decimal("50.00"), method="mpesa",
+                    reference=f"RCPT{tag.upper()}001",
+                )
+
+    def validate(self, tenant, code, mac):
+        return APIClient().post(
+            f"/api/hotspot/validate/?t={tenant.public_token}",
+            {"code": code, "mac_address": mac},
+            format="json",
+        )
+
+    # ---- the hole ----------------------------------------------------------
+
+    def test_a_voucher_does_not_work_on_another_operators_portal(self):
+        resp = self.validate(self.t1, self.vouchers["t2"].code, "AA:BB:CC:00:00:01")
+        self.assertEqual(resp.status_code, 400, resp.data)
+
+        # And nothing was bound to the other operator's subscriber.
+        other = Customer.objects.all_tenants().get(pk=self.data["t2"]["customer"].pk)
+        self.assertEqual(other.hotspot_username, "")
+
+    def test_an_mpesa_receipt_does_not_work_on_another_operators_portal(self):
+        resp = self.validate(self.t1, "RCPTT2001", "AA:BB:CC:00:00:02")
+        self.assertEqual(resp.status_code, 400, resp.data)
+
+    def test_the_service_refuses_to_cross_operators_when_given_one(self):
+        """Directly, so the guarantee does not depend on the view."""
+        self.assertIsNone(
+            validate_voucher(self.vouchers["t2"].code, tenant=self.t1)
+        )
+        self.assertIsNotNone(
+            validate_voucher(self.vouchers["t2"].code, tenant=self.t2)
+        )
+
+    # ---- still works for the operator it belongs to ------------------------
+
+    def test_a_voucher_works_on_its_own_portal(self):
+        resp = self.validate(self.t1, self.vouchers["t1"].code, "AA:BB:CC:00:00:03")
+        self.assertEqual(resp.status_code, 200, resp.data)
+        mine = Customer.objects.all_tenants().get(pk=self.data["t1"]["customer"].pk)
+        self.assertEqual(mine.hotspot_username, "AA:BB:CC:00:00:03")
+
+    def test_an_mpesa_receipt_works_on_its_own_portal(self):
+        resp = self.validate(self.t1, "RCPTT1001", "AA:BB:CC:00:00:04")
+        self.assertEqual(resp.status_code, 200, resp.data)
+
+    # ---- refusing rather than guessing -------------------------------------
+
+    def test_no_operator_token_is_refused_while_several_exist(self):
+        """
+        The same rule _hotspot_customer_for() already applied to MAC lookups.
+        Searching every operator is what made the leak possible, so an
+        unidentifiable portal is an error, not a wildcard.
+        """
+        resp = APIClient().post(
+            "/api/hotspot/validate/",
+            {"code": self.vouchers["t1"].code, "mac_address": "AA:BB:CC:00:00:05"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("provider", resp.data["detail"])
+
+    def test_an_unknown_operator_token_is_refused(self):
+        resp = APIClient().post(
+            "/api/hotspot/validate/?t=not-a-real-token",
+            {"code": self.vouchers["t1"].code, "mac_address": "AA:BB:CC:00:00:06"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
