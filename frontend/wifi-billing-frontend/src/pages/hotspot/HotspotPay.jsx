@@ -40,14 +40,17 @@ export default function HotspotPay() {
       // One public call creates the customer, subscription and invoice, then
       // sends the STK prompt. Previously this posted to the admin-only
       // subscriptions endpoint and always failed with 403.
-      const { reference } = await purchaseHotspotPackage({
+      const { reference, poll_token: pollToken } = await purchaseHotspotPackage({
         tenantToken,
         packageId,
         phone: phone.trim(),
       });
 
+      // The token travels with the reference. It is what lets the next page
+      // read the voucher back; an invoice number alone no longer does.
       navigate(
         `/hotspot/status?ref=${encodeURIComponent(reference)}` +
+          (pollToken ? `&token=${encodeURIComponent(pollToken)}` : "") +
           `&mac=${encodeURIComponent(mac)}` +
           (tenantToken ? `&t=${encodeURIComponent(tenantToken)}` : "")
       );

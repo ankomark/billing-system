@@ -20,10 +20,17 @@ export const purchaseHotspotPackage = async ({ tenantToken, packageId, phone }) 
   return res.data; // { reference, amount }
 };
 
-// Poll after purchase. The voucher code comes back only once actually paid.
-export const fetchHotspotPaymentStatus = async ({ tenantToken, reference }) => {
+/**
+ * Poll after purchase.
+ *
+ * `token` is what releases the voucher — purchase hands it back, and without
+ * it this answers paid or unpaid but no code. Invoice numbers are a timestamp
+ * and four hex characters, so before the token existed the only thing between
+ * a stranger guessing one and somebody else's voucher was the rate limit.
+ */
+export const fetchHotspotPaymentStatus = async ({ tenantToken, reference, token }) => {
   const res = await api.get("hotspot/payment-status/", {
-    params: { t: tenantToken, ref: reference },
+    params: { t: tenantToken, ref: reference, ...(token ? { token } : {}) },
   });
   return res.data; // { status, voucher_code, expires_at }
 };

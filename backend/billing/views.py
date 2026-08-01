@@ -10,13 +10,16 @@ from .permissions import (
     IsCustomer, IsPlatformOwner, IsPlatformStaff, IsTenantAdmin,
     IsTenantAdminForBilling, IsTenantAdminOrReadOnlyMember, IsTenantMember,
 )
-from .throttles import LoginRateThrottle, HotspotPublicThrottle, MpesaCallbackThrottle, STKPushThrottle
+from .throttles import (
+    LoginRateThrottle, HotspotPollThrottle, HotspotPublicThrottle,
+    MpesaCallbackThrottle, STKPushThrottle,
+)
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, permissions
 from rest_framework.exceptions import ValidationError
 from django.shortcuts import get_object_or_404
-from .security import is_trusted_mpesa_ip
+from .security import is_trusted_mpesa_ip, poll_token_for, poll_token_matches
 from billing.services.voucher_service import validate_voucher
 from billing.router_service import enable_customer_access
 from .mpesa_client import initiate_stk_push
@@ -1020,7 +1023,9 @@ def _hotspot_customer_for(request, mac, **extra):
 
 class HotspotStatusView(APIView):
     permission_classes = [permissions.AllowAny]
-    throttle_classes = [HotspotPublicThrottle]
+    # Polled by the portal on every load, so it shares the poll budget rather
+    # than the much tighter one that bounds guessing.
+    throttle_classes = [HotspotPollThrottle]
 
     def get(self, request):
         mac = request.GET.get("mac")
@@ -2595,6 +2600,9 @@ class HotspotPurchaseView(APIView):
                 "detail": "Check your phone for the M-Pesa prompt.",
                 "reference": invoice.invoice_number,
                 "amount": str(invoice.total_amount),
+                # Proof this poll belongs to whoever started the purchase. The
+                # voucher is only released to a caller holding it.
+                "poll_token": poll_token_for(invoice.invoice_number),
             },
             status=status.HTTP_202_ACCEPTED,
         )
@@ -2602,13 +2610,22 @@ class HotspotPurchaseView(APIView):
 
 class HotspotPaymentStatusView(APIView):
     """
-    Poll a purchase by its reference.
+    Poll a purchase.
 
-    The voucher code is only returned once the invoice is actually paid, so
-    the reference alone never grants access.
+    Answering with the voucher needs more than the invoice number. These look
+    like INV-20260801191649-1338 — a second-resolution timestamp and four hex
+    characters — so a five-minute window is around twenty million
+    combinations. Not guessable by hand, but not secret either, and the only
+    thing between a stranger and somebody else's voucher was the rate limit. A
+    rate limit is a cost, not a boundary.
+
+    So the code is released only to a caller holding the token `purchase`
+    handed back. Without it the endpoint still answers whether the invoice is
+    paid, which is what a portal recovering from a reload needs and gives away
+    nothing that grants access.
     """
     permission_classes = [permissions.AllowAny]
-    throttle_classes = [HotspotPublicThrottle]
+    throttle_classes = [HotspotPollThrottle]
 
     def get(self, request):
         tenant = _public_tenant(request)
@@ -2628,17 +2645,21 @@ class HotspotPaymentStatusView(APIView):
         if invoice.payment_status != "paid":
             return Response({"status": invoice.payment_status})
 
-        voucher = (
-            Voucher.objects.all_tenants()
-            .filter(subscription=invoice.subscription, is_active=True)
-            .order_by("-created_at")
-            .first()
-        )
-        return Response({
+        body = {
             "status": "paid",
-            "voucher_code": voucher.code if voucher else None,
             "expires_at": invoice.subscription.expiry_date,
-        })
+        }
+
+        if poll_token_matches(reference, request.GET.get("token")):
+            voucher = (
+                Voucher.objects.all_tenants()
+                .filter(subscription=invoice.subscription, is_active=True)
+                .order_by("-created_at")
+                .first()
+            )
+            body["voucher_code"] = voucher.code if voucher else None
+
+        return Response(body)
 
 
 # =====================================================

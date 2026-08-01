@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Skylink WiFi — Disconnected</title>
+  <title>Disconnected</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -61,11 +61,6 @@
 </head>
 <body>
 
-<!-- CONFIGURATION -->
-<script>
-  var PAYMENT_URL = 'https://your-backend.com/hotspot'; // ← update to match login.html
-</script>
-
 <div class="container">
 
   <div class="icon-wrap">
@@ -78,7 +73,7 @@
   </div>
 
   <h1>Disconnected</h1>
-  <p class="sub">Your session has ended. Thank you for using Skylink WiFi.</p>
+  <p class="sub">Your session has ended. Thank you.</p>
 
   <div class="card">
     <div class="session-summary">
@@ -102,24 +97,28 @@
         <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/>
         <polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/>
       </svg>
-      Connect Again
+      Connect or buy more data
     </a>
-    <a class="btn btn-ghost" href="javascript:void(0)" onclick="window.location.href=PAYMENT_URL">
-      <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-        <rect x="1" y="4" width="22" height="16" rx="2" ry="2"/>
-        <line x1="1" y1="10" x2="23" y2="10"/>
-      </svg>
-      Buy More Data
-    </a>
+    <!--
+      A second button used to point at its own copy of the backend address:
+      another value to keep in step with login.html by hand, which nothing
+      validated. It is also no longer where anyone buys anything — the login
+      page sells directly — so both buttons led to the same place. One button
+      is honest about that.
+    -->
   </div>
 
-  <p class="footer">Skylink WiFi &nbsp;·&nbsp; Fast. Reliable. Connected.</p>
+  <p class="footer">Fast. Reliable. Connected.</p>
 </div>
 
 <script>
   function fmtBytes(el) {
-    var raw = parseInt(el.textContent, 10);
-    if (isNaN(raw)) return;
+    // Outside a hotspot session RouterOS substitutes nothing and the literal
+    // "$(bytes-in)" is what sits in the element. Hide it rather than show it.
+    var text = el.textContent.trim();
+    if (text.charAt(0) === '$') { el.textContent = '—'; return; }
+    var raw = parseInt(text, 10);
+    if (isNaN(raw)) { el.textContent = '—'; return; }
     var units = ['B', 'KB', 'MB', 'GB'];
     var i = 0;
     while (raw >= 1024 && i < units.length - 1) { raw /= 1024; i++; }

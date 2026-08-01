@@ -14,6 +14,8 @@ export default function HotspotStatus() {
   const mac = searchParams.get("mac");
   const reference = searchParams.get("ref");
   const tenantToken = searchParams.get("t");
+  // Handed back by purchase; without it the poll cannot see the voucher.
+  const pollToken = searchParams.get("token");
 
   const [state, setState] = useState("pending");
   const [voucher, setVoucher] = useState(null);
@@ -36,7 +38,9 @@ export default function HotspotStatus() {
         // Polls a public endpoint. This previously fetched the admin-only
         // subscriptions endpoint, which always returned 403 for a walk-up
         // customer, so the page never left "waiting".
-        const data = await fetchHotspotPaymentStatus({ tenantToken, reference });
+        const data = await fetchHotspotPaymentStatus({
+          tenantToken, reference, token: pollToken,
+        });
 
         if (data.status === "paid") {
           clearInterval(timer);
@@ -76,7 +80,7 @@ export default function HotspotStatus() {
     }, POLL_MS);
 
     return () => clearInterval(timer);
-  }, [mac, reference, tenantToken, navigate]);
+  }, [mac, reference, tenantToken, pollToken, navigate]);
 
   const views = {
     pending: {

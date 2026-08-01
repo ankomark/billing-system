@@ -2127,8 +2127,14 @@ class PublicHotspotPurchaseTests(TwoOperatorMixin, TestCase):
                 subscription=invoice.subscription,
                 amount=invoice.total_amount, method="mpesa", reference="RCPT-HS")
 
-        poll = self.client.get("/api/hotspot/payment-status/",
-                               {"t": self.t1.public_token, "ref": ref})
+        # The token purchase handed back is what releases the code. Polling
+        # with the reference alone answers paid, and nothing more — see
+        # HotspotPollTokenTests for why.
+        poll = self.client.get("/api/hotspot/payment-status/", {
+            "t": self.t1.public_token,
+            "ref": ref,
+            "token": resp.data["poll_token"],
+        })
         self.assertEqual(poll.data["status"], "paid")
         self.assertTrue(poll.data["voucher_code"])
 
@@ -6316,6 +6322,37 @@ class MikrotikPortalPageTests(TestCase):
         self.assertIn(".textContent = pkg.name", text)
         self.assertNotRegex(text, r"innerHTML[^;]*pkg\.name")
 
+    def test_the_login_page_can_answer_chap(self):
+        """
+        RouterOS ships with login-by = cookie,http-chap, and under CHAP a
+        plaintext password — empty or not — is rejected. The page posted one
+        anyway, so on a router left at its defaults the customer paid and then
+        got "invalid username or password". md5.js had been sitting in this
+        folder for exactly this and nothing loaded it.
+        """
+        text = (self.folder / "login.html").read_text(encoding="utf-8")
+        self.assertIn("md5.js", text, "the hasher is not loaded")
+        self.assertIn("chap-id", text, "the challenge is never read")
+        self.assertRegex(text, r"MD5\(\s*CHAP_ID")
+
+    def test_the_login_page_backs_off_when_throttled(self):
+        """
+        Polling shares a rate limit with every other device behind the same
+        NAT. Hammering through a 429 keeps the bucket empty for everyone on
+        the hotspot, including the person whose payment is landing.
+        """
+        text = (self.folder / "login.html").read_text(encoding="utf-8")
+        self.assertIn("429", text)
+
+    def test_no_page_carries_a_second_backend_url(self):
+        """
+        logout.html had its own PAYMENT_URL to keep in step with login.html by
+        hand, and nothing validated it. Two sources of truth for one address.
+        """
+        for page in self.pages():
+            with self.subTest(page=page.name):
+                self.assertNotIn("PAYMENT_URL", page.read_text(encoding="utf-8"))
+
     def test_the_connected_page_shows_the_voucher(self):
         """
         The reason it was rewritten. Without messaging credentials — optional,
@@ -6324,3 +6361,179 @@ class MikrotikPortalPageTests(TestCase):
         text = (self.folder / "alogin.html").read_text(encoding="utf-8")
         self.assertIn("voucher_code", text)
         self.assertIn("/hotspot/status/", text)
+
+
+# =====================================================
+# 37. Who may read a voucher back
+# =====================================================
+
+class HotspotPollTokenTests(TwoOperatorMixin, TestCase):
+    """
+    /hotspot/payment-status/ returns the voucher once an invoice is paid, and
+    it was addressed by invoice number alone.
+
+    Those look like INV-20260801191649-1338 — a second-resolution timestamp
+    and four hex characters — so a five-minute window is roughly twenty
+    million combinations. Not guessable by hand, but nothing about it is
+    secret either, and the only thing between a stranger and somebody else's
+    voucher was the rate limit. A rate limit is a cost, not a boundary.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        d = self.data["t1"]
+        with tenant_context(self.t1):
+            d["customer"].connection_type = "hotspot"
+            d["customer"].pppoe_username = ""
+            d["customer"].save()
+            self.sub = d["sub"]
+            self.sub.expiry_date = timezone.now() + timezone.timedelta(days=1)
+            self.sub.save()
+            self.invoice = self.sub.invoice
+            self.invoice.payment_status = "paid"
+            self.invoice.save(update_fields=["payment_status"])
+            self.voucher = Voucher.objects.create(
+                tenant=self.t1, code="WIFI-POLL01", subscription=self.sub,
+                expires_at=self.sub.expiry_date,
+            )
+        self.ref = self.invoice.invoice_number
+
+    def poll(self, token=None, tenant=None):
+        params = {"t": (tenant or self.t1).public_token, "ref": self.ref}
+        if token is not None:
+            params["token"] = token
+        return APIClient().get("/api/hotspot/payment-status/", params)
+
+    # ---- the hole -----------------------------------------------------------
+
+    def test_the_invoice_number_alone_no_longer_yields_the_voucher(self):
+        body = self.poll().data
+        self.assertEqual(body["status"], "paid")
+        self.assertNotIn("voucher_code", body, "guessing a reference is enough again")
+
+    def test_a_wrong_token_yields_nothing(self):
+        body = self.poll(token="0" * 32).data
+        self.assertEqual(body["status"], "paid")
+        self.assertNotIn("voucher_code", body)
+
+    def test_a_token_for_a_different_invoice_does_not_transfer(self):
+        from billing.security import poll_token_for
+
+        body = self.poll(token=poll_token_for("INV-SOMETHING-ELSE")).data
+        self.assertNotIn("voucher_code", body)
+
+    # ---- the purchaser ------------------------------------------------------
+
+    def test_the_token_purchase_hands_back_releases_it(self):
+        from billing.security import poll_token_for
+
+        body = self.poll(token=poll_token_for(self.ref)).data
+        self.assertEqual(body["status"], "paid")
+        self.assertEqual(body["voucher_code"], "WIFI-POLL01")
+
+    def test_status_is_still_answered_without_a_token(self):
+        """
+        A portal that reloaded and lost the token still needs to know whether
+        the money arrived. That answer grants nothing.
+        """
+        with tenant_context(self.t1):
+            self.invoice.payment_status = "unpaid"
+            self.invoice.save(update_fields=["payment_status"])
+        self.assertEqual(self.poll().data["status"], "unpaid")
+
+    def test_a_purchase_returns_a_token(self):
+        with tenant_context(self.t1):
+            SystemSetting.objects.create(
+                tenant=self.t1, key="MPESA_CONSUMER_KEY", value="k")
+            SystemSetting.objects.create(
+                tenant=self.t1, key="MPESA_CONSUMER_SECRET", value="s")
+            SystemSetting.objects.create(
+                tenant=self.t1, key="MPESA_SHORTCODE", value="174379")
+            SystemSetting.objects.create(
+                tenant=self.t1, key="MPESA_PASSKEY", value="p")
+            pkg = Package.objects.create(
+                tenant=self.t1, name="poll-pkg", download_speed=5, upload_speed=5,
+                price=Decimal("50.00"), duration_value=1, duration_unit="hours",
+                monthly_data_cap_gb=0, is_hotspot=True)
+        clear_settings_cache(tenant=self.t1)
+
+        with patch("billing.views.initiate_stk_push_task.delay"):
+            resp = APIClient().post(
+                f"/api/hotspot/purchase/?t={self.t1.public_token}",
+                {"package_id": pkg.id, "phone": "0712345678"},
+                format="json",
+            )
+        self.assertEqual(resp.status_code, 202, resp.data)
+        self.assertTrue(resp.data["poll_token"])
+        self.assertEqual(len(resp.data["poll_token"]), 32)
+
+    def test_the_token_is_not_the_reference_in_disguise(self):
+        from billing.security import poll_token_for
+
+        self.assertNotIn(self.ref, poll_token_for(self.ref))
+
+    def test_another_operator_cannot_read_it_even_with_the_token(self):
+        """Scoping still comes first — the token is not a way around it."""
+        from billing.security import poll_token_for
+
+        body = self.poll(token=poll_token_for(self.ref), tenant=self.t2).data
+        self.assertEqual(body["status"], "not_found")
+
+
+class HotspotPollThrottleTests(TwoOperatorMixin, TestCase):
+    """
+    Every customer of a hotspot sits behind one NAT, so the API sees a single
+    address for the whole site. An IP-keyed limit on the endpoint a portal
+    polls means one person waiting on an M-Pesa prompt spends the site's
+    entire allowance and everyone else starts getting 429s while their own
+    payments are landing.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+
+    def test_two_devices_do_not_share_one_bucket(self):
+        from billing.throttles import HotspotPollThrottle
+
+        throttle = HotspotPollThrottle()
+        factory = APIClient()
+
+        a = factory.get("/api/hotspot/status/", {"mac": "AA:AA:AA:AA:AA:AA"}).wsgi_request
+        b = factory.get("/api/hotspot/status/", {"mac": "BB:BB:BB:BB:BB:BB"}).wsgi_request
+        self.assertNotEqual(
+            throttle.get_cache_key(a, None), throttle.get_cache_key(b, None),
+            "one device's polling would exhaust another's allowance",
+        )
+
+    def test_a_caller_identifying_nothing_falls_back_to_its_address(self):
+        """Which is exactly where someone guessing references belongs."""
+        from billing.throttles import HotspotPollThrottle
+
+        throttle = HotspotPollThrottle()
+        request = APIClient().get("/api/hotspot/status/").wsgi_request
+        key = throttle.get_cache_key(request, None)
+        self.assertIn("hotspot_poll", key)
+
+    def test_the_mac_is_not_stored_in_the_cache_key(self):
+        """A cache key is not a place to keep a device identifier."""
+        from billing.throttles import HotspotPollThrottle
+
+        throttle = HotspotPollThrottle()
+        request = APIClient().get(
+            "/api/hotspot/status/", {"mac": "AA:BB:CC:DD:EE:FF"}).wsgi_request
+        self.assertNotIn("AA:BB:CC:DD:EE:FF", throttle.get_cache_key(request, None))
+
+    def test_polling_has_more_headroom_than_guessing(self):
+        """
+        The two scopes exist to be different. If they ever converge, either
+        polling is throttled to uselessness or guessing is not throttled at
+        all.
+        """
+        from django.conf import settings
+
+        rates = settings.REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]
+        poll = int(rates["hotspot_poll"].split("/")[0])
+        guess = int(rates["hotspot_public"].split("/")[0])
+        self.assertGreater(poll, guess)

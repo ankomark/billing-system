@@ -2,8 +2,9 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Skylink WiFi — Session Status</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#0f172a">
+  <title>Session status</title>
   <meta http-equiv="refresh" content="60"><!-- auto-refresh every 60s -->
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -86,7 +87,7 @@
       <path d="M8.53 16.11a6 6 0 0 1 6.95 0"/>
       <circle cx="12" cy="20" r="1" fill="#60a5fa" stroke="none"/>
     </svg>
-    <h1>Skylink WiFi</h1>
+    <h1>Connected</h1>
   </div>
 
   <div class="card">
@@ -159,8 +160,12 @@
 <script>
   /* Format raw bytes from MikroTik into human-readable */
   function fmtBytes(el) {
-    var raw = parseInt(el.textContent, 10);
-    if (isNaN(raw)) return;
+    // Outside a hotspot session RouterOS substitutes nothing and the literal
+    // "$(bytes-in)" is what sits in the element. Hide it rather than show it.
+    var text = el.textContent.trim();
+    if (text.charAt(0) === '$') { el.textContent = '—'; return; }
+    var raw = parseInt(text, 10);
+    if (isNaN(raw)) { el.textContent = '—'; return; }
     var units = ['B', 'KB', 'MB', 'GB'];
     var i = 0;
     while (raw >= 1024 && i < units.length - 1) { raw /= 1024; i++; }

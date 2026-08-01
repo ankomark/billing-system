@@ -317,7 +317,16 @@ REST_FRAMEWORK = {
         "anon": "120/min",
         "user": "300/min",
         "login": "5/min",
-        "hotspot_public": "15/min",
+        # Guessing surface: redeeming a code, starting a purchase. Voucher
+        # codes are six characters from a 36-symbol alphabet chosen with
+        # secrets — about 2.2 billion — so this bounds an attacker to a
+        # rounding error while leaving room for a person who mistypes.
+        "hotspot_public": "30/min",
+        # What a portal polls. Higher, and bucketed per device or per purchase
+        # rather than per address: every customer of a hotspot shares one NAT,
+        # so an IP-only limit means one person waiting on an M-Pesa prompt
+        # starves the whole site. See HotspotPollThrottle.
+        "hotspot_poll": "40/min",
         "mpesa_callback": "60/min",
         "stk_push": "10/min",
     },

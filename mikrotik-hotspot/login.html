@@ -159,6 +159,8 @@
       *, *::before, *::after { animation: none !important; transition: none !important; }
     }
   </style>
+  <!-- Needed for CHAP, which RouterOS uses by default. See doLogin(). -->
+  <script src="md5.js"></script>
 </head>
 <body>
 
@@ -225,7 +227,18 @@
     <input type="hidden" name="username" id="username" value="">
     <input type="hidden" name="password" id="password" value="">
     <input type="hidden" name="dst"      id="dst"      value="$(link-orig)">
+    <input type="hidden" name="popup"    value="false">
   </form>
+
+  <!-- Values RouterOS substitutes, read as data rather than pasted into a
+       script. Nothing here has ever contained a quote, but a page that builds
+       JavaScript out of server-side substitution is one surprising value away
+       from being broken by it, and this costs nothing. -->
+  <div id="rt"
+       data-mac="$(mac)"
+       data-chap-id="$(chap-id)"
+       data-chap-challenge="$(chap-challenge)"
+       hidden></div>
 
   <p class="foot">
     <span class="mac">$(mac)</span><br>
@@ -236,36 +249,68 @@
 
 <script>
 (function () {
-  var MAC = '$(mac)';
-  var POLL_MS = 3000;
+  var RT  = document.getElementById('rt');
+  var MAC = RT.getAttribute('data-mac') || '';
+  var CHAP_ID        = RT.getAttribute('data-chap-id') || '';
+  var CHAP_CHALLENGE = RT.getAttribute('data-chap-challenge') || '';
+
+  // A value RouterOS did not substitute arrives literally, e.g. "$(mac)".
+  function substituted(v) { return v && v.charAt(0) !== '$'; }
+  if (!substituted(MAC)) { MAC = ''; }
+  if (!substituted(CHAP_ID)) { CHAP_ID = ''; }
+  if (!substituted(CHAP_CHALLENGE)) { CHAP_CHALLENGE = ''; }
+
+  // 5s, not 3s. The poll budget is 40/min and a purchase also spends requests
+  // on packages, purchase and validate; at 3s a single customer outran the
+  // limit inside a minute and started collecting 429s while their own payment
+  // was landing. See awaitPayment's backoff for the other half of this.
+  var POLL_MS = 5000;
   var GIVE_UP_MS = 3 * 60 * 1000;   // Safaricom prompts expire well inside this
   var pollTimer = null;
+  var active = null;   // the purchase currently being waited on
 
   function el(id) { return document.getElementById(id); }
 
   function api(method, path, body, onOk, onFail) {
     var xhr = new XMLHttpRequest();
     xhr.open(method, API_BASE + path, true);
-    xhr.setRequestHeader('Content-Type', 'application/json');
+    // Only on requests that carry one. Setting it on a GET makes the request
+    // non-simple, so the browser preflights every poll -- two round trips
+    // instead of one, on the slowest link the customer will ever use.
+    if (body) { xhr.setRequestHeader('Content-Type', 'application/json'); }
     xhr.timeout = 15000;
     xhr.onload = function () {
       var data = null;
       try { data = JSON.parse(xhr.responseText); } catch (e) { data = null; }
       if (xhr.status >= 200 && xhr.status < 300) { onOk(data); }
-      else { onFail(data && data.detail); }
+      else { onFail(data && data.detail, xhr.status); }
     };
-    xhr.onerror = function () { onFail('No connection to the payment service.'); };
-    xhr.ontimeout = function () { onFail('That took too long. Please try again.'); };
+    xhr.onerror = function () { onFail('No connection to the payment service.', 0); };
+    xhr.ontimeout = function () { onFail('That took too long. Please try again.', 0); };
     xhr.send(body ? JSON.stringify(body) : null);
   }
 
   /* ── Getting online ─────────────────────────────────────────
      The backend has bound this MAC and created a hotspot user named
-     after it with an empty password, so these are the credentials
-     MikroTik is expecting. */
+     after it with an empty password, so those are the credentials
+     RouterOS is expecting.
+
+     The password still has to be presented the way the server profile
+     asks for it. RouterOS ships with login-by = cookie,http-chap, and
+     under CHAP a plaintext password — empty or not — is simply
+     rejected: the page appeared to work, the customer paid, and the
+     router answered "invalid username or password". md5.js has been
+     sitting in this folder for exactly this and nothing loaded it.
+
+     $(chap-id) is empty when the profile uses http-pap, so this covers
+     both without the operator configuring anything. */
   function logIn() {
+    var password = '';
+    if (CHAP_ID && CHAP_CHALLENGE && typeof MD5 === 'function') {
+      password = MD5(CHAP_ID + password + CHAP_CHALLENGE);
+    }
     el('username').value = MAC;
-    el('password').value = '';
+    el('password').value = password;
     el('loginForm').submit();
   }
 
@@ -404,15 +449,28 @@
   }
 
   function buyPackage(pkg, phone, submit, status) {
+    // Only one purchase can be in flight. Starting a second used to leave the
+    // first card disabled and stuck on "waiting" for ever, because the poll
+    // timer is shared -- so the customer sat watching a package that was no
+    // longer being paid for.
+    if (active) { active.reset(); }
+    active = {
+      reset: function () {
+        submit.disabled = false;
+        status.className = 'pkg-status';
+      }
+    };
+
     submit.disabled = true;
     setStatus(status, 'Sending the prompt…', 'waiting');
 
     api('POST', '/hotspot/purchase/', { t: TENANT_TOKEN, package_id: pkg.id, phone: phone },
       function (data) {
         setStatus(status, 'Check your phone and approve the M-Pesa prompt.', 'waiting');
-        awaitPayment(data && data.reference, submit, status);
+        awaitPayment(data && data.reference, data && data.poll_token, submit, status);
       },
       function (detail) {
+        active = null;
         submit.disabled = false;
         setStatus(status, detail || 'Could not start the payment. Please try again.', 'bad');
       });
@@ -423,31 +481,43 @@
      customer has already paid on this phone; making them read a code off
      one screen and type it into another is a step that exists only
      because nothing did it for them. */
-  function awaitPayment(reference, submit, status) {
+  function awaitPayment(reference, pollToken, submit, status) {
     if (!reference) {
+      active = null;
       submit.disabled = false;
       setStatus(status, 'The payment did not start. Please try again.', 'bad');
       return;
     }
 
     var startedAt = Date.now();
-    if (pollTimer) { clearInterval(pollTimer); }
+    var delay = POLL_MS;
 
-    pollTimer = setInterval(function () {
+    // The token is what releases the voucher. Without it this endpoint still
+    // answers paid or unpaid, so a reload that lost the token recovers to
+    // something useful rather than to nothing.
+    var url = '/hotspot/payment-status/?t=' + encodeURIComponent(TENANT_TOKEN) +
+              '&ref=' + encodeURIComponent(reference) +
+              (pollToken ? '&token=' + encodeURIComponent(pollToken) : '');
+
+    if (pollTimer) { clearTimeout(pollTimer); }
+
+    function stop() { clearTimeout(pollTimer); pollTimer = null; active = null; }
+
+    function tick() {
       if (Date.now() - startedAt > GIVE_UP_MS) {
-        clearInterval(pollTimer);
+        stop();
         submit.disabled = false;
         setStatus(status, 'No payment received. The prompt may have expired — you have not been charged.', 'bad');
         return;
       }
 
-      api('GET', '/hotspot/payment-status/?t=' + encodeURIComponent(TENANT_TOKEN) +
-                 '&ref=' + encodeURIComponent(reference), null,
+      api('GET', url, null,
         function (data) {
-          if (!data) { return; }
+          delay = POLL_MS;                    // recovered, back to normal pace
+          if (!data) { pollTimer = setTimeout(tick, delay); return; }
 
           if (data.status === 'paid') {
-            clearInterval(pollTimer);
+            stop();
             setStatus(status, 'Paid. Connecting you now…', 'ok');
             if (data.voucher_code) {
               api('POST', '/hotspot/validate/',
@@ -462,14 +532,30 @@
             } else {
               setTimeout(logIn, 600);
             }
-          } else if (data.status === 'not_found') {
-            clearInterval(pollTimer);
+            return;
+          }
+
+          if (data.status === 'not_found') {
+            stop();
             submit.disabled = false;
             setStatus(status, 'We lost track of that payment. Please try again.', 'bad');
+            return;
           }
+
+          pollTimer = setTimeout(tick, delay);
         },
-        function () { /* transient blips are expected on a portal — keep polling */ });
-    }, POLL_MS);
+        function (_detail, code) {
+          // 429 means we are asking too often. Slowing down is the only
+          // correct response: hammering on would keep the bucket empty for
+          // everyone else on this hotspot as well, and they are all behind
+          // the same address. Anything else is a transient blip, which a
+          // captive portal produces plenty of.
+          if (code === 429) { delay = Math.min(delay * 2, 20000); }
+          pollTimer = setTimeout(tick, delay);
+        });
+    }
+
+    pollTimer = setTimeout(tick, delay);
   }
 
   /* ── Load ───────────────────────────────────────────────── */
@@ -487,7 +573,17 @@
       renderPackages((data && data.results) || []);
     },
     function () {
-      el('pkgEmpty').textContent = "Couldn't load packages. Pull down to refresh.";
+      // "Pull down to refresh" is advice a captive-portal webview often
+      // cannot take. Give them something to press.
+      var box = el('pkgEmpty');
+      if (!box) { return; }
+      box.textContent = "Couldn't load the packages. ";
+      var again = document.createElement('button');
+      again.type = 'button';
+      again.className = 'pkg-buy';
+      again.textContent = 'Try again';
+      again.addEventListener('click', function () { window.location.reload(); });
+      box.appendChild(again);
     });
 
   el('code').focus();
