@@ -6281,13 +6281,40 @@ class MikrotikPortalPageTests(TestCase):
 
     def test_the_code_box_can_take_a_whole_mpesa_message(self):
         """
-        It was a 30-character text input — shorter than any M-Pesa message, so
+        It was capped at 30 characters — shorter than any M-Pesa message, so
         the one thing a customer has on their phone could not be pasted in.
         """
         text = (self.folder / "login.html").read_text(encoding="utf-8")
-        box = re.search(r'<(input|textarea)[^>]*id="voucherCode"[^>]*>', text)
+        box = re.search(r'<(input|textarea)[^>]*id="code"[^>]*>', text)
         self.assertIsNotNone(box, "the code box is gone")
         self.assertNotIn("maxlength", box.group(0))
+
+    def test_the_router_page_sells_without_leaving_the_router(self):
+        """
+        Buying used to bounce to the web app: another origin, another page
+        load, another thing to fail for someone standing at a counter. The
+        whole purchase is on this page now, so it must talk to all four
+        endpoints that takes.
+        """
+        text = (self.folder / "login.html").read_text(encoding="utf-8")
+        for endpoint in ("/hotspot/packages/", "/hotspot/purchase/",
+                         "/hotspot/payment-status/", "/hotspot/validate/"):
+            with self.subTest(endpoint=endpoint):
+                self.assertIn(endpoint, text)
+
+    def test_the_router_page_no_longer_hands_off_to_the_web_app(self):
+        """The redirect it replaced, so it cannot quietly come back."""
+        text = (self.folder / "login.html").read_text(encoding="utf-8")
+        self.assertNotIn("PAYMENT_URL", text)
+
+    def test_a_package_name_is_never_interpolated_into_markup(self):
+        """
+        Package names are operator input and this page has no framework
+        escaping them, so they are assigned as text.
+        """
+        text = (self.folder / "login.html").read_text(encoding="utf-8")
+        self.assertIn(".textContent = pkg.name", text)
+        self.assertNotRegex(text, r"innerHTML[^;]*pkg\.name")
 
     def test_the_connected_page_shows_the_voucher(self):
         """

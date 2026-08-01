@@ -2,359 +2,496 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Skylink WiFi — Connect</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#0f172a">
+  <title>Connect</title>
   <style>
+    /*
+      Served by the MikroTik itself, to a phone with no working internet. No
+      fonts, no frameworks, no CDN — every byte comes off the router's flash.
+
+      The whole purchase happens here now. It used to hand off to the web app
+      to show packages and take a payment, which is another origin, another
+      page load and another thing to go wrong for someone standing at a
+      counter. Buying and reconnecting are the only two reasons anyone opens
+      this page, so both are on it.
+    */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html { -webkit-text-size-adjust: 100%; }
 
     body {
       min-height: 100vh;
-      background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 50%, #0f172a 100%);
-      display: flex; align-items: center; justify-content: center;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      padding: 1rem;
+      background: linear-gradient(160deg, #0f172a 0%, #1e3a5f 55%, #0f172a 100%);
+      background-attachment: fixed;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      padding: 1rem 1rem calc(1.5rem + env(safe-area-inset-bottom));
+      color: #fff;
     }
 
-    .container { width: 100%; max-width: 420px; }
+    .wrap { width: 100%; max-width: 26rem; margin: 0 auto; }
 
-    /* ── Brand ── */
-    .brand { text-align: center; margin-bottom: 1.5rem; }
+    /* ── Brand ─────────────────────────────────────────────── */
+    .brand { text-align: center; margin-bottom: .875rem; }
     .brand-icon {
       display: inline-flex; align-items: center; justify-content: center;
-      width: 56px; height: 56px; background: #2563eb;
-      border-radius: 16px; margin-bottom: .75rem; box-shadow: 0 8px 32px rgba(37,99,235,.5);
+      width: 2.5rem; height: 2.5rem; background: #2563eb;
+      border-radius: .75rem; margin-bottom: .375rem;
+      box-shadow: 0 .375rem 1.25rem rgba(37,99,235,.5);
     }
-    .brand h1 { color: #fff; font-size: 1.5rem; font-weight: 700; letter-spacing: -.5px; }
-    .brand p { color: #94a3b8; font-size: .875rem; margin-top: .25rem; }
+    .brand h1 { font-size: 1.0625rem; font-weight: 700; letter-spacing: -.02em; }
+    .brand p { color: #94a3b8; font-size: .75rem; margin-top: .0625rem; }
 
-    /* ── Card ── */
-    .card {
-      background: #fff; border-radius: 20px; overflow: hidden;
-      box-shadow: 0 24px 64px rgba(0,0,0,.35);
+    /* ── Reconnect card ────────────────────────────────────────
+       Two thirds smaller than it was. It had a tab bar, a label, a
+       two-row field, a two-line hint and a full-width button — most
+       of a phone screen, above a page whose actual job is selling.
+       Everyone who needs it already knows what it is for, so it is
+       one row: paste, tap, done. */
+    .reconnect {
+      background: #fff; border-radius: .875rem; padding: .625rem;
+      box-shadow: 0 .75rem 2rem rgba(0,0,0,.3);
     }
+    .rc-row { display: flex; gap: .375rem; }
+    .rc-row input {
+      flex: 1; min-width: 0; border: 1.5px solid #d1d5db; border-radius: .5rem;
+      padding: .5rem .625rem; font-size: .875rem; font-family: inherit;
+      color: #111827; outline: none;
+    }
+    .rc-row input:focus { border-color: #2563eb; box-shadow: 0 0 0 2px rgba(37,99,235,.18); }
+    .rc-row input::placeholder { color: #9ca3af; }
+    .rc-row button {
+      flex-shrink: 0; border: 0; border-radius: .5rem; background: #2563eb;
+      color: #fff; font: inherit; font-size: .8125rem; font-weight: 700;
+      padding: 0 .75rem; cursor: pointer;
+    }
+    .rc-row button:disabled { opacity: .55; cursor: default; }
+    .rc-hint { font-size: .6875rem; color: #6b7280; margin-top: .3125rem; padding: 0 .125rem; }
 
-    /* ── Error banner (MikroTik injects $(error)) ── */
-    .error-banner {
-      background: #fef2f2; border-bottom: 1px solid #fecaca;
-      color: #dc2626; padding: .875rem 1.25rem; font-size: .875rem;
-      display: flex; align-items: center; gap: .5rem;
-    }
-    .error-banner svg { flex-shrink: 0; }
-
-    /* ── Tabs ── */
-    .tabs { display: flex; border-bottom: 1px solid #e2e8f0; }
-    .tab {
-      flex: 1; padding: .8125rem; text-align: center; font-size: .875rem;
-      font-weight: 600; cursor: pointer; color: #64748b;
-      border-bottom: 2px solid transparent; margin-bottom: -1px;
-      transition: color .15s, border-color .15s;
-    }
-    .tab.active { color: #2563eb; border-color: #2563eb; }
-
-    /* ── Tab content ── */
-    .tab-content { display: none; padding: 1.25rem; }
-    .tab-content.active { display: block; }
-
-    /* ── Form elements ── */
-    label {
-      display: block; font-size: .8125rem; font-weight: 600;
-      color: #374151; margin-bottom: .375rem;
-    }
-    input[type="text"], input[type="password"], textarea {
-      width: 100%; border: 1.5px solid #d1d5db; border-radius: 10px;
-      padding: .625rem .75rem; font-size: .9375rem; color: #111827;
-      outline: none; transition: border-color .15s, box-shadow .15s;
-      letter-spacing: .1em; line-height: 1.4;
-      font-family: inherit; resize: none;
-    }
-    input[type="text"]:focus, input[type="password"]:focus, textarea:focus {
-      border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,.15);
-    }
-    input::placeholder, textarea::placeholder { color: #9ca3af; letter-spacing: normal; }
-
-    .input-hint { font-size: .75rem; color: #6b7280; margin-top: .375rem; line-height: 1.4; }
-
-    /* ── Buttons ── */
-    .btn {
-      display: flex; align-items: center; justify-content: center; gap: .5rem;
-      width: 100%; padding: .8125rem; border: none; border-radius: 10px;
-      font-size: .9375rem; font-weight: 700; cursor: pointer;
-      transition: background .15s, opacity .15s; margin-top: .875rem;
-    }
-    .btn-primary { background: #2563eb; color: #fff; }
-    .btn-primary:hover { background: #1d4ed8; }
-    .btn-primary:disabled { opacity: .55; cursor: not-allowed; }
-    .btn-outline {
-      background: transparent; color: #2563eb;
-      border: 1.5px solid #2563eb; margin-top: .75rem;
-    }
-    .btn-outline:hover { background: #eff6ff; }
-
-    /* ── Spinner ── */
-    .spinner {
-      width: 18px; height: 18px; border: 2.5px solid rgba(255,255,255,.3);
-      border-top-color: #fff; border-radius: 50%;
-      animation: spin .6s linear infinite; display: none;
-    }
-    @keyframes spin { to { transform: rotate(360deg); } }
-
-    /* ── Status messages ── */
+    /* ── Messages ──────────────────────────────────────────── */
     .msg {
-      border-radius: 10px; padding: .875rem 1rem;
-      font-size: .875rem; font-weight: 500;
-      margin-top: 1rem; display: none; align-items: center; gap: .5rem;
+      display: none; border-radius: .5rem; padding: .5rem .625rem;
+      font-size: .75rem; font-weight: 500; margin-top: .375rem;
     }
-    .msg.success { background: #f0fdf4; color: #16a34a; border: 1px solid #bbf7d0; display: flex; }
-    .msg.error   { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; display: flex; }
+    .msg.show { display: block; }
+    .msg.ok   { background: #f0fdf4; color: #15803d; border: 1px solid #bbf7d0; }
+    .msg.bad  { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; }
 
-    /* ── Buy data section ── */
-    .package-info {
-      background: linear-gradient(135deg, #eff6ff, #e0e7ff);
-      border: 1px solid #bfdbfe; border-radius: 12px;
-      padding: 1rem; margin-bottom: .875rem;
+    .router-error {
+      background: #fef2f2; border: 1px solid #fecaca; color: #b91c1c;
+      border-radius: .625rem; padding: .5rem .75rem; font-size: .75rem;
+      margin-bottom: .625rem;
     }
-    .package-info h3 { font-size: .9375rem; font-weight: 700; color: #1e40af; margin-bottom: .25rem; }
-    .package-info p { font-size: .8125rem; color: #3730a3; line-height: 1.45; }
 
-    /* ── Footer ── */
-    .footer { text-align: center; color: #64748b; font-size: .75rem; padding: .75rem 1.25rem; }
-    .footer a { color: #2563eb; text-decoration: none; }
-    .footer a:hover { text-decoration: underline; }
+    /* ── Packages ──────────────────────────────────────────── */
+    .sec-label {
+      font-size: .6875rem; font-weight: 700; letter-spacing: .14em;
+      text-transform: uppercase; color: #94a3b8;
+      margin: 1.125rem 0 .5rem; padding-left: .125rem;
+    }
+
+    .pkg-list { display: flex; flex-direction: column; gap: .5rem; }
+
+    .pkg {
+      background: #fff; border-radius: .75rem; padding: .6875rem .75rem;
+      box-shadow: 0 .25rem .75rem rgba(0,0,0,.18);
+    }
+    .pkg-main { display: flex; align-items: center; gap: .625rem; }
+    .pkg-text { flex: 1; min-width: 0; }
+    .pkg-name { font-size: .875rem; font-weight: 700; color: #111827; }
+    .pkg-meta { font-size: .6875rem; color: #6b7280; margin-top: .0625rem; }
+    .pkg-price {
+      font-size: .9375rem; font-weight: 800; color: #1d4ed8;
+      white-space: nowrap; text-align: right;
+    }
+    .pkg-buy {
+      flex-shrink: 0; border: 0; border-radius: .5rem; background: #16a34a;
+      color: #fff; font: inherit; font-size: .8125rem; font-weight: 700;
+      padding: .4375rem .875rem; cursor: pointer;
+    }
+    .pkg-buy:disabled { opacity: .5; cursor: default; }
+
+    /* The phone prompt, opened under the package it belongs to so there is
+       never a question about which one is being bought. */
+    .pkg-pay { display: none; margin-top: .625rem; padding-top: .625rem; border-top: 1px solid #f1f5f9; }
+    .pkg.open .pkg-pay { display: block; }
+    .pkg-pay label { display: block; font-size: .75rem; font-weight: 600; color: #374151; margin-bottom: .3125rem; }
+    .pay-row { display: flex; gap: .375rem; }
+    .pay-row input {
+      flex: 1; min-width: 0; border: 1.5px solid #d1d5db; border-radius: .5rem;
+      padding: .5rem .625rem; font-size: .9375rem; font-family: inherit;
+      color: #111827; outline: none; letter-spacing: .02em;
+    }
+    .pay-row input:focus { border-color: #16a34a; box-shadow: 0 0 0 2px rgba(22,163,74,.18); }
+    .pay-row button {
+      flex-shrink: 0; border: 0; border-radius: .5rem; background: #16a34a;
+      color: #fff; font: inherit; font-size: .8125rem; font-weight: 700;
+      padding: 0 .875rem; cursor: pointer;
+    }
+    .pay-row button:disabled { opacity: .55; cursor: default; }
+    .pay-note { font-size: .6875rem; color: #6b7280; margin-top: .3125rem; }
+
+    .pkg-status { display: none; margin-top: .5rem; font-size: .75rem; }
+    .pkg-status.show { display: flex; align-items: center; gap: .375rem; }
+    .pkg-status.waiting { color: #b45309; }
+    .pkg-status.bad { color: #b91c1c; }
+    .pkg-status.ok { color: #15803d; font-weight: 600; }
+
+    .dot {
+      width: .5rem; height: .5rem; border-radius: 50%; background: currentColor;
+      flex-shrink: 0; animation: blink 1.2s ease-in-out infinite;
+    }
+    @keyframes blink { 50% { opacity: .25; } }
+
+    .empty {
+      background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.12);
+      border-radius: .75rem; padding: 1rem; text-align: center;
+      color: #cbd5e1; font-size: .8125rem;
+    }
+
+    /* ── Foot ──────────────────────────────────────────────── */
+    .foot { text-align: center; color: #7c8ba1; font-size: .6875rem; margin-top: 1.125rem; line-height: 1.7; }
+    .foot a { color: #60a5fa; text-decoration: none; }
+    .foot .mac { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: .625rem; color: #64748b; }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+    }
   </style>
 </head>
 <body>
 
 <!-- ═══════════════════════════════════════════════════════════
-     CONFIGURATION — edit these three values to match your setup
+     CONFIGURATION — edit these to match your setup
      ═══════════════════════════════════════════════════════════ -->
 <script>
-  var API_BASE       = 'https://your-backend.com/api';   // ← Your backend URL (no trailing slash)
-  var PAYMENT_URL    = 'https://your-backend.com/hotspot'; // ← Hotspot payment page
+  var API_BASE     = 'https://your-backend.com/api';  // ← no trailing slash
 
-  // ← Your operator token, from Admin → Settings. Identifies which operator
-  //    this portal belongs to. A device MAC is only unique within one operator,
-  //    so without this the backend cannot tell whose subscriber is connecting
-  //    and will refuse rather than guess.
-  var TENANT_TOKEN   = 'YOUR-OPERATOR-TOKEN';
+  // ← Your operator token, from Admin → Settings. A device MAC is only unique
+  //    within one operator, so without this the backend cannot tell whose
+  //    subscriber is connecting and refuses rather than guessing.
+  var TENANT_TOKEN = 'YOUR-OPERATOR-TOKEN';
 </script>
 <!-- ═══════════════════════════════════════════════════════════ -->
 
-<div class="container">
+<div class="wrap">
 
-  <!-- Brand header -->
   <div class="brand">
     <div class="brand-icon">
-      <svg width="32" height="32" fill="none" stroke="#fff" stroke-width="2.5"
-           stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24">
+      <svg width="20" height="20" fill="none" stroke="#fff" stroke-width="2.5"
+           stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24" aria-hidden="true">
         <path d="M5 12.55a11 11 0 0 1 14.08 0"/>
         <path d="M1.42 9a16 16 0 0 1 21.16 0"/>
         <path d="M8.53 16.11a6 6 0 0 1 6.95 0"/>
         <circle cx="12" cy="20" r="1" fill="#fff" stroke="none"/>
       </svg>
     </div>
-    <h1>Skylink WiFi</h1>
-    <p>Fast, Reliable Internet Access</p>
+    <h1 id="provider">WiFi</h1>
+    <p>Fast, reliable internet access</p>
   </div>
 
-  <div class="card">
+  <!-- MikroTik's own error, if it sent one -->
+  $(if error)
+  <div class="router-error">$(error)</div>
+  $(endif)
 
-    <!-- MikroTik error (only shown when $(error) is non-empty) -->
-    $(if error)
-    <div class="error-banner">
-      <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-        <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/>
-        <line x1="12" y1="16" x2="12.01" y2="16"/>
-      </svg>
-      $(error)
-    </div>
-    $(endif)
-
-    <!-- Tabs -->
-    <div class="tabs">
-      <div class="tab active" onclick="switchTab('voucher')">I Have a Code</div>
-      <div class="tab"        onclick="switchTab('buy')">Buy Data</div>
-    </div>
-
-    <!-- ── Voucher tab ── -->
-    <div id="tab-voucher" class="tab-content active">
-      <label for="voucherCode">Your code, or your M-Pesa message</label>
-      <!--
-        A textarea, and no maxlength. It was a 30-character text input, which
-        is shorter than any M-Pesa message — so the one thing a customer
-        actually has on their phone could not be pasted into it, and they were
-        left picking a ten-character receipt out of a paragraph by hand.
-        The backend finds the code inside the message.
-      -->
-      <textarea
-        id="voucherCode"
-        rows="2"
-        placeholder="WIFI-XXXXXX or your M-Pesa message"
+  <!-- ── Already paid ── -->
+  <div class="reconnect">
+    <div class="rc-row">
+      <input
+        id="code"
+        type="text"
+        placeholder="Code or M-Pesa message"
         autocomplete="off"
         autocapitalize="characters"
         spellcheck="false"
-        oninput="clearMsg()"
-      ></textarea>
-      <p class="input-hint">Paste the whole M-Pesa message — we'll find it.</p>
-
-      <button class="btn btn-primary" id="connectBtn" onclick="handleConnect()">
-        <span id="btnText">Connect to Internet</span>
-        <div class="spinner" id="spinner"></div>
-      </button>
-
-      <div class="msg" id="successMsg">
-        <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
-          <polyline points="20 6 9 17 4 12"/>
-        </svg>
-        <span id="successText">Access granted — connecting…</span>
-      </div>
-      <div class="msg" id="errorMsg">
-        <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-          <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/>
-          <line x1="12" y1="16" x2="12.01" y2="16"/>
-        </svg>
-        <span id="errorText">We couldn't match that code.</span>
-      </div>
+        aria-label="Your access code or M-Pesa message"
+      >
+      <button type="button" id="connectBtn">Connect</button>
     </div>
+    <p class="rc-hint">Already paid? Paste the whole M-Pesa message — we'll find it.</p>
+    <div class="msg" id="rcMsg"></div>
+  </div>
 
-    <!-- ── Buy Data tab ── -->
-    <div id="tab-buy" class="tab-content">
-      <div class="package-info">
-        <h3>Get Connected in Minutes</h3>
-        <p>Pay with M-Pesa and you are online straight away. Keep the message — pasting it here reconnects this phone later.</p>
-      </div>
-      <button class="btn btn-primary" onclick="goToPayment()">
-        <svg width="18" height="18" fill="none" stroke="#fff" stroke-width="2.5" viewBox="0 0 24 24">
-          <rect x="1" y="4" width="22" height="16" rx="2" ry="2"/>
-          <line x1="1" y1="10" x2="23" y2="10"/>
-        </svg>
-        View Packages &amp; Pay
-      </button>
-      <button class="btn btn-outline" onclick="switchTab('voucher')">Already have a code?</button>
-    </div>
+  <!-- ── Buy ── -->
+  <p class="sec-label">Buy a package</p>
+  <div class="pkg-list" id="packages">
+    <div class="empty" id="pkgEmpty">Loading packages…</div>
+  </div>
 
-    <!-- Hidden MikroTik login form — submitted by JavaScript after validation -->
-    <form id="loginForm" action="$(link-login-only)" method="post" style="display:none">
-      <input type="hidden" name="username" id="username" value="">
-      <input type="hidden" name="password" id="password" value="">
-      <input type="hidden" name="dst"      id="dst"      value="$(link-orig)">
-    </form>
+  <!-- Hidden MikroTik login form, submitted once access is granted -->
+  <form id="loginForm" action="$(link-login-only)" method="post" style="display:none">
+    <input type="hidden" name="username" id="username" value="">
+    <input type="hidden" name="password" id="password" value="">
+    <input type="hidden" name="dst"      id="dst"      value="$(link-orig)">
+  </form>
 
-    <div class="footer">
-      Device: $(mac) &nbsp;|&nbsp;
-      Need help? <a href="tel:0700000000">Call Support</a>
-    </div>
-  </div><!-- /card -->
+  <p class="foot">
+    <span class="mac">$(mac)</span><br>
+    Need help? <a href="tel:0700000000">Call support</a>
+  </p>
 
-</div><!-- /container -->
+</div>
 
 <script>
-  /* ─── Read MikroTik-injected values ─── */
-  var DEVICE_MAC = '$(mac)';   // e.g. "AA:BB:CC:DD:EE:FF" — injected by MikroTik
+(function () {
+  var MAC = '$(mac)';
+  var POLL_MS = 3000;
+  var GIVE_UP_MS = 3 * 60 * 1000;   // Safaricom prompts expire well inside this
+  var pollTimer = null;
 
-  /* ─── Tab switching ─── */
-  function switchTab(name) {
-    document.querySelectorAll('.tab').forEach(function(t, i) {
-      var active = (i === 0 && name === 'voucher') || (i === 1 && name === 'buy');
-      t.classList.toggle('active', active);
-    });
-    document.getElementById('tab-voucher').classList.toggle('active', name === 'voucher');
-    document.getElementById('tab-buy').classList.toggle('active', name === 'buy');
-    clearMsg();
+  function el(id) { return document.getElementById(id); }
+
+  function api(method, path, body, onOk, onFail) {
+    var xhr = new XMLHttpRequest();
+    xhr.open(method, API_BASE + path, true);
+    xhr.setRequestHeader('Content-Type', 'application/json');
+    xhr.timeout = 15000;
+    xhr.onload = function () {
+      var data = null;
+      try { data = JSON.parse(xhr.responseText); } catch (e) { data = null; }
+      if (xhr.status >= 200 && xhr.status < 300) { onOk(data); }
+      else { onFail(data && data.detail); }
+    };
+    xhr.onerror = function () { onFail('No connection to the payment service.'); };
+    xhr.ontimeout = function () { onFail('That took too long. Please try again.'); };
+    xhr.send(body ? JSON.stringify(body) : null);
   }
 
-  /* ─── Clear feedback messages ─── */
-  function clearMsg() {
-    document.getElementById('successMsg').classList.remove('success');
-    document.getElementById('errorMsg').classList.remove('error');
+  /* ── Getting online ─────────────────────────────────────────
+     The backend has bound this MAC and created a hotspot user named
+     after it with an empty password, so these are the credentials
+     MikroTik is expecting. */
+  function logIn() {
+    el('username').value = MAC;
+    el('password').value = '';
+    el('loginForm').submit();
   }
 
-  /* ─── Show / hide loading state ─── */
-  function setLoading(on) {
-    document.getElementById('connectBtn').disabled = on;
-    document.getElementById('btnText').textContent = on ? 'Validating…' : 'Connect to Internet';
-    document.getElementById('spinner').style.display = on ? 'block' : 'none';
+  function say(node, text, kind) {
+    node.textContent = text;
+    node.className = 'msg show ' + kind;
   }
 
-  /* ─── Redirect to payment page (stays in walled garden scope) ─── */
-  function goToPayment() {
-    // Carry the operator through to the payment pages too.
-    window.location.href = PAYMENT_URL + '?t=' + encodeURIComponent(TENANT_TOKEN)
-      + '&mac=' + encodeURIComponent(DEVICE_MAC);
+  /* ── Reconnecting with a code ───────────────────────────── */
+  function connect() {
+    var code = el('code').value.trim();
+    var msg = el('rcMsg');
+    if (!code) { say(msg, 'Paste your M-Pesa message, or enter your code.', 'bad'); return; }
+
+    el('connectBtn').disabled = true;
+    el('connectBtn').textContent = '…';
+    msg.className = 'msg';
+
+    api('POST', '/hotspot/validate/', { code: code, mac_address: MAC, t: TENANT_TOKEN },
+      function () {
+        say(msg, 'Connecting you now…', 'ok');
+        setTimeout(logIn, 600);
+      },
+      function (detail) {
+        el('connectBtn').disabled = false;
+        el('connectBtn').textContent = 'Connect';
+        say(msg, detail || "We couldn't match that. Check you pasted the whole message.", 'bad');
+      });
   }
 
-  /* ─── Main connect handler ─── */
-  function handleConnect() {
-    var code = document.getElementById('voucherCode').value.trim();
-    if (!code) {
-      showError('Paste your M-Pesa message, or enter your code.');
+  el('connectBtn').addEventListener('click', connect);
+  el('code').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { e.preventDefault(); connect(); }
+  });
+
+  /* ── Packages ───────────────────────────────────────────── */
+  function money(v) {
+    var n = Number(v);
+    return isNaN(n) ? v : n.toLocaleString();
+  }
+
+  function renderPackages(list) {
+    var host = el('packages');
+    host.innerHTML = '';
+
+    if (!list.length) {
+      host.innerHTML = '<div class="empty">No packages are on sale right now. Please ask at the counter.</div>';
       return;
     }
 
-    setLoading(true);
-    clearMsg();
-
-    var xhr = new XMLHttpRequest();
-    xhr.open('POST', API_BASE + '/hotspot/validate/', true);
-    xhr.setRequestHeader('Content-Type', 'application/json');
-    xhr.timeout = 15000;
-
-    xhr.onload = function() {
-      setLoading(false);
-      if (xhr.status === 200) {
-        var data = JSON.parse(xhr.responseText);
-        showSuccess('Access granted! Connecting you now…');
-        /*
-         * After our backend validates the voucher it:
-         *   1. Binds DEVICE_MAC to the customer
-         *   2. Creates a MikroTik hotspot user: name=MAC, password=""
-         *
-         * We now log into MikroTik using those exact credentials.
-         */
-        setTimeout(function() {
-          document.getElementById('username').value = DEVICE_MAC;
-          document.getElementById('password').value = '';
-          document.getElementById('loginForm').submit();
-        }, 800);
-      } else {
-        try {
-          var err = JSON.parse(xhr.responseText);
-          showError(err.detail || "We couldn't match that. Check you pasted the whole message.");
-        } catch(e) {
-          showError("We couldn't match that. Check you pasted the whole message.");
-        }
-      }
-    };
-
-    xhr.onerror   = function() { setLoading(false); showError('Network error — check your connection and try again.'); };
-    xhr.ontimeout = function() { setLoading(false); showError('Request timed out. Please try again.'); };
-
-    xhr.send(JSON.stringify({ code: code, mac_address: DEVICE_MAC, t: TENANT_TOKEN }));
-  }
-
-  /* ─── Feedback helpers ─── */
-  function showSuccess(msg) {
-    document.getElementById('successText').textContent = msg;
-    document.getElementById('successMsg').classList.add('success');
-    document.getElementById('errorMsg').classList.remove('error');
-  }
-  function showError(msg) {
-    document.getElementById('errorText').textContent = msg;
-    document.getElementById('errorMsg').classList.add('error');
-    document.getElementById('successMsg').classList.remove('success');
-  }
-
-  /* ─── Allow Enter key to submit ─── */
-  document.getElementById('voucherCode').addEventListener('keydown', function(e) {
-    // Shift+Enter still inserts a newline, so a pasted multi-line message can
-    // be edited. A bare Enter is what someone typing a short code expects.
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleConnect();
+    for (var i = 0; i < list.length; i++) {
+      host.appendChild(packageCard(list[i]));
     }
-  });
+  }
 
-  /* ─── Auto-focus voucher field on load ─── */
-  document.getElementById('voucherCode').focus();
+  function packageCard(pkg) {
+    var card = document.createElement('div');
+    card.className = 'pkg';
+
+    var speed = (pkg.download_speed || '?') + '/' + (pkg.upload_speed || '?') + ' Mbps';
+    var meta = speed + ' · ' + (pkg.duration || '');
+    if (pkg.monthly_data_cap_gb > 0) { meta += ' · ' + pkg.monthly_data_cap_gb + ' GB'; }
+
+    var main = document.createElement('div');
+    main.className = 'pkg-main';
+    main.innerHTML =
+      '<div class="pkg-text">' +
+        '<div class="pkg-name"></div>' +
+        '<div class="pkg-meta"></div>' +
+      '</div>' +
+      '<div class="pkg-price">KES ' + money(pkg.price) + '</div>';
+
+    // Assigned as text, never interpolated: a package name is operator input
+    // and this page has no framework escaping it.
+    main.querySelector('.pkg-name').textContent = pkg.name || 'Package';
+    main.querySelector('.pkg-meta').textContent = meta;
+
+    var buy = document.createElement('button');
+    buy.type = 'button';
+    buy.className = 'pkg-buy';
+    buy.textContent = 'Buy';
+    main.appendChild(buy);
+
+    var pay = document.createElement('div');
+    pay.className = 'pkg-pay';
+    pay.innerHTML =
+      '<label>Your M-Pesa number</label>' +
+      '<div class="pay-row">' +
+        '<input type="tel" inputmode="numeric" autocomplete="tel" placeholder="07XX XXX XXX" maxlength="15">' +
+        '<button type="button">Submit</button>' +
+      '</div>' +
+      '<p class="pay-note">You will get a prompt on this number. Approve it to get online.</p>' +
+      '<div class="pkg-status"></div>';
+
+    card.appendChild(main);
+    card.appendChild(pay);
+
+    var input  = pay.querySelector('input');
+    var submit = pay.querySelector('button');
+    var status = pay.querySelector('.pkg-status');
+
+    buy.addEventListener('click', function () {
+      // One open at a time — two prompts on screen is two chances to type a
+      // number into the wrong package.
+      var open = document.querySelector('.pkg.open');
+      if (open && open !== card) { open.className = 'pkg'; }
+      card.className = (card.className.indexOf('open') === -1) ? 'pkg open' : 'pkg';
+      if (card.className.indexOf('open') !== -1) { input.focus(); }
+    });
+
+    input.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); submit.click(); }
+    });
+
+    submit.addEventListener('click', function () {
+      var phone = input.value.replace(/[^0-9+]/g, '');
+      if (phone.replace(/\D/g, '').length < 9) {
+        setStatus(status, 'That does not look like a Safaricom number.', 'bad');
+        return;
+      }
+      buyPackage(pkg, phone, submit, status);
+    });
+
+    return card;
+  }
+
+  function setStatus(node, text, kind) {
+    node.className = 'pkg-status show ' + kind;
+    node.innerHTML = '';
+    if (kind === 'waiting') {
+      var dot = document.createElement('span');
+      dot.className = 'dot';
+      node.appendChild(dot);
+    }
+    node.appendChild(document.createTextNode(text));
+  }
+
+  function buyPackage(pkg, phone, submit, status) {
+    submit.disabled = true;
+    setStatus(status, 'Sending the prompt…', 'waiting');
+
+    api('POST', '/hotspot/purchase/', { t: TENANT_TOKEN, package_id: pkg.id, phone: phone },
+      function (data) {
+        setStatus(status, 'Check your phone and approve the M-Pesa prompt.', 'waiting');
+        awaitPayment(data && data.reference, submit, status);
+      },
+      function (detail) {
+        submit.disabled = false;
+        setStatus(status, detail || 'Could not start the payment. Please try again.', 'bad');
+      });
+  }
+
+  /* ── Waiting for the money ──────────────────────────────────
+     Once it lands we redeem the voucher for this device ourselves. The
+     customer has already paid on this phone; making them read a code off
+     one screen and type it into another is a step that exists only
+     because nothing did it for them. */
+  function awaitPayment(reference, submit, status) {
+    if (!reference) {
+      submit.disabled = false;
+      setStatus(status, 'The payment did not start. Please try again.', 'bad');
+      return;
+    }
+
+    var startedAt = Date.now();
+    if (pollTimer) { clearInterval(pollTimer); }
+
+    pollTimer = setInterval(function () {
+      if (Date.now() - startedAt > GIVE_UP_MS) {
+        clearInterval(pollTimer);
+        submit.disabled = false;
+        setStatus(status, 'No payment received. The prompt may have expired — you have not been charged.', 'bad');
+        return;
+      }
+
+      api('GET', '/hotspot/payment-status/?t=' + encodeURIComponent(TENANT_TOKEN) +
+                 '&ref=' + encodeURIComponent(reference), null,
+        function (data) {
+          if (!data) { return; }
+
+          if (data.status === 'paid') {
+            clearInterval(pollTimer);
+            setStatus(status, 'Paid. Connecting you now…', 'ok');
+            if (data.voucher_code) {
+              api('POST', '/hotspot/validate/',
+                { code: data.voucher_code, mac_address: MAC, t: TENANT_TOKEN },
+                function () { setTimeout(logIn, 600); },
+                function () {
+                  // Paid, but binding failed. Their code is real and the box
+                  // above takes it, so say that rather than leaving them with
+                  // a receipt and no instruction.
+                  setStatus(status, 'Paid. Enter ' + data.voucher_code + ' in the box at the top.', 'ok');
+                });
+            } else {
+              setTimeout(logIn, 600);
+            }
+          } else if (data.status === 'not_found') {
+            clearInterval(pollTimer);
+            submit.disabled = false;
+            setStatus(status, 'We lost track of that payment. Please try again.', 'bad');
+          }
+        },
+        function () { /* transient blips are expected on a portal — keep polling */ });
+    }, POLL_MS);
+  }
+
+  /* ── Load ───────────────────────────────────────────────── */
+  if (!API_BASE || API_BASE.indexOf('your-backend') !== -1) {
+    el('pkgEmpty').textContent = 'This portal has not been set up yet.';
+    return;
+  }
+
+  api('GET', '/hotspot/packages/?t=' + encodeURIComponent(TENANT_TOKEN), null,
+    function (data) {
+      if (data && data.provider) {
+        el('provider').textContent = data.provider;
+        document.title = data.provider;
+      }
+      renderPackages((data && data.results) || []);
+    },
+    function () {
+      el('pkgEmpty').textContent = "Couldn't load packages. Pull down to refresh.";
+    });
+
+  el('code').focus();
+})();
 </script>
 
 </body>
