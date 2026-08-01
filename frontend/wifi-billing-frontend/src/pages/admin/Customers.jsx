@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import toast from "react-hot-toast";
 import {
   Search, Plus, Download, ChevronUp, ChevronDown,
-  ChevronsUpDown, Eye, Trash2, Users,
+  ChevronsUpDown, Eye, Trash2, Users, Gift,
 } from "lucide-react";
 import AdminLayout from "../../components/admin/AdminLayout";
 import { useConfirm } from "../../components/ui/ConfirmModal";
@@ -12,6 +12,7 @@ import { SkeletonTable } from "../../components/ui/Skeleton";
 import Pagination from "../../components/ui/Pagination";
 import StatusBadge from "../../components/ui/StatusBadge";
 import EmptyState from "../../components/ui/EmptyState";
+import CompAccessModal from "../../components/admin/CompAccessModal";
 import useDebounce from "../../hooks/useDebounce";
 import { fetchCustomers, deleteCustomer } from "../../services/customers";
 import { getUser } from "../../services/auth";
@@ -72,6 +73,10 @@ export default function Customers() {
   // Staff may read the list; only an admin may change it. Showing them the
   // buttons anyway meant a confirm dialog followed by a 403 toast.
   const canEdit = isOperatorAdmin(getUser()?.role);
+  // Giving access away from the list, because that is where someone goes
+  // when a customer rings up about a failure — they search for them here,
+  // and having to open the record first is a step for nothing.
+  const [gifting, setGifting] = useState(null);
 
   // Arriving from the dashboard's search, so the results are already there
   // rather than an empty page and the same query typed twice.
@@ -157,6 +162,12 @@ export default function Customers() {
     <AdminLayout>
       <div className="space-y-5">
         <ConfirmDialog />
+        <CompAccessModal
+          open={!!gifting}
+          customer={gifting}
+          onClose={() => setGifting(null)}
+          onDone={() => qc.invalidateQueries({ queryKey: ["customers"] })}
+        />
 
         {/* Page header */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -320,6 +331,15 @@ export default function Customers() {
                           >
                             <Eye size={15} />
                           </button>
+                          {canEdit && (
+                            <button
+                              onClick={() => setGifting(c)}
+                              className="p-1.5 rounded-lg text-slate-500 hover:text-emerald-300 hover:bg-emerald-500/10 transition-colors"
+                              title="Give free access"
+                            >
+                              <Gift size={15} />
+                            </button>
+                          )}
                           {canEdit && (
                             <button
                               onClick={() => handleDelete(c)}

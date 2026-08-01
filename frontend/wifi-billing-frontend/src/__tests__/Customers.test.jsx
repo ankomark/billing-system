@@ -90,12 +90,16 @@ describe('Customers', () => {
     renderWithProviders(<Customers />)
     await screen.findByTitle('View details')
     expect(screen.queryByTitle('Delete customer')).not.toBeInTheDocument()
+    expect(screen.queryByTitle('Give free access')).not.toBeInTheDocument()
     expect(screen.queryByText('Add Customer')).not.toBeInTheDocument()
   })
 
-  test('shows add and delete to an operator admin', async () => {
+  test('shows add, delete and give-free-access to an operator admin', async () => {
     renderWithProviders(<Customers />)
     expect(await screen.findByTitle('Delete customer')).toBeInTheDocument()
+    // Giving access away lives on the list as well as the record: it is where
+    // someone goes when a customer rings up about a failure.
+    expect(screen.getByTitle('Give free access')).toBeInTheDocument()
   })
 
   test('shows error banner when API fails', async () => {
