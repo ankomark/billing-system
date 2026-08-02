@@ -61,7 +61,7 @@ function IssueVoucherModal({ open, onClose }) {
     enabled: open,
     staleTime: 5 * 60 * 1000,
   });
-  const packages = (data?.results ?? []).filter((p) => p.is_hotspot);
+  const packages = (data?.results ?? []).filter((p) => p.is_hotspot && !p.is_archived);
 
   if (!open) return null;
 

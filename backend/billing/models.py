@@ -929,6 +929,12 @@ class Package(TenantScopedModel):
         help_text="Is this a hotspot-only package?"
     )
 
+    is_archived = models.BooleanField(
+        default=False,
+        help_text="Retired from sale. Existing subscribers keep it; it stops "
+                  "being offered to anyone new.",
+    )
+
     max_devices = models.PositiveSmallIntegerField(
         default=1,
         help_text="How many devices one voucher may be used on. 1 means the "
@@ -977,7 +983,18 @@ class Subscription(TenantScopedModel):
     customer = models.ForeignKey(
         Customer, on_delete=models.CASCADE, related_name="subscriptions"
     )
-    package = models.ForeignKey(Package, on_delete=models.CASCADE)
+    # PROTECT, not CASCADE.
+    #
+    # Deleting a package used to take every subscription on it, and with them
+    # the invoices, the payments and the vouchers — the record that money
+    # changed hands, gone because somebody tidied their price list. The confirm
+    # dialog said "existing subscriptions are not affected", which was the
+    # opposite of what happened.
+    #
+    # A package that has been sold is part of the billing record and cannot be
+    # removed from it. Retiring one is what an operator actually wants, and
+    # that is what is_archived is for.
+    package = models.ForeignKey(Package, on_delete=models.PROTECT)
     start_date = models.DateTimeField(default=timezone.now)
     expiry_date = models.DateTimeField(blank=True, null=True)
     status = models.CharField(

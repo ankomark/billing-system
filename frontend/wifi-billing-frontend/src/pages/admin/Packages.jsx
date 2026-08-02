@@ -6,7 +6,7 @@ import { Plus, RefreshCw } from "lucide-react";
 import AdminLayout from "../../components/admin/AdminLayout";
 import { SkeletonTable } from "../../components/ui/Skeleton";
 import { useConfirm } from "../../components/ui/ConfirmModal";
-import { fetchPackages, deletePackage } from "../../services/packages";
+import { fetchPackages, deletePackage, archivePackage } from "../../services/packages";
 import { getUser } from "../../services/auth";
 import { isOperatorAdmin } from "../../constants/roles";
 
@@ -35,7 +35,12 @@ export default function Packages() {
   const handleDelete = async (pkg) => {
     const ok = await confirm({
       title: `Delete "${pkg.name}"?`,
-      description: "This permanently removes the package. Existing subscriptions are not affected.",
+      // This used to say "Existing subscriptions are not affected", which was
+      // the opposite of the truth: the package cascaded through every
+      // subscription on it and took the invoices, payments and vouchers too.
+      // The server refuses now, and this says what it will actually do.
+      description:
+        "Only a package nobody has ever bought can be deleted. If anyone is on it, or ever was, archive it instead — that stops it being offered and keeps the invoices that name it.",
       confirmText: "Delete package",
       danger: true,
     });
@@ -45,7 +50,23 @@ export default function Packages() {
       toast.success("Package deleted");
       qc.invalidateQueries({ queryKey: ["packages"] });
     } catch (err) {
-      toast.error(err.response?.data?.detail || "Failed to delete package");
+      const data = err.response?.data;
+      if (data?.can_archive) {
+        // The refusal is the useful part: say it, and offer the way through.
+        toast.error(data.detail, { duration: 7000 });
+      } else {
+        toast.error(data?.detail || "Failed to delete package");
+      }
+    }
+  };
+
+  const handleArchive = async (pkg) => {
+    try {
+      const res = await archivePackage(pkg.id);
+      toast.success(res.detail);
+      qc.invalidateQueries({ queryKey: ["packages"] });
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Couldn't change that.");
     }
   };
 
@@ -118,6 +139,11 @@ export default function Packages() {
                       <td className="px-6 py-4 text-slate-300">{p.download_speed}/{p.upload_speed} Mbps</td>
                       <td className="px-6 py-4 text-slate-300">
                         {p.duration_value} {p.duration_unit}
+                        {p.is_archived && (
+                          <span className="ml-2 rounded bg-amber-500/10 px-1.5 py-0.5 text-[11px] text-amber-300">
+                            archived
+                          </span>
+                        )}
                         {p.max_devices > 1 && (
                           <span className="ml-2 rounded bg-white/5 px-1.5 py-0.5 text-[11px] text-slate-400">
                             {p.max_devices} devices
@@ -133,13 +159,24 @@ export default function Packages() {
                             <>
                               <button
                                 onClick={() => navigate(`/admin/packages/${p.id}`)}
-                                className="text-blue-600 hover:text-blue-800 text-xs font-medium transition-colors"
+                                className="text-xs font-medium text-blue-600 transition-colors hover:text-blue-800"
                               >
                                 Edit
                               </button>
                               <button
+                                onClick={() => handleArchive(p)}
+                                title={
+                                  p.is_archived
+                                    ? "Offer this package again"
+                                    : "Stop offering this package. Anyone on it keeps it."
+                                }
+                                className="text-xs font-medium text-amber-400 transition-colors hover:text-amber-300"
+                              >
+                                {p.is_archived ? "Restore" : "Archive"}
+                              </button>
+                              <button
                                 onClick={() => handleDelete(p)}
-                                className="text-red-500 hover:text-red-300 text-xs font-medium transition-colors"
+                                className="text-xs font-medium text-red-500 transition-colors hover:text-red-300"
                               >
                                 Delete
                               </button>

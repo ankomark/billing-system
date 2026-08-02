@@ -33,7 +33,9 @@ export default function CompAccessModal({ open, customer, onClose, onDone }) {
   // Offering the whole catalogue would let someone put a home line on an hour
   // of hotspot access.
   const packages = (data?.results ?? []).filter(
-    (p) => !!p.is_hotspot === (customer?.connection_type === "hotspot")
+    (p) =>
+      !p.is_archived &&
+      !!p.is_hotspot === (customer?.connection_type === "hotspot")
   );
 
   if (!open) return null;

@@ -121,7 +121,12 @@ export default function CustomerForm() {
     queryFn: async () => (await api.get("packages/", { params: { page_size: 100 } })).data,
     staleTime: 5 * 60 * 1000,
   });
-  const hotspotPackages = (packageData?.results ?? []).filter((p) => p.is_hotspot);
+  // Archived packages are retired from sale, so they are not offered here
+  // either — the server refuses them, and a select that lists one is a select
+  // that produces an error.
+  const hotspotPackages = (packageData?.results ?? []).filter(
+    (p) => p.is_hotspot && !p.is_archived
+  );
 
   const [issued, setIssued] = useState(null);
 

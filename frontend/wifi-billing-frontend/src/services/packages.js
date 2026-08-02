@@ -30,3 +30,15 @@ export const updatePackage = async (id, data) => {
 export const deletePackage = async (id) => {
   await api.delete(`packages/${id}/`);
 };
+
+/**
+ * Retire a package from sale, or put it back.
+ *
+ * What "delete" nearly always means: stop offering this one. Existing
+ * subscribers keep what they bought until it expires, and the invoices that
+ * name it stay intact.
+ */
+export const archivePackage = async (id) => {
+  const res = await api.post(`packages/${id}/archive/`);
+  return res.data;
+};

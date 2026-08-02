@@ -7959,3 +7959,149 @@ class VoucherDeactivationTests(TwoOperatorMixin, TestCase):
 
     def test_another_operators_code_cannot_be_retired(self):
         self.assertEqual(self.retire("WIFI-LEAK01", user=self.admin2).status_code, 404)
+
+
+# =====================================================
+# 46. A sold package is part of the billing record
+# =====================================================
+
+class PackageDeletionTests(TwoOperatorMixin, TestCase):
+    """
+    Subscription.package was CASCADE, so deleting a package took every
+    subscription on it and, through those, the invoices, the payments and the
+    vouchers. Measured against the development data before it was changed: one
+    package, one customer, five rows destroyed — including the record that
+    money had changed hands.
+
+    The confirm dialog said "existing subscriptions are not affected".
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        with tenant_context(self.t1):
+            self.unused = Package.objects.create(
+                tenant=self.t1, name="never-sold", download_speed=5, upload_speed=5,
+                price=Decimal("100.00"), duration_value=1, duration_unit="days",
+                monthly_data_cap_gb=0, is_hotspot=True)
+        self.in_use = self.data["t1"]["package"]
+
+    def delete(self, package, user=None):
+        return self.auth(user or self.admin1).delete(f"/api/packages/{package.id}/")
+
+    # ---- the refusal -------------------------------------------------------
+
+    def test_a_package_customers_are_on_cannot_be_deleted(self):
+        resp = self.delete(self.in_use)
+        self.assertEqual(resp.status_code, 409, resp.data)
+        self.assertGreaterEqual(resp.data["active_subscriptions"], 1)
+        self.assertTrue(Package.objects.filter(pk=self.in_use.pk).exists())
+
+    def test_the_refusal_says_what_to_do_instead(self):
+        resp = self.delete(self.in_use)
+        self.assertTrue(resp.data["can_archive"])
+        self.assertIn("archive", resp.data["detail"].lower())
+
+    def test_a_package_with_only_past_subscriptions_is_also_refused(self):
+        """
+        Suspending everyone does not make it safe: those subscriptions and
+        their invoices still name the package, and deleting it would delete
+        the record of what those customers paid for.
+        """
+        with tenant_context(self.t1):
+            sub = self.data["t1"]["sub"]
+            sub.status = "expired"
+            sub.save(update_fields=["status"])
+
+        resp = self.delete(self.in_use)
+        self.assertEqual(resp.status_code, 409, resp.data)
+        self.assertGreaterEqual(resp.data["past_subscriptions"], 1)
+
+    def test_the_database_refuses_too(self):
+        """
+        Not only the view. A cascade this destructive should not depend on one
+        code path remembering to check.
+        """
+        from django.db.models import ProtectedError
+
+        with tenant_context(self.t1), transaction.atomic():
+            with self.assertRaises(ProtectedError):
+                self.in_use.delete()
+
+    def test_nothing_is_destroyed_by_the_attempt(self):
+        with tenant_context(self.t1):
+            before = (
+                Subscription.objects.filter(package=self.in_use).count(),
+                Payment.objects.count(),
+                Invoice.objects.count(),
+            )
+        self.delete(self.in_use)
+        with tenant_context(self.t1):
+            after = (
+                Subscription.objects.filter(package=self.in_use).count(),
+                Payment.objects.count(),
+                Invoice.objects.count(),
+            )
+        self.assertEqual(before, after)
+
+    # ---- what may still be deleted -----------------------------------------
+
+    def test_a_package_nobody_ever_bought_can_be_deleted(self):
+        resp = self.delete(self.unused)
+        self.assertEqual(resp.status_code, 204, getattr(resp, "data", None))
+        self.assertFalse(Package.objects.filter(pk=self.unused.pk).exists())
+
+    def test_operator_staff_cannot_delete_a_package(self):
+        staff = User.objects.create_user(
+            username="pkg_staff", password="pw", role=User.TENANT_STAFF,
+            tenant=self.t1, is_staff=True)
+        self.assertEqual(self.delete(self.unused, user=staff).status_code, 403)
+
+    # ---- archiving, which is what was wanted -------------------------------
+
+    def test_archiving_retires_it_without_touching_anybody(self):
+        resp = self.auth(self.admin1).post(f"/api/packages/{self.in_use.id}/archive/")
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertTrue(resp.data["is_archived"])
+
+        with tenant_context(self.t1):
+            self.assertTrue(
+                Subscription.objects.filter(package=self.in_use).exists(),
+                "archiving must not disturb the people on it")
+
+    def test_an_archived_package_is_not_offered_on_the_portal(self):
+        with tenant_context(self.t1):
+            hotspot = Package.objects.create(
+                tenant=self.t1, name="retiring", download_speed=5, upload_speed=5,
+                price=Decimal("50.00"), duration_value=1, duration_unit="hours",
+                monthly_data_cap_gb=0, is_hotspot=True)
+
+        portal = f"/api/hotspot/packages/?t={self.t1.public_token}"
+        self.assertIn("retiring",
+                      {p["name"] for p in APIClient().get(portal).data["results"]})
+
+        self.auth(self.admin1).post(f"/api/packages/{hotspot.id}/archive/")
+        self.assertNotIn("retiring",
+                         {p["name"] for p in APIClient().get(portal).data["results"]})
+
+    def test_an_archived_package_cannot_be_sold(self):
+        with tenant_context(self.t1):
+            hotspot = Package.objects.create(
+                tenant=self.t1, name="retired", download_speed=5, upload_speed=5,
+                price=Decimal("50.00"), duration_value=1, duration_unit="hours",
+                monthly_data_cap_gb=0, is_hotspot=True, is_archived=True)
+
+        resp = self.auth(self.admin1).post(
+            "/api/admin/vouchers/issue/",
+            {"package_id": hotspot.id, "phone": "0712000999", "paid_with": "cash"},
+            format="json")
+        self.assertEqual(resp.status_code, 400, resp.data)
+
+    def test_archiving_is_reversible(self):
+        self.auth(self.admin1).post(f"/api/packages/{self.in_use.id}/archive/")
+        resp = self.auth(self.admin1).post(f"/api/packages/{self.in_use.id}/archive/")
+        self.assertFalse(resp.data["is_archived"])
+
+    def test_another_operator_cannot_archive_this_package(self):
+        resp = self.auth(self.admin2).post(f"/api/packages/{self.in_use.id}/archive/")
+        self.assertEqual(resp.status_code, 404)

@@ -48,6 +48,7 @@ from billing.models import Voucher
 from billing.tasks.mpesa_tasks import initiate_stk_push_task
 from django.utils import timezone
 from rest_framework import viewsets
+from rest_framework.decorators import action
 from .models import Customer, CustomerDevice, Package, Subscription,Invoice, Payment,MpesaTransaction,SystemSetting,RouterFailoverLog, HotspotUsageRecord, AccessAuditLog, Tenant
 from .models import PlatformPlan, TenantSubscription, TenantInvoice, TenantPayment, TenantStatusChange
 from .models import RouterEvent, Station, TenantScopedModel, router_uptime
@@ -390,6 +391,74 @@ class PackageViewSet(viewsets.ModelViewSet):
         # Ordered explicitly: pagination over an unordered queryset can repeat
         # or skip rows between pages.
         return Package.objects.order_by("id")
+
+    def destroy(self, request, *args, **kwargs):
+        """
+        Refuse to delete a package anybody is on, or has ever been on.
+
+        Deleting one used to cascade through every subscription and take the
+        invoices, payments and vouchers with it. A package that has been sold
+        is part of the billing record; what an operator wants when they say
+        "delete" is for it to stop being offered, and that is archiving.
+        """
+        package = self.get_object()
+
+        active = Subscription.objects.filter(
+            package=package, status="active").count()
+        total = Subscription.objects.filter(package=package).count()
+
+        if active:
+            return Response(
+                {
+                    "detail": (
+                        f"{active} customer{'s are' if active > 1 else ' is'} "
+                        f"on this package. Move or suspend "
+                        f"{'them' if active > 1 else 'them'} first, or archive "
+                        f"the package to stop selling it."
+                    ),
+                    "active_subscriptions": active,
+                    "can_archive": True,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        if total:
+            return Response(
+                {
+                    "detail": (
+                        f"This package appears on {total} past "
+                        f"subscription{'s' if total > 1 else ''} and their "
+                        f"invoices, so deleting it would delete the record of "
+                        f"what those customers paid for. Archive it instead — "
+                        f"it stops being offered and nothing is lost."
+                    ),
+                    "past_subscriptions": total,
+                    "can_archive": True,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        return super().destroy(request, *args, **kwargs)
+
+    @action(detail=True, methods=["post"], url_path="archive")
+    def archive(self, request, pk=None):
+        """
+        Retire a package from sale without touching anybody on it.
+
+        What "delete" nearly always means: stop offering this. Existing
+        subscribers keep what they bought until it expires.
+        """
+        package = self.get_object()
+        package.is_archived = not package.is_archived
+        package.save(update_fields=["is_archived"])
+        return Response({
+            "detail": (
+                f"{package.name} is archived and will not be offered to anyone new."
+                if package.is_archived else
+                f"{package.name} is on sale again."
+            ),
+            "is_archived": package.is_archived,
+        })
 
 
 class SubscriptionViewSet(viewsets.ModelViewSet):
@@ -1214,7 +1283,8 @@ class IssueVoucherView(APIView):
 
         package = (
             Package.objects.all_tenants()
-            .filter(id=request.data.get("package_id"), tenant=tenant, is_hotspot=True)
+            .filter(id=request.data.get("package_id"), tenant=tenant,
+                    is_hotspot=True, is_archived=False)
             .first()
         )
         if package is None:
@@ -1653,7 +1723,7 @@ class PPPoEPackagesView(APIView):
 
         packages = (
             Package.objects.all_tenants()
-            .filter(tenant_id=customer.tenant_id, is_hotspot=False)
+            .filter(tenant_id=customer.tenant_id, is_hotspot=False, is_archived=False)
             .order_by("price")
         )
         return Response({"results": PublicPackageSerializer(packages, many=True).data})
@@ -1718,7 +1788,8 @@ class PPPoERenewView(APIView):
         # line onto an hour of hotspot access, at hotspot pricing.
         package = (
             Package.objects.all_tenants()
-            .filter(id=package_id, tenant_id=customer.tenant_id, is_hotspot=False)
+            .filter(id=package_id, tenant_id=customer.tenant_id,
+                    is_hotspot=False, is_archived=False)
             .first()
         )
         if package is None:
@@ -3095,7 +3166,7 @@ class HotspotPackagesView(APIView):
 
         packages = (
             Package.objects.all_tenants()
-            .filter(tenant=tenant, is_hotspot=True)
+            .filter(tenant=tenant, is_hotspot=True, is_archived=False)
             .order_by("price")
         )
         from .serializers import PublicPackageSerializer
@@ -3146,7 +3217,8 @@ class HotspotPurchaseView(APIView):
 
         package = (
             Package.objects.all_tenants()
-            .filter(id=request.data.get("package_id"), tenant=tenant, is_hotspot=True)
+            .filter(id=request.data.get("package_id"), tenant=tenant,
+                    is_hotspot=True, is_archived=False)
             .first()
         )
         if package is None:
