@@ -66,6 +66,41 @@ export const compAccess = async (customerId, { packageId, reason }) => {
   return res.data; // { detail, voucher_code, expires_at, connection_type }
 };
 
+/**
+ * One device on a subscriber's account.
+ *
+ * Blocking and removing answer different questions. A lost phone should be
+ * removed, so the replacement can take its place. A stolen one should be
+ * blocked — refused even with a valid code, and not holding a place the
+ * customer paid for.
+ */
+export const blockDevice = async (deviceId, reason) => {
+  const res = await api.post(`admin/devices/${deviceId}/`, { action: "block", reason });
+  return res.data;
+};
+
+export const unblockDevice = async (deviceId) => {
+  const res = await api.post(`admin/devices/${deviceId}/`, { action: "unblock" });
+  return res.data;
+};
+
+export const removeDevice = async (deviceId) => {
+  const res = await api.delete(`admin/devices/${deviceId}/`);
+  return res.data;
+};
+
+/**
+ * Stop one code working, leaving the subscription and the other codes alone.
+ * The blunt revoke expires everything, which is wrong when a single code has
+ * leaked and the customer is owed a replacement.
+ */
+export const deactivateVoucher = async (code, reason) => {
+  const res = await api.post(`admin/vouchers/${encodeURIComponent(code)}/deactivate/`, {
+    reason,
+  });
+  return res.data;
+};
+
 export const resendVoucher = async (customerId) => {
   const res = await api.post(`admin/customers/${customerId}/resend-voucher/`);
   return res.data;

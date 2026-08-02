@@ -7747,3 +7747,215 @@ class DataUsageReportingTests(TwoOperatorMixin, TestCase):
         self.assertEqual(
             self.auth(self.admin2).get(f"/api/customers/{self.customer.id}/").status_code,
             404)
+
+
+# =====================================================
+# 45. Blocking a device, and retiring a code
+# =====================================================
+
+class DeviceBlockingTests(TwoOperatorMixin, TestCase):
+    """
+    Blocking and removing answer different questions.
+
+    A lost phone should be removed, so the replacement can take its place. A
+    stolen one should be blocked — refused even with a valid code — and
+    blocking it must not cost the customer a place they paid for.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        d = self.data["t1"]
+        with tenant_context(self.t1):
+            d["customer"].connection_type = "hotspot"
+            d["customer"].pppoe_username = ""
+            d["customer"].save()
+            self.customer = d["customer"]
+            self.sub = d["sub"]
+            self.sub.expiry_date = timezone.now() + timezone.timedelta(days=2)
+            self.sub.status = "active"
+            self.sub.save()
+            self.sub.package.max_devices = 2
+            self.sub.package.save(update_fields=["max_devices"])
+            self.voucher = Voucher.objects.create(
+                tenant=self.t1, code="WIFI-BLK001", subscription=self.sub,
+                expires_at=self.sub.expiry_date)
+            inv = self.sub.invoice
+            inv.payment_status = "paid"
+            inv.save(update_fields=["payment_status"])
+            self.device = CustomerDevice.objects.create(
+                tenant=self.t1, customer=self.customer,
+                mac_address="AA:00:00:00:00:01")
+
+    def redeem(self, mac):
+        return APIClient().post(
+            f"/api/hotspot/validate/?t={self.t1.public_token}",
+            {"code": "WIFI-BLK001", "mac_address": mac}, format="json")
+
+    def act(self, action, reason=None, user=None, device=None):
+        body = {"action": action}
+        if reason is not None:
+            body["reason"] = reason
+        return self.auth(user or self.admin1).post(
+            f"/api/admin/devices/{(device or self.device).id}/", body, format="json")
+
+    # ---- blocking ----------------------------------------------------------
+
+    @patch("billing.views._kick_device", return_value=0)
+    def test_a_blocked_device_is_refused_even_with_a_good_code(self, _):
+        self.assertEqual(self.act("block", "Handset reported stolen").status_code, 200)
+        resp = self.redeem("AA:00:00:00:00:01")
+        self.assertEqual(resp.status_code, 403, resp.data)
+        self.assertTrue(resp.data["blocked"])
+
+    @patch("billing.views._kick_device", return_value=0)
+    def test_blocking_does_not_cost_the_customer_a_place(self, _):
+        """
+        They paid for two devices. Blocking a stolen one must leave two usable,
+        not one.
+        """
+        self.redeem("BB:00:00:00:00:02")
+        self.act("block", "Stolen")
+        self.assertEqual(self.redeem("CC:00:00:00:00:03").status_code, 200)
+
+    @patch("billing.views._kick_device", return_value=0)
+    def test_a_blocked_device_resolves_to_nobody(self, _):
+        """
+        Otherwise it keeps reading status and calling reconnect on the account
+        it was blocked from.
+        """
+        self.act("block", "Stolen")
+        resp = APIClient().get("/api/hotspot/status/", {
+            "t": self.t1.public_token, "mac": "AA:00:00:00:00:01"})
+        self.assertEqual(resp.data["status"], "not_found")
+
+    @patch("billing.views._kick_device", return_value=0)
+    def test_blocking_needs_a_reason(self, _):
+        resp = self.act("block", "   ")
+        self.assertEqual(resp.status_code, 400)
+        self.device.refresh_from_db()
+        self.assertFalse(self.device.blocked)
+
+    @patch("billing.views._kick_device", return_value=0)
+    def test_unblocking_lets_it_back(self, _):
+        self.act("block", "Mistake")
+        self.assertEqual(self.act("unblock").status_code, 200)
+        self.assertEqual(self.redeem("AA:00:00:00:00:01").status_code, 200)
+
+    @patch("billing.views._kick_device", return_value=0)
+    def test_blocking_is_written_down_with_the_reason(self, _):
+        self.act("block", "Sharing the connection with a shop")
+        log = AccessAuditLog.objects.all_tenants().filter(
+            action="device_blocked").first()
+        self.assertIsNotNone(log)
+        self.assertIn("Sharing the connection", log.reason)
+        self.assertIn("AA:00:00:00:00:01", log.reason)
+
+    # ---- removing ----------------------------------------------------------
+
+    @patch("billing.views._kick_device", return_value=0)
+    def test_removing_frees_the_place(self, _):
+        self.redeem("BB:00:00:00:00:02")     # both places taken
+        self.assertEqual(self.redeem("CC:00:00:00:00:03").status_code, 409)
+
+        resp = self.auth(self.admin1).delete(f"/api/admin/devices/{self.device.id}/")
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(self.redeem("CC:00:00:00:00:03").status_code, 200)
+
+    @patch("billing.views._kick_device", return_value=0)
+    def test_a_removed_device_may_come_back(self, _):
+        """Removed is not blocked — it can claim a new place."""
+        self.auth(self.admin1).delete(f"/api/admin/devices/{self.device.id}/")
+        self.assertEqual(self.redeem("AA:00:00:00:00:01").status_code, 200)
+
+    # ---- who may --------------------------------------------------------
+
+    @patch("billing.views._kick_device", return_value=0)
+    def test_operator_staff_cannot_block(self, _):
+        staff = User.objects.create_user(
+            username="blk_staff", password="pw", role=User.TENANT_STAFF,
+            tenant=self.t1, is_staff=True)
+        self.assertEqual(self.act("block", "no", user=staff).status_code, 403)
+
+    @patch("billing.views._kick_device", return_value=0)
+    def test_another_operator_cannot_touch_this_device(self, _):
+        self.assertEqual(self.act("block", "no", user=self.admin2).status_code, 404)
+
+
+class VoucherDeactivationTests(TwoOperatorMixin, TestCase):
+    """
+    Retiring one code, without expiring the subscription it belongs to.
+
+    The existing revoke expires everything — right when somebody has stopped
+    paying, wrong when a single code has leaked and the customer is owed a
+    replacement.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        d = self.data["t1"]
+        with tenant_context(self.t1):
+            d["customer"].connection_type = "hotspot"
+            d["customer"].pppoe_username = ""
+            d["customer"].save()
+            self.sub = d["sub"]
+            self.sub.expiry_date = timezone.now() + timezone.timedelta(days=2)
+            self.sub.status = "active"
+            self.sub.save()
+            self.leaked = Voucher.objects.create(
+                tenant=self.t1, code="WIFI-LEAK01", subscription=self.sub,
+                expires_at=self.sub.expiry_date)
+            self.spare = Voucher.objects.create(
+                tenant=self.t1, code="WIFI-SPARE1", subscription=self.sub,
+                expires_at=self.sub.expiry_date)
+
+    def retire(self, code, reason="Shared publicly", user=None):
+        return self.auth(user or self.admin1).post(
+            f"/api/admin/vouchers/{code}/deactivate/", {"reason": reason},
+            format="json")
+
+    def test_a_retired_code_stops_working(self):
+        self.assertEqual(self.retire("WIFI-LEAK01").status_code, 200)
+        resp = APIClient().post(
+            f"/api/hotspot/validate/?t={self.t1.public_token}",
+            {"code": "WIFI-LEAK01", "mac_address": "AA:11:11:11:11:11"},
+            format="json")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_the_subscription_and_the_other_codes_are_untouched(self):
+        """The difference from revoking, which expires the lot."""
+        self.retire("WIFI-LEAK01")
+        with tenant_context(self.t1):
+            self.sub.refresh_from_db()
+            self.assertEqual(self.sub.status, "active")
+            self.assertTrue(Voucher.objects.get(code="WIFI-SPARE1").is_active)
+
+    def test_a_reason_is_required(self):
+        resp = self.auth(self.admin1).post(
+            "/api/admin/vouchers/WIFI-LEAK01/deactivate/", {}, format="json")
+        self.assertEqual(resp.status_code, 400)
+        with tenant_context(self.t1):
+            self.assertTrue(Voucher.objects.get(code="WIFI-LEAK01").is_active)
+
+    def test_retiring_is_written_down(self):
+        self.retire("WIFI-LEAK01", reason="Posted in a WhatsApp group")
+        log = AccessAuditLog.objects.all_tenants().filter(
+            action="voucher_deactivated").first()
+        self.assertIsNotNone(log)
+        self.assertIn("Posted in a WhatsApp group", log.reason)
+
+    def test_retiring_twice_says_so_rather_than_failing(self):
+        self.retire("WIFI-LEAK01")
+        resp = self.retire("WIFI-LEAK01")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("already retired", resp.data["detail"])
+
+    def test_operator_staff_cannot_retire_a_code(self):
+        staff = User.objects.create_user(
+            username="vch_staff", password="pw", role=User.TENANT_STAFF,
+            tenant=self.t1, is_staff=True)
+        self.assertEqual(self.retire("WIFI-LEAK01", user=staff).status_code, 403)
+
+    def test_another_operators_code_cannot_be_retired(self):
+        self.assertEqual(self.retire("WIFI-LEAK01", user=self.admin2).status_code, 404)

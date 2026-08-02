@@ -2,7 +2,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import toast from "react-hot-toast";
-import { ArrowLeft, Edit, Router as RouterIcon, Gift, Send } from "lucide-react";
+import { ArrowLeft, Edit, Router as RouterIcon, Gift, Send, Ban } from "lucide-react";
 import AdminLayout from "../../components/admin/AdminLayout";
 import CompAccessModal from "../../components/admin/CompAccessModal";
 import { getUser } from "../../services/auth";
@@ -14,6 +14,10 @@ import {
   fetchCustomerDetail,
   suspendOrResumeCustomer,
   resendVoucher,
+  blockDevice,
+  unblockDevice,
+  removeDevice,
+  deactivateVoucher,
   migrateCustomer,
 } from "../../services/customers";
 import api from "../../services/api";
@@ -72,6 +76,65 @@ export default function CustomerDetail() {
   // Giving away what the business sells is a decision about money, so it
   // belongs to whoever answers for the money.
   const canComp = isOperatorAdmin(getUser()?.role);
+
+  const refresh = () => qc.invalidateQueries({ queryKey: ["customer", id] });
+
+  const handleDevice = async (device, what) => {
+    let reason = "";
+    if (what === "block") {
+      reason = window.prompt(
+        `Why is ${device.mac_address} being blocked?\n\nThis is what answers the customer when they ask.`
+      );
+      if (!reason?.trim()) return;
+    }
+    if (what === "remove") {
+      const ok = await confirm({
+        title: `Remove ${device.mac_address}?`,
+        description:
+          "This frees the place it holds, so another phone can take it. The device is not blocked — it can connect again and claim a new place.",
+        confirmText: "Remove device",
+        danger: true,
+      });
+      if (!ok) return;
+    }
+
+    setActionLoading(true);
+    try {
+      const res =
+        what === "block" ? await blockDevice(device.id, reason.trim())
+        : what === "unblock" ? await unblockDevice(device.id)
+        : await removeDevice(device.id);
+      toast.success(res.detail);
+      if (res.routers_reached === 0) {
+        // Saying it plainly: the record is made, the device may still be on.
+        toast("No router could be reached, so any live session is still up.", {
+          icon: "⚠️",
+        });
+      }
+      refresh();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Couldn't do that.");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleDeactivateVoucher = async (voucher) => {
+    const reason = window.prompt(
+      `Why is ${voucher.code} being retired?\n\nIt will stop working immediately.`
+    );
+    if (!reason?.trim()) return;
+    setActionLoading(true);
+    try {
+      const res = await deactivateVoucher(voucher.code, reason.trim());
+      toast.success(res.detail);
+      refresh();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Couldn't retire that code.");
+    } finally {
+      setActionLoading(false);
+    }
+  };
 
   const handleResendVoucher = async () => {
     setActionLoading(true);
@@ -220,7 +283,12 @@ export default function CustomerDetail() {
           <h2 className="mb-4 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">
             Devices
           </h2>
-          <Devices devices={customer.devices} />
+          <Devices
+            devices={customer.devices}
+            canManage={canComp}
+            busy={actionLoading}
+            onAction={handleDevice}
+          />
         </div>
 
         {/* Router migration */}
@@ -306,6 +374,17 @@ export default function CustomerDetail() {
                       for it again. The button at the top of the page does the
                       same thing, but you have to know it is there and that it
                       means this code. */}
+                  {v.is_active && canComp && (
+                    <button
+                      onClick={() => handleDeactivateVoucher(v)}
+                      disabled={actionLoading}
+                      title="Stop this code working"
+                      aria-label={`Retire ${v.code}`}
+                      className="rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-red-500/10 hover:text-red-300 disabled:opacity-40"
+                    >
+                      <Ban size={14} />
+                    </button>
+                  )}
                   {v.is_active && (
                     <button
                       onClick={handleResendVoucher}
@@ -414,44 +493,98 @@ function DataUsage({ usage }) {
  * "Already in use on 2 devices" is what a third phone is told, so the operator
  * on the line to that customer needs to be looking at the same thing.
  */
-function Devices({ devices }) {
+function Devices({ devices, canManage, busy, onAction }) {
   if (!devices) return null;
-  const used = devices.in_use ?? [];
-  const full = used.length >= devices.allowed;
+  const all = devices.in_use ?? [];
+  const used = devices.used ?? all.filter((d) => !d.blocked).length;
+  const full = used >= devices.allowed;
 
   return (
     <div className="space-y-3">
       <p className="text-sm">
         <span className={`font-semibold ${full ? "text-amber-300" : "text-white"}`}>
-          {used.length} of {devices.allowed}
+          {used} of {devices.allowed}
         </span>
         <span className="text-slate-500">
           {" "}device{devices.allowed === 1 ? "" : "s"} used
         </span>
       </p>
 
-      {used.length === 0 ? (
+      {all.length === 0 ? (
         <p className="text-sm text-slate-500">
           Nothing has connected yet. The first phone to use the code claims a
           place.
         </p>
       ) : (
         <ul className="space-y-2">
-          {used.map((d) => (
+          {all.map((d) => (
             <li
               key={d.mac_address}
-              className="flex items-baseline justify-between gap-3 border-b border-white/5 pb-2 last:border-0 last:pb-0"
+              className="flex items-center justify-between gap-3 border-b border-white/5 pb-2 last:border-0 last:pb-0"
             >
-              <code className="font-mono text-xs text-slate-300">{d.mac_address}</code>
-              <span className="whitespace-nowrap text-[11px] text-slate-500">
-                since{" "}
-                {new Date(d.first_seen).toLocaleString("en-KE", {
-                  day: "numeric", month: "short", hour: "2-digit", minute: "2-digit",
-                })}
+              <span className="min-w-0">
+                <code
+                  className={`font-mono text-xs ${
+                    d.blocked ? "text-red-300 line-through" : "text-slate-300"
+                  }`}
+                >
+                  {d.mac_address}
+                </code>
+                <span className="block text-[11px] text-slate-500">
+                  {d.blocked ? (
+                    <span className="text-red-400">Blocked — {d.blocked_reason}</span>
+                  ) : (
+                    <>
+                      since{" "}
+                      {new Date(d.first_seen).toLocaleString("en-KE", {
+                        day: "numeric", month: "short",
+                        hour: "2-digit", minute: "2-digit",
+                      })}
+                    </>
+                  )}
+                </span>
               </span>
+
+              {canManage && (
+                <span className="flex flex-shrink-0 items-center gap-1">
+                  {d.blocked ? (
+                    <button
+                      onClick={() => onAction(d, "unblock")}
+                      disabled={busy}
+                      className="rounded-lg px-2 py-1 text-[11px] font-semibold text-emerald-300 transition-colors hover:bg-emerald-500/10 disabled:opacity-40"
+                    >
+                      Unblock
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => onAction(d, "block")}
+                      disabled={busy}
+                      title="Refuse this device even with a valid code"
+                      className="rounded-lg px-2 py-1 text-[11px] font-semibold text-red-300 transition-colors hover:bg-red-500/10 disabled:opacity-40"
+                    >
+                      Block
+                    </button>
+                  )}
+                  <button
+                    onClick={() => onAction(d, "remove")}
+                    disabled={busy}
+                    title="Free the place this device holds"
+                    className="rounded-lg px-2 py-1 text-[11px] font-semibold text-slate-400 transition-colors hover:bg-white/5 disabled:opacity-40"
+                  >
+                    Remove
+                  </button>
+                </span>
+              )}
             </li>
           ))}
         </ul>
+      )}
+
+      {canManage && all.length > 0 && (
+        <p className="border-t border-white/5 pt-2 text-[11px] text-slate-600">
+          Remove frees the place for another phone. Block refuses that device
+          even with a valid code, and does not hold a place.
+        </p>
       )}
     </div>
   );

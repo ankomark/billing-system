@@ -74,6 +74,8 @@ from .views import (
     ResendVoucherView,
     CompAccessView,
     IssueVoucherView,
+    CustomerDeviceView,
+    DeactivateVoucherView,
     AdminMigrateCustomerView,
 
     # Admin — access
@@ -209,6 +211,12 @@ urlpatterns = [
         CustomerSuspendResumeView.as_view(),
         name="customer-suspend-resume",
     ),
+    # Blocking or removing one device, and retiring one code.
+    path("api/admin/devices/<int:device_id>/", CustomerDeviceView.as_view(),
+         name="customer-device"),
+    path("api/admin/vouchers/<str:code>/deactivate/", DeactivateVoucherView.as_view(),
+         name="voucher-deactivate"),
+
     # Sell or give a voucher to a phone number in one step, at the counter.
     path("api/admin/vouchers/issue/", IssueVoucherView.as_view(), name="voucher-issue"),
 

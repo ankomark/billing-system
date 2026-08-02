@@ -165,13 +165,20 @@ class CustomerDetailSerializer(CustomerSerializer):
         # Prefetched; sorted here rather than by the database, which would be
         # a second query per customer.
         devices = sorted(obj.devices.all(), key=lambda d: d.first_seen)
+        # Blocked ones are shown but do not count against the allowance, which
+        # is how the redemption path counts them too.
+        using = [d for d in devices if not d.blocked]
         return {
             "allowed": allowed,
+            "used": len(using),
             "in_use": [
                 {
+                    "id": d.id,
                     "mac_address": d.mac_address,
                     "first_seen": d.first_seen,
                     "last_seen": d.last_seen,
+                    "blocked": d.blocked,
+                    "blocked_reason": d.blocked_reason,
                 }
                 for d in devices
             ],

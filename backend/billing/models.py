@@ -1147,6 +1147,17 @@ class CustomerDevice(TenantScopedModel):
     first_seen = models.DateTimeField(auto_now_add=True)
     last_seen = models.DateTimeField(auto_now=True)
 
+    # Blocked is not the same as removed.
+    #
+    # Removing frees the place — a customer lost their phone and the new one
+    # should be able to take its slot. Blocking refuses that particular device
+    # even with a valid code, which is what a stolen handset or an abused
+    # connection calls for. A blocked device does not hold a place either:
+    # blocking should not cost the customer something they paid for.
+    blocked = models.BooleanField(default=False)
+    blocked_reason = models.CharField(max_length=200, blank=True)
+    blocked_at = models.DateTimeField(null=True, blank=True)
+
     class Meta:
         constraints = [
             models.UniqueConstraint(
@@ -1358,6 +1369,10 @@ class AccessAuditLog(TenantScopedModel):
     ACTION_CHOICES = (
         ("deactivate", "Deactivate"),
         ("activate", "Activate"),
+        ("device_blocked", "Device blocked"),
+        ("device_unblocked", "Device unblocked"),
+        ("device_removed", "Device removed"),
+        ("voucher_deactivated", "Voucher deactivated"),
     )
 
     customer = models.ForeignKey(

@@ -966,6 +966,18 @@ class HotspotVoucherValidateView(APIView):
                 )
             known = next((d for d in devices if d.mac_address == mac_address), None)
 
+            if known is not None and known.blocked:
+                return Response(
+                    {"detail": "This device has been blocked. Please speak to "
+                               "your provider.",
+                     "blocked": True},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+            # Blocked devices are refused above and do not hold a place here:
+            # blocking one should not cost the customer a slot they paid for.
+            devices = [d for d in devices if not d.blocked]
+
             if known is None:
                 if len(devices) >= allowed:
                     # The limit, and the reason it exists. One code bought for
@@ -1008,6 +1020,169 @@ class HotspotVoucherValidateView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+
+def _kick_device(customer, mac_address):
+    """
+    Take a device off the hardware it is on, best effort.
+
+    Blocking a device that stays connected has not blocked anything until its
+    session ends, and a session can outlast a shift. An unreachable router must
+    not stop the record being made, so this reports rather than raises.
+    """
+    from billing.router_service import _tenant_routers, connect_router, disable_hotspot
+
+    reached = 0
+    try:
+        routers = _tenant_routers(customer.tenant_id)
+    except Exception:
+        routers = []
+
+    for router in routers:
+        try:
+            api = connect_router(router)
+            disable_hotspot(api, mac_address)
+            reached += 1
+        except Exception:
+            logger.warning("[device] could not reach %s to drop %s", router, mac_address)
+    return reached
+
+
+class CustomerDeviceView(APIView):
+    """
+    One device on a subscriber's account.
+
+    Blocking and removing answer different questions. A lost phone should be
+    removed, so the replacement can take its place. A stolen one, or a
+    connection being abused, should be blocked — refused even with a valid
+    code, and not holding a place the customer paid for.
+
+    Admin only: deciding who may not connect is not a support task.
+    """
+    permission_classes = [IsTenantAdmin]
+
+    def _device(self, request, device_id):
+        return CustomerDevice.objects.filter(id=device_id).select_related("customer").first()
+
+    def post(self, request, device_id):
+        device = self._device(request, device_id)
+        if device is None:
+            return Response({"detail": "Device not found"}, status=404)
+
+        action = request.data.get("action")
+        reason = (request.data.get("reason") or "").strip()
+
+        if action == "block":
+            if not reason:
+                return Response(
+                    {"detail": "Say why this device is blocked — it is what "
+                               "answers the customer when they ask."},
+                    status=400,
+                )
+            device.blocked = True
+            device.blocked_reason = reason[:200]
+            device.blocked_at = timezone.now()
+            device.save(update_fields=["blocked", "blocked_reason", "blocked_at"])
+
+            # The customer row points at one MAC, and if it is this one the
+            # public lookups would still resolve through it.
+            if device.customer.hotspot_username == device.mac_address:
+                device.customer.hotspot_username = ""
+                device.customer.save(update_fields=["hotspot_username"])
+
+            reached = _kick_device(device.customer, device.mac_address)
+            AccessAuditLog.objects.create(
+                tenant_id=device.tenant_id, customer=device.customer,
+                action="device_blocked",
+                reason=f"{device.mac_address} — {reason}",
+            )
+            return Response({
+                "detail": f"{device.mac_address} is blocked.",
+                "routers_reached": reached,
+                "blocked": True,
+            })
+
+        if action == "unblock":
+            device.blocked = False
+            device.blocked_reason = ""
+            device.blocked_at = None
+            device.save(update_fields=["blocked", "blocked_reason", "blocked_at"])
+            AccessAuditLog.objects.create(
+                tenant_id=device.tenant_id, customer=device.customer,
+                action="device_unblocked", reason=device.mac_address,
+            )
+            return Response({"detail": f"{device.mac_address} may connect again.",
+                             "blocked": False})
+
+        return Response({"detail": "Unknown action."}, status=400)
+
+    def delete(self, request, device_id):
+        """Free the place. The device may connect again and claim a new one."""
+        device = self._device(request, device_id)
+        if device is None:
+            return Response({"detail": "Device not found"}, status=404)
+
+        mac = device.mac_address
+        customer = device.customer
+        if customer.hotspot_username == mac:
+            customer.hotspot_username = ""
+            customer.save(update_fields=["hotspot_username"])
+
+        reached = _kick_device(customer, mac)
+        device.delete()
+        AccessAuditLog.objects.create(
+            tenant_id=customer.tenant_id, customer=customer,
+            action="device_removed", reason=mac,
+        )
+        return Response({"detail": f"{mac} removed. Its place is free.",
+                         "routers_reached": reached})
+
+
+class DeactivateVoucherView(APIView):
+    """
+    Stop one code working, without touching anything else.
+
+    The existing revoke expires the whole subscription — right when somebody
+    has stopped paying, wrong when a single code has leaked and the customer
+    is owed a replacement. This retires the code and leaves the subscription,
+    the other codes and the customer's standing alone.
+    """
+    permission_classes = [IsTenantAdmin]
+
+    def post(self, request, code):
+        voucher = (
+            Voucher.objects.filter(code=code)
+            .select_related("subscription__customer")
+            .first()
+        )
+        if voucher is None:
+            return Response({"detail": "Voucher not found"}, status=404)
+
+        reason = (request.data.get("reason") or "").strip()
+        if not reason:
+            return Response(
+                {"detail": "Say why — a code that stops working needs an "
+                           "explanation when the customer rings."},
+                status=400,
+            )
+
+        if not voucher.is_active:
+            return Response({"detail": "That code is already retired.",
+                             "is_active": False})
+
+        voucher.is_active = False
+        voucher.save(update_fields=["is_active"])
+
+        customer = voucher.subscription.customer
+        AccessAuditLog.objects.create(
+            tenant_id=voucher.tenant_id,
+            customer=customer,
+            subscription=voucher.subscription,
+            action="voucher_deactivated",
+            reason=f"{voucher.code} — {reason}",
+        )
+        return Response({"detail": f"{voucher.code} will not work again.",
+                         "is_active": False})
+
 
 class IssueVoucherView(APIView):
     """
@@ -1311,8 +1486,13 @@ def _hotspot_customer_for(request, mac, **extra):
     # Any of the subscriber's devices, not only the first one bound. A second
     # phone on a multi-device package is as much theirs as the first, and
     # resolving only the first would tell it that it is not registered.
+    # A blocked device resolves to nobody. Leaving it resolvable would let it
+    # keep reading status and calling reconnect on the account it was blocked
+    # from.
     qs = Customer.objects.all_tenants().filter(
-        Q(hotspot_username=mac) | Q(devices__mac_address=mac), **extra
+        Q(hotspot_username=mac)
+        | Q(devices__mac_address=mac, devices__blocked=False),
+        **extra
     ).distinct()
 
     if token:
