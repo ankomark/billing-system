@@ -68,7 +68,7 @@ from billing.router_service import (
 from billing.tenancy import TenantManager, all_tenants, tenant_context
 
 from billing.models import (
-    User, Customer, CustomerDevice, Package, Subscription,
+    User, ConnectionAttempt, Customer, CustomerDevice, Package, Subscription,
     Invoice, Payment, Voucher, MpesaTransaction, RouterDevice,
     AccessAuditLog, Tenant, RouterFailoverLog, ExpiryReminderLog,
     SystemSetting, PPPoEUsageSnapshot, PPPoEUsageState, PPPoEUsageRecord,
@@ -8141,3 +8141,239 @@ class PackageDeletionTests(TwoOperatorMixin, TestCase):
     def test_another_operator_cannot_archive_this_package(self):
         resp = self.auth(self.admin2).post(f"/api/packages/{self.in_use.id}/archive/")
         self.assertEqual(resp.status_code, 404)
+
+
+# =====================================================
+# 47. The connections that did not happen
+# =====================================================
+
+class ConnectionAttemptTests(TwoOperatorMixin, TestCase):
+    """
+    Only successes were recorded. An operator heard about the customer who
+    complained and nothing about the twenty who mistyped a code and gave up.
+    """
+
+    URL = "/api/admin/connection-attempts/"
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        d = self.data["t1"]
+        with tenant_context(self.t1):
+            d["customer"].connection_type = "hotspot"
+            d["customer"].pppoe_username = ""
+            d["customer"].save()
+            sub = d["sub"]
+            sub.expiry_date = timezone.now() + timezone.timedelta(days=2)
+            sub.status = "active"
+            sub.save()
+            sub.package.max_devices = 1
+            sub.package.save(update_fields=["max_devices"])
+            Voucher.objects.create(
+                tenant=self.t1, code="WIFI-REAL01", subscription=sub,
+                expires_at=sub.expiry_date)
+
+    def try_code(self, code, mac):
+        return APIClient().post(
+            f"/api/hotspot/validate/?t={self.t1.public_token}",
+            {"code": code, "mac_address": mac}, format="json")
+
+    def attempts(self, user=None, **params):
+        return self.auth(user or self.admin1).get(self.URL, params)
+
+    # ---- recording ---------------------------------------------------------
+
+    def test_a_mistyped_code_is_recorded(self):
+        self.try_code("WIFI-REAL0X", "AA:00:00:00:00:01")
+        rows = self.attempts().data["results"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["code_tried"], "WIFI-REAL0X")
+        self.assertEqual(rows[0]["outcome"], "invalid")
+
+    def test_a_code_used_on_too_many_devices_is_recorded(self):
+        """The one that looks like a customer being difficult and is not."""
+        self.try_code("WIFI-REAL01", "AA:00:00:00:00:01")
+        self.try_code("WIFI-REAL01", "BB:00:00:00:00:02")
+        outcomes = {a["outcome"] for a in self.attempts().data["results"]}
+        self.assertIn("device_limit", outcomes)
+
+    def test_a_blocked_device_trying_again_is_recorded(self):
+        self.try_code("WIFI-REAL01", "AA:00:00:00:00:01")
+        with tenant_context(self.t1):
+            device = CustomerDevice.objects.get(mac_address="AA:00:00:00:00:01")
+            device.blocked = True
+            device.blocked_reason = "Stolen"
+            device.save(update_fields=["blocked", "blocked_reason"])
+
+        self.try_code("WIFI-REAL01", "AA:00:00:00:00:01")
+        outcomes = {a["outcome"] for a in self.attempts().data["results"]}
+        self.assertIn("blocked", outcomes)
+
+    def test_a_successful_connection_records_nothing(self):
+        """This is a list of failures. A success in it is noise."""
+        self.try_code("WIFI-REAL01", "AA:00:00:00:00:01")
+        self.assertEqual(self.attempts().data["count"], 0)
+
+    def test_recording_never_breaks_the_answer(self):
+        """
+        A portal that cannot write a diagnostic must still answer the customer.
+        """
+        with patch("billing.views.ConnectionAttempt.objects.create",
+                   side_effect=Exception("disk full")):
+            resp = self.try_code("WIFI-NOPE01", "AA:00:00:00:00:09")
+        self.assertEqual(resp.status_code, 400)
+
+    # ---- reading -----------------------------------------------------------
+
+    def test_they_can_be_filtered_by_reason(self):
+        self.try_code("WIFI-WRONG1", "AA:00:00:00:00:01")
+        self.try_code("WIFI-WRONG2", "AA:00:00:00:00:02")
+        self.assertEqual(self.attempts(outcome="invalid").data["count"], 2)
+        self.assertEqual(self.attempts(outcome="blocked").data["count"], 0)
+
+    def test_one_operator_never_sees_anothers(self):
+        self.try_code("WIFI-WRONG1", "AA:00:00:00:00:01")
+        self.assertEqual(self.attempts(user=self.admin2).data["count"], 0)
+
+    def test_operator_staff_may_read_them(self):
+        """Somebody cannot get online is precisely the support desk's job."""
+        staff = User.objects.create_user(
+            username="att_staff", password="pw", role=User.TENANT_STAFF,
+            tenant=self.t1, is_staff=True)
+        self.assertEqual(self.attempts(user=staff).status_code, 200)
+
+    # ---- retention ---------------------------------------------------------
+
+    def test_old_attempts_are_pruned(self):
+        """A diagnostic, not a ledger. Nothing else would remove a row."""
+        from billing.tasks.router_health import prune_connection_attempts_task
+
+        with tenant_context(self.t1):
+            old = ConnectionAttempt.objects.create(
+                tenant=self.t1, code_tried="WIFI-OLD001",
+                mac_address="AA:00:00:00:00:05", outcome="invalid")
+            ConnectionAttempt.objects.filter(pk=old.pk).update(
+                created_at=timezone.now() - timezone.timedelta(days=30))
+            recent = ConnectionAttempt.objects.create(
+                tenant=self.t1, code_tried="WIFI-NEW001",
+                mac_address="AA:00:00:00:00:06", outcome="invalid")
+
+        prune_connection_attempts_task()
+
+        with tenant_context(self.t1):
+            self.assertFalse(ConnectionAttempt.objects.filter(pk=old.pk).exists())
+            self.assertTrue(ConnectionAttempt.objects.filter(pk=recent.pk).exists())
+
+
+class SubscriberFacingTests(TwoOperatorMixin, TestCase):
+    """
+    Two things the operator could see and the person paying could not: the
+    terms they are agreeing to, and how much of their bundle is left.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        d = self.data["t1"]
+        with tenant_context(self.t1):
+            d["customer"].connection_type = "hotspot"
+            d["customer"].pppoe_username = ""
+            d["customer"].hotspot_username = "AA:BB:CC:00:00:01"
+            d["customer"].save()
+            self.customer = d["customer"]
+            self.sub = d["sub"]
+            self.sub.start_date = timezone.now() - timezone.timedelta(days=1)
+            self.sub.expiry_date = timezone.now() + timezone.timedelta(days=2)
+            self.sub.status = "active"
+            self.sub.save()
+            inv = self.sub.invoice
+            inv.payment_status = "paid"
+            inv.save(update_fields=["payment_status"])
+
+    # ---- terms -------------------------------------------------------------
+
+    def test_no_terms_set_means_none_offered(self):
+        """A link to nothing is worse than no link."""
+        resp = APIClient().get(f"/api/hotspot/provider/?t={self.t1.public_token}")
+        self.assertIsNone(resp.data["terms_url"])
+
+    def test_terms_reach_the_portal(self):
+        with tenant_context(self.t1):
+            SystemSetting.objects.create(
+                tenant=self.t1, key="HOTSPOT_TERMS_URL",
+                value="https://example.com/terms")
+        clear_settings_cache(tenant=self.t1)
+
+        resp = APIClient().get(f"/api/hotspot/provider/?t={self.t1.public_token}")
+        self.assertEqual(resp.data["terms_url"], "https://example.com/terms")
+
+    def test_an_operator_can_set_their_own_terms(self):
+        resp = self.auth(self.admin1).put(
+            "/api/system/settings/",
+            {"HOTSPOT_TERMS_URL": "https://skylink.example.com/terms"},
+            format="json")
+        self.assertIn(resp.status_code, (200, 202), resp.data)
+        clear_settings_cache(tenant=self.t1)
+        self.assertEqual(
+            APIClient().get(
+                f"/api/hotspot/provider/?t={self.t1.public_token}").data["terms_url"],
+            "https://skylink.example.com/terms")
+
+    def test_terms_belong_to_one_operator(self):
+        with tenant_context(self.t1):
+            SystemSetting.objects.create(
+                tenant=self.t1, key="HOTSPOT_TERMS_URL", value="https://a.example/terms")
+        clear_settings_cache(tenant=self.t1)
+        self.assertIsNone(
+            APIClient().get(
+                f"/api/hotspot/provider/?t={self.t2.public_token}").data["terms_url"])
+
+    # ---- their own usage ---------------------------------------------------
+
+    def status(self):
+        return APIClient().get("/api/hotspot/status/", {
+            "t": self.t1.public_token, "mac": "AA:BB:CC:00:00:01"})
+
+    def test_a_subscriber_can_see_what_they_have_used(self):
+        with tenant_context(self.t1):
+            HotspotUsageRecord.objects.create(
+                tenant=self.t1, customer=self.customer,
+                period_start=timezone.now(), period_end=timezone.now(),
+                download_bytes=2 * 1024 ** 3, upload_bytes=0)
+
+        usage = self.status().data["usage"]
+        self.assertEqual(usage["used_bytes"], 2 * 1024 ** 3)
+
+    def test_an_unlimited_plan_still_reports_consumption(self):
+        """"How much have I used" is fair with or without a ceiling."""
+        with tenant_context(self.t1):
+            self.sub.package.monthly_data_cap_gb = 0
+            self.sub.package.save(update_fields=["monthly_data_cap_gb"])
+            HotspotUsageRecord.objects.create(
+                tenant=self.t1, customer=self.customer,
+                period_start=timezone.now(), period_end=timezone.now(),
+                download_bytes=1024 ** 3, upload_bytes=0)
+
+        usage = self.status().data["usage"]
+        self.assertTrue(usage["unlimited"])
+        self.assertEqual(usage["used_bytes"], 1024 ** 3)
+        self.assertIsNone(usage["percent_used"])
+
+    def test_a_capped_plan_reports_how_much_is_gone(self):
+        with tenant_context(self.t1):
+            self.sub.package.monthly_data_cap_gb = 4
+            self.sub.package.save(update_fields=["monthly_data_cap_gb"])
+            HotspotUsageRecord.objects.create(
+                tenant=self.t1, customer=self.customer,
+                period_start=timezone.now(), period_end=timezone.now(),
+                download_bytes=1024 ** 3, upload_bytes=0)
+
+        usage = self.status().data["usage"]
+        self.assertEqual(usage["cap_gb"], 4)
+        self.assertEqual(usage["percent_used"], 25.0)
+
+    def test_another_device_cannot_read_this_subscribers_usage(self):
+        resp = APIClient().get("/api/hotspot/status/", {
+            "t": self.t1.public_token, "mac": "FF:FF:FF:FF:FF:FF"})
+        self.assertEqual(resp.data["status"], "not_found")
+        self.assertNotIn("usage", resp.data)

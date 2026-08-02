@@ -1190,6 +1190,50 @@ class CustomerDevice(TenantScopedModel):
         return f"{self.mac_address} ({self.customer_id})"
 
 
+class ConnectionAttempt(TenantScopedModel):
+    """
+    Somebody tried to connect and could not.
+
+    Only successes were ever recorded. If twenty people mistyped a code today,
+    or a package sold for one device was being passed around a room, the
+    operator had no way to know — the customer gives up and the operator hears
+    nothing. These are the failures, with enough to act on: what was typed,
+    from which device, and why it was refused.
+
+    Kept for a fortnight by the pruning task. This is a diagnostic, not a
+    ledger, and a code somebody typed is not worth holding indefinitely.
+    """
+
+    INVALID = "invalid"
+    DEVICE_LIMIT = "device_limit"
+    BLOCKED = "blocked"
+    NO_PROVIDER = "no_provider"
+
+    OUTCOMES = (
+        (INVALID, "Code not recognised"),
+        (DEVICE_LIMIT, "Already on the most devices allowed"),
+        (BLOCKED, "Device is blocked"),
+        (NO_PROVIDER, "Portal could not be identified"),
+    )
+
+    # Truncated: long enough to see a typo against a real code, short enough
+    # not to become a store of things people typed.
+    code_tried = models.CharField(max_length=40, blank=True)
+    mac_address = models.CharField(max_length=50, blank=True)
+    outcome = models.CharField(max_length=20, choices=OUTCOMES)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["tenant", "created_at"],
+                         name="attempt_tenant_created_idx"),
+        ]
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.mac_address} — {self.outcome}"
+
+
 # =====================================================
 # PAYMENT
 # =====================================================

@@ -180,6 +180,13 @@
       letter-spacing: .1em; text-transform: uppercase; color: var(--ink-faint);
     }
 
+    .lang {
+      position: absolute; top: .75rem; right: .75rem;
+      background: rgba(255,255,255,.08); border: 1px solid var(--line);
+      color: var(--ink-soft); border-radius: .5rem; padding: .3125rem .625rem;
+      font: inherit; font-size: .6875rem; font-weight: 600; cursor: pointer;
+    }
+
     footer { text-align: center; color: var(--ink-faint); font-size: .75rem; margin-top: 1rem; }
     footer a { color: var(--accent); text-decoration: none; }
 
@@ -198,6 +205,7 @@
   </style>
 </head>
 <body>
+<button type="button" class="lang" id="langToggle">Kiswahili</button>
 
 <!-- Settings live in config.js, which is the only file to edit. -->
 <script src="config.js"></script>
@@ -211,7 +219,7 @@
         <polyline points="20 6 9 17 4 12"/>
       </svg>
     </div>
-    <h1>You're connected</h1>
+    <h1 data-i18n="connected.title">You're connected</h1>
     <p id="provider" class="provider">Your provider</p>
     <p id="sub">Your session is active. Enjoy the internet.</p>
   </div>
@@ -219,10 +227,10 @@
   <!-- Shown once the voucher is known. Hidden if the lookup fails, rather
        than showing an empty box that looks like something is broken. -->
   <div class="card" id="voucherCard">
-    <p class="card-label">Your access code</p>
+    <p class="card-label" data-i18n="connected.code">Your access code</p>
     <div class="code-row">
       <div class="code" id="code">—</div>
-      <button class="copy" id="copyBtn" type="button" aria-label="Copy access code">Copy</button>
+      <button class="copy" id="copyBtn" type="button" aria-label="Copy access code" data-i18n="connected.copy">Copy</button>
     </div>
     <p class="hint" id="voucherHint">
       Write this down. It reconnects this phone until your time runs out —
@@ -231,26 +239,26 @@
   </div>
 
   <div class="card">
-    <p class="card-label">Session</p>
+    <p class="card-label" data-i18n="connected.session">Session</p>
     <dl>
-      <div class="row"><dt>Status</dt><dd class="ok">Online</dd></div>
+      <div class="row"><dt data-i18n="connected.status">Status</dt><dd class="ok" data-i18n="connected.online">Online</dd></div>
       <div class="row" id="pkgRow" style="display:none">
-        <dt>Package</dt><dd id="pkg">—</dd>
+        <dt data-i18n="connected.package">Package</dt><dd id="pkg">—</dd>
       </div>
-      <div class="row"><dt>Time left</dt><dd id="left">$(session-time-left)</dd></div>
-      <div class="row"><dt>IP address</dt><dd>$(ip)</dd></div>
-      <div class="row"><dt>Device</dt><dd>$(mac)</dd></div>
+      <div class="row"><dt data-i18n="connected.left">Time left</dt><dd id="left">$(session-time-left)</dd></div>
+      <div class="row"><dt data-i18n="connected.ip">IP address</dt><dd>$(ip)</dd></div>
+      <div class="row"><dt data-i18n="connected.device">Device</dt><dd>$(mac)</dd></div>
     </dl>
   </div>
 
   <a class="btn btn-primary" href="$(link-redirect)">
-    Start browsing
+    <span data-i18n="connected.browse">Start browsing</span>
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
          stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
       <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
     </svg>
   </a>
-  <a class="btn btn-ghost" href="$(link-logout)">Disconnect</a>
+  <a class="btn btn-ghost" href="$(link-logout)" data-i18n="connected.logout">Disconnect</a>
 
   <div class="promo">
     <img src="smartbill.png" alt="SmartBill Solutions" width="56" height="56">
@@ -264,13 +272,14 @@
   </div>
 
   <footer>
-    <a href="$(link-status)">Session details</a>
+    <a href="$(link-status)" data-i18n="connected.details">Session details</a>
   </footer>
 
 </div>
 
 <script>
 (function () {
+  initLanguage();
   var MAC = '$(mac)';
 
   /* ── Copy, with a fallback ──────────────────────────────────
@@ -287,7 +296,7 @@
       btn.textContent = 'Copied';
       btn.classList.add('done');
       setTimeout(function () {
-        btn.textContent = 'Copy';
+        btn.textContent = t('connected.copy');
         btn.classList.remove('done');
       }, 2000);
     }
@@ -344,6 +353,15 @@
       document.getElementById('pkg').textContent = d.package;
       document.getElementById('pkgRow').style.display = 'flex';
     }
+    if (d.usage) {
+      // What the operator could always see and the person paying could not.
+      var u = d.usage;
+      document.getElementById('used').textContent =
+        humanBytes(u.used_bytes) +
+        (u.unlimited ? ' / ' + t('unlimited') : ' / ' + u.cap_gb + ' GB');
+      document.getElementById('usedRow').style.display = 'flex';
+    }
+
     if (d.expires_at) {
       var when = new Date(d.expires_at);
       if (!isNaN(when)) {

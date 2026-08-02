@@ -65,3 +65,27 @@ def prune_router_events_task(days=EVENT_RETENTION_DAYS):
     logger.info("[router-health] pruned %s router event(s) older than %s days",
                 deleted, days)
     return deleted
+
+
+ATTEMPT_RETENTION_DAYS = 14
+
+
+@shared_task
+def prune_connection_attempts_task(days=ATTEMPT_RETENTION_DAYS):
+    """
+    Drop refused-connection records past the retention window.
+
+    A diagnostic, not a ledger: it answers "is anybody struggling to get on
+    today", and a code somebody mistyped a month ago is not worth holding. It
+    also grows with every failure, and nothing else would remove a row.
+    """
+    from django.utils import timezone
+    from billing.models import ConnectionAttempt
+
+    cutoff = timezone.now() - timezone.timedelta(days=days)
+    with all_tenants():
+        deleted, _ = ConnectionAttempt.objects.all_tenants().filter(
+            created_at__lt=cutoff).delete()
+    logger.info("[attempts] pruned %s connection attempt(s) older than %s days",
+                deleted, days)
+    return deleted

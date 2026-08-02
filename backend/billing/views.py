@@ -49,7 +49,7 @@ from billing.tasks.mpesa_tasks import initiate_stk_push_task
 from django.utils import timezone
 from rest_framework import viewsets
 from rest_framework.decorators import action
-from .models import Customer, CustomerDevice, Package, Subscription,Invoice, Payment,MpesaTransaction,SystemSetting,RouterFailoverLog, HotspotUsageRecord, AccessAuditLog, Tenant
+from .models import ConnectionAttempt, Customer, CustomerDevice, Package, Subscription,Invoice, Payment,MpesaTransaction,SystemSetting,RouterFailoverLog, HotspotUsageRecord, AccessAuditLog, Tenant
 from .models import PlatformPlan, TenantSubscription, TenantInvoice, TenantPayment, TenantStatusChange
 from .models import RouterEvent, Station, TenantScopedModel, router_uptime
 from .models import ImpersonationLog
@@ -914,6 +914,26 @@ class MpesaTransactionsView(APIView):
         )
 
 
+def _record_attempt(tenant, code, mac, outcome):
+    """
+    Note a refusal, without letting the noting of it become a failure.
+
+    A portal that cannot write a diagnostic must still answer the customer, so
+    this never raises.
+    """
+    from billing.models import ConnectionAttempt
+
+    try:
+        ConnectionAttempt.objects.create(
+            tenant=tenant,
+            code_tried=(code or "")[:40],
+            mac_address=(mac or "")[:50],
+            outcome=outcome,
+        )
+    except Exception:
+        logger.warning("[attempt] could not record a %s for %s", outcome, mac)
+
+
 class HotspotVoucherValidateView(APIView):
     permission_classes = [permissions.AllowAny]
     throttle_classes = [HotspotPublicThrottle]
@@ -948,6 +968,10 @@ class HotspotVoucherValidateView(APIView):
 
         subscription = validate_voucher(code, tenant=tenant)
         if not subscription:
+            # The commonest refusal, and the one an operator most wants to see:
+            # a customer holding something that does not work, giving up, and
+            # saying nothing.
+            _record_attempt(tenant, code, mac_address, ConnectionAttempt.INVALID)
             return Response(
                 {"detail": "Invalid or expired voucher"},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -1036,6 +1060,7 @@ class HotspotVoucherValidateView(APIView):
             known = next((d for d in devices if d.mac_address == mac_address), None)
 
             if known is not None and known.blocked:
+                _record_attempt(tenant, code, mac_address, ConnectionAttempt.BLOCKED)
                 return Response(
                     {"detail": "This device has been blocked. Please speak to "
                                "your provider.",
@@ -1051,6 +1076,8 @@ class HotspotVoucherValidateView(APIView):
                 if len(devices) >= allowed:
                     # The limit, and the reason it exists. One code bought for
                     # one phone was being passed around a room.
+                    _record_attempt(
+                        tenant, code, mac_address, ConnectionAttempt.DEVICE_LIMIT)
                     return Response(
                         {
                             "detail": (
@@ -1531,6 +1558,48 @@ class ResendVoucherView(APIView):
         )
 
     
+def _subscriber_usage(customer, subscription):
+    """
+    What a subscriber has used, in the shape their own screen needs.
+
+    The operator's console has had this since the data panel landed; the person
+    who paid for the bundle could not see it anywhere. A cap of zero is
+    unlimited, and an unlimited plan still reports consumption — "how much have
+    I used" is a fair question with or without a ceiling.
+    """
+    from django.db.models import Sum
+
+    from .models import HotspotUsageRecord, PPPoEUsageRecord
+
+    cap_gb = customer.custom_data_cap_gb
+    if cap_gb is None and subscription and subscription.package_id:
+        cap_gb = subscription.package.monthly_data_cap_gb
+    cap_gb = cap_gb or 0
+
+    model = (
+        HotspotUsageRecord if customer.connection_type == "hotspot"
+        else PPPoEUsageRecord
+    )
+    rows = model.objects.all_tenants().filter(
+        tenant_id=customer.tenant_id, customer_id=customer.id)
+    since = getattr(subscription, "start_date", None)
+    if since:
+        rows = rows.filter(period_start__gte=since)
+
+    totals = rows.aggregate(down=Sum("download_bytes"), up=Sum("upload_bytes"))
+    used = (totals["down"] or 0) + (totals["up"] or 0)
+    cap_bytes = cap_gb * 1024 ** 3 if cap_gb else 0
+
+    return {
+        "used_bytes": used,
+        "cap_gb": cap_gb,
+        "unlimited": cap_gb == 0,
+        "percent_used": (
+            round(min(used / cap_bytes * 100, 999), 1) if cap_bytes else None
+        ),
+    }
+
+
 def _hotspot_customer_for(request, mac, **extra):
     """
     Resolve a hotspot subscriber from a device MAC on a public endpoint.
@@ -1608,6 +1677,7 @@ class HotspotProviderView(APIView):
             "support_phones": [
                 n for n in (tenant.support_phone, tenant.support_phone_2) if n
             ],
+            "terms_url": get_setting("HOTSPOT_TERMS_URL", default="", tenant=tenant) or None,
         })
 
 
@@ -1675,6 +1745,9 @@ class HotspotStatusView(APIView):
                 # The connected page already makes this call, so the name it
                 # should be showing costs nothing extra here.
                 "provider": customer.tenant.business_name or customer.tenant.name,
+                # What they have used, and what they are allowed. The operator
+                # could see this and the person paying for it could not.
+                "usage": _subscriber_usage(customer, subscription),
             }
         )
 class PPPoECustomerPortalView(APIView):
@@ -1729,7 +1802,13 @@ class PPPoECustomerPortalView(APIView):
             },
             "expiry_date": subscription.expiry_date,
             "server_time": timezone.now(),
+            # The operator's console has shown this since the data panel
+            # landed; the person paying for the bundle could not see it
+            # anywhere.
+            "usage": _subscriber_usage(customer, subscription),
         })
+
+
 class PPPoEPackagesView(APIView):
     """
     What a subscriber may renew onto.
@@ -1911,6 +1990,7 @@ class PppoeStatusView(APIView):
             "package_name": subscription.package.name,
             "expires_at": subscription.expiry_date,
             "status": customer.status,
+            "usage": _subscriber_usage(customer, subscription),
         })
         
 class SystemSettingsView(APIView):
@@ -1935,6 +2015,7 @@ class SystemSettingsView(APIView):
         "BLESSEDTEXTS_SENDER_ID",
         "WHATSAPP_TOKEN",
         "WHATSAPP_PHONE_ID",
+        "HOTSPOT_TERMS_URL",
     ]
 
     def get(self, request):
@@ -2761,6 +2842,46 @@ class AdminUsageAlertsView(APIView):
             sorted(nearing_limit, key=lambda x: x["percent"], reverse=True)
         )
 
+class ConnectionAttemptsView(APIView):
+    """
+    Who could not get on, and why.
+
+    An operator hears about the customer who complains. This is the rest of
+    them: the mistyped codes, the codes passed to a second phone, the blocked
+    device that keeps trying.
+    """
+    permission_classes = [IsTenantMember]
+
+    def get(self, request):
+        qs = ConnectionAttempt.objects.all()
+
+        outcome = request.GET.get("outcome")
+        if outcome in dict(ConnectionAttempt.OUTCOMES):
+            qs = qs.filter(outcome=outcome)
+
+        days = request.GET.get("days")
+        if days:
+            try:
+                qs = qs.filter(
+                    created_at__gte=timezone.now() - timezone.timedelta(days=int(days)))
+            except (TypeError, ValueError):
+                pass
+
+        paginator = StandardPagination()
+        page = paginator.paginate_queryset(qs, request)
+        return paginator.get_paginated_response([
+            {
+                "id": a.id,
+                "code_tried": a.code_tried,
+                "mac_address": a.mac_address,
+                "outcome": a.outcome,
+                "outcome_label": a.get_outcome_display(),
+                "created_at": a.created_at,
+            }
+            for a in page
+        ])
+
+
 class AdminAccessLookupView(APIView):
     permission_classes = [IsTenantMember]
 
@@ -3216,6 +3337,7 @@ class HotspotPackagesView(APIView):
             "provider": tenant.business_name or tenant.name,
             "support_phone": tenant.support_phone or "",   # kept for older portals
             "support_phones": support,
+            "terms_url": get_setting("HOTSPOT_TERMS_URL", default="", tenant=tenant) or None,
             "results": PublicPackageSerializer(packages, many=True).data,
         })
 

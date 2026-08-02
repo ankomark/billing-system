@@ -171,6 +171,19 @@
     .support-row a span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .support-row a:active { background: rgba(255,255,255,.14); }
 
+    /* Language, and the terms nobody had anywhere to put. */
+    .lang {
+      position: absolute; top: .75rem; right: .75rem;
+      background: rgba(255,255,255,.10); border: 1px solid rgba(255,255,255,.18);
+      color: #dbeafe; border-radius: .5rem; padding: .3125rem .625rem;
+      font: inherit; font-size: .6875rem; font-weight: 600; cursor: pointer;
+    }
+    .terms {
+      text-align: center; font-size: .6875rem; color: #7c8ba1;
+      margin-top: .875rem; line-height: 1.6;
+    }
+    .terms a { color: #60a5fa; text-decoration: underline; }
+
     /* ── Foot ──────────────────────────────────────────────── */
     .foot { text-align: center; color: #7c8ba1; font-size: .6875rem; margin-top: 1.125rem; line-height: 1.7; }
     .foot a { color: #60a5fa; text-decoration: none; }
@@ -184,6 +197,7 @@
   <script src="md5.js"></script>
 </head>
 <body>
+<button type="button" class="lang" id="langToggle">Kiswahili</button>
 
 <!-- Settings live in config.js, which is the only file to edit. -->
 <script src="config.js"></script>
@@ -201,7 +215,7 @@
       </svg>
     </div>
     <h1 id="provider">WiFi</h1>
-    <p>Fast, reliable internet access</p>
+    <p data-i18n="brand.tagline">Fast, reliable internet access</p>
   </div>
 
   <!-- MikroTik's own error, if it sent one -->
@@ -216,27 +230,28 @@
         id="code"
         type="text"
         placeholder="Code or M-Pesa message"
+        data-i18n-placeholder="code.placeholder"
         autocomplete="off"
         autocapitalize="characters"
         spellcheck="false"
         aria-label="Your access code or M-Pesa message"
       >
-      <button type="button" id="connectBtn">Connect</button>
+      <button type="button" id="connectBtn" data-i18n="code.connect">Connect</button>
     </div>
-    <p class="rc-hint">Already paid? Paste the whole M-Pesa message — we'll find it.</p>
+    <p class="rc-hint" data-i18n="code.hint">Already paid? Paste the whole M-Pesa message — we'll find it.</p>
     <div class="msg" id="rcMsg"></div>
   </div>
 
   <!-- ── Buy ── -->
-  <p class="sec-label">Buy a package</p>
+  <p class="sec-label" data-i18n="packages.title">Buy a package</p>
   <div class="pkg-list" id="packages">
-    <div class="empty" id="pkgEmpty">Loading packages…</div>
+    <div class="empty" id="pkgEmpty" data-i18n="packages.loading">Loading packages…</div>
   </div>
 
   <!-- Filled once the operator's numbers arrive; hidden if they have none,
        rather than showing an empty "call us" with nothing to call. -->
   <div class="support" id="support" hidden>
-    <p class="support-label">Need help?</p>
+    <p class="support-label" data-i18n="support.title">Need help?</p>
     <div class="support-row" id="supportRow"></div>
   </div>
 
@@ -257,6 +272,12 @@
        data-chap-id="$(chap-id)"
        data-chap-challenge="$(chap-challenge)"
        hidden></div>
+
+  <p class="terms" id="terms" hidden>
+    <span data-i18n="terms.before">By connecting you agree to the </span><a
+      id="termsLink" href="#" target="_blank" rel="noopener"
+      data-i18n="terms.link">terms of service</a>.
+  </p>
 
   <p class="foot">
     <span class="mac">$(mac)</span>
@@ -340,7 +361,7 @@
   function connect() {
     var code = el('code').value.trim();
     var msg = el('rcMsg');
-    if (!code) { say(msg, 'Paste your M-Pesa message, or enter your code.', 'bad'); return; }
+    if (!code) { say(msg, t('code.empty'), 'bad'); return; }
 
     el('connectBtn').disabled = true;
     el('connectBtn').textContent = '…';
@@ -348,13 +369,13 @@
 
     api('POST', '/hotspot/validate/', { code: code, mac_address: MAC, t: TENANT_TOKEN },
       function () {
-        say(msg, 'Connecting you now…', 'ok');
+        say(msg, t('code.checking'), 'ok');
         setTimeout(logIn, 600);
       },
       function (detail) {
         el('connectBtn').disabled = false;
         el('connectBtn').textContent = 'Connect';
-        say(msg, detail || "We couldn't match that. Check you pasted the whole message.", 'bad');
+        say(msg, detail || t('code.nomatch'), 'bad');
       });
   }
 
@@ -374,7 +395,8 @@
     host.innerHTML = '';
 
     if (!list.length) {
-      host.innerHTML = '<div class="empty">No packages are on sale right now. Please ask at the counter.</div>';
+      host.innerHTML = '<div class="empty"></div>';
+      host.firstChild.textContent = t('packages.none');
       return;
     }
 
@@ -408,18 +430,18 @@
     var buy = document.createElement('button');
     buy.type = 'button';
     buy.className = 'pkg-buy';
-    buy.textContent = 'Buy';
+    buy.textContent = t('buy');
     main.appendChild(buy);
 
     var pay = document.createElement('div');
     pay.className = 'pkg-pay';
     pay.innerHTML =
-      '<label>Your M-Pesa number</label>' +
+      '<label>' + t('pay.label') + '</label>' +
       '<div class="pay-row">' +
         '<input type="tel" inputmode="numeric" autocomplete="tel" placeholder="07XX XXX XXX" maxlength="15">' +
-        '<button type="button">Submit</button>' +
+        '<button type="button">' + t('pay.submit') + '</button>' +
       '</div>' +
-      '<p class="pay-note">You will get a prompt on this number. Approve it to get online.</p>' +
+      '<p class="pay-note">' + t('pay.note') + '</p>' +
       '<div class="pkg-status"></div>';
 
     card.appendChild(main);
@@ -445,7 +467,7 @@
     submit.addEventListener('click', function () {
       var phone = input.value.replace(/[^0-9+]/g, '');
       if (phone.replace(/\D/g, '').length < 9) {
-        setStatus(status, 'That does not look like a Safaricom number.', 'bad');
+        setStatus(status, t('pay.badnumber'), 'bad');
         return;
       }
       buyPackage(pkg, phone, submit, status);
@@ -479,17 +501,17 @@
     };
 
     submit.disabled = true;
-    setStatus(status, 'Sending the prompt…', 'waiting');
+    setStatus(status, t('pay.sending'), 'waiting');
 
     api('POST', '/hotspot/purchase/', { t: TENANT_TOKEN, package_id: pkg.id, phone: phone },
       function (data) {
-        setStatus(status, 'Check your phone and approve the M-Pesa prompt.', 'waiting');
+        setStatus(status, t('pay.approve'), 'waiting');
         awaitPayment(data && data.reference, data && data.poll_token, submit, status);
       },
       function (detail) {
         active = null;
         submit.disabled = false;
-        setStatus(status, detail || 'Could not start the payment. Please try again.', 'bad');
+        setStatus(status, detail || t('pay.failed'), 'bad');
       });
   }
 
@@ -524,7 +546,7 @@
       if (Date.now() - startedAt > GIVE_UP_MS) {
         stop();
         submit.disabled = false;
-        setStatus(status, 'No payment received. The prompt may have expired — you have not been charged.', 'bad');
+        setStatus(status, t('pay.expired'), 'bad');
         return;
       }
 
@@ -535,7 +557,7 @@
 
           if (data.status === 'paid') {
             stop();
-            setStatus(status, 'Paid. Connecting you now…', 'ok');
+            setStatus(status, t('pay.paid'), 'ok');
             if (data.voucher_code) {
               api('POST', '/hotspot/validate/',
                 { code: data.voucher_code, mac_address: MAC, t: TENANT_TOKEN },
@@ -555,7 +577,7 @@
           if (data.status === 'not_found') {
             stop();
             submit.disabled = false;
-            setStatus(status, 'We lost track of that payment. Please try again.', 'bad');
+            setStatus(status, t('pay.lost'), 'bad');
             return;
           }
 
@@ -616,6 +638,11 @@
         document.title = data.provider;
       }
       renderPackages((data && data.results) || []);
+      if (data && data.terms_url) {
+        var link = el('termsLink');
+        link.href = data.terms_url;
+        el('terms').hidden = false;
+      }
       // Older backends send one number under the old key.
       renderSupport((data && data.support_phones) ||
                     (data && data.support_phone ? [data.support_phone] : []));
@@ -625,15 +652,16 @@
       // cannot take. Give them something to press.
       var box = el('pkgEmpty');
       if (!box) { return; }
-      box.textContent = "Couldn't load the packages. ";
+      box.textContent = t('packages.failed');
       var again = document.createElement('button');
       again.type = 'button';
       again.className = 'pkg-buy';
-      again.textContent = 'Try again';
+      again.textContent = t('packages.retry');
       again.addEventListener('click', function () { window.location.reload(); });
       box.appendChild(again);
     });
 
+  initLanguage();
   el('code').focus();
 })();
 </script>

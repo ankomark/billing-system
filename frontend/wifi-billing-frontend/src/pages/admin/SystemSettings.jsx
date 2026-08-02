@@ -24,6 +24,7 @@ const EMPTY = {
   WHATSAPP_PHONE_ID: "",
   SUPPORT_PHONE: "",
   SUPPORT_PHONE_2: "",
+  HOTSPOT_TERMS_URL: "",
 };
 
 export default function SystemSettings() {
@@ -191,6 +192,28 @@ export default function SystemSettings() {
               <Field label="Phone Number ID"  name="WHATSAPP_PHONE_ID" value={form.WHATSAPP_PHONE_ID} onChange={handleChange} />
             </div>
             <TestBtn label="Test WhatsApp" color="violet" loading={testing === "whatsapp"} onClick={() => runTest("whatsapp")} />
+          </Section>
+
+          {/* Terms */}
+          <Section title="Terms of service">
+            <p className="text-sm text-slate-400">
+              Linked at the bottom of your captive portal, where somebody is
+              about to connect. Most places expect an internet provider to
+              present terms before service is used, and there was nowhere to
+              put them.
+            </p>
+            <Field
+              label="Terms page address"
+              name="HOTSPOT_TERMS_URL"
+              value={form.HOTSPOT_TERMS_URL}
+              onChange={handleChange}
+              placeholder="https://your-site.com/terms"
+            />
+            <p className="text-xs text-slate-500">
+              Host it where customers can reach it before they are online — the
+              same walled garden that serves the portal. Leave it empty and no
+              link is shown.
+            </p>
           </Section>
 
           {/* Support numbers */}

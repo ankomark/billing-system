@@ -52,3 +52,19 @@ export const fetchAnalytics = async ({ days, from, to, station } = {}) => {
   });
   return res.data;
 };
+
+/**
+ * The connections that did not happen.
+ *
+ * Only successes were recorded before, so an operator heard about the customer
+ * who complained and nothing about the ones who mistyped a code and gave up.
+ */
+export const fetchConnectionAttempts = async ({
+  page = 1, pageSize = 25, outcome = "", days = "",
+} = {}) => {
+  const params = { page, page_size: pageSize };
+  if (outcome) params.outcome = outcome;
+  if (days) params.days = days;
+  const res = await api.get("admin/connection-attempts/", { params });
+  return res.data;
+};

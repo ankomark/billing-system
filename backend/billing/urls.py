@@ -81,6 +81,7 @@ from .views import (
 
     # Admin — access
     AdminAccessLookupView,
+    ConnectionAttemptsView,
     AdminDeactivateAccessView,
 
     # Admin — usage
@@ -240,6 +241,8 @@ urlpatterns = [
 
     # ─── Admin — access lookup & deactivation ────────────────────────────────
     path("api/admin/access-lookup/",     AdminAccessLookupView.as_view(),    name="admin-access-lookup"),
+    # The connections that did not happen, which nothing recorded before.
+    path("api/admin/connection-attempts/", ConnectionAttemptsView.as_view(),  name="connection-attempts"),
     path("api/admin/access-deactivate/", AdminDeactivateAccessView.as_view(), name="admin-access-deactivate"),
 
     # ─── Admin — usage ───────────────────────────────────────────────────────

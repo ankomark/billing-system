@@ -29,6 +29,7 @@ const RouterHealth     = lazy(() => import("./pages/admin/RouterHealth"));
 const FailoverLogs     = lazy(() => import("./pages/admin/FailoverLogs"));
 const UsageAlerts      = lazy(() => import("./pages/admin/UsageAlerts"));
 const AccessLookup     = lazy(() => import("./pages/admin/AccessLookup"));
+const ConnectionAttempts = lazy(() => import("./pages/admin/ConnectionAttempts"));
 const Broadcast        = lazy(() => import("./pages/admin/Broadcast"));
 const SystemSettings   = lazy(() => import("./pages/admin/SystemSettings"));
 const MyAccount        = lazy(() => import("./pages/admin/MyAccount"));
@@ -162,6 +163,7 @@ export default function App() {
         {/* Admin — communications */}
         <Route path="/admin/broadcast"              element={<Admin roles={SUPER_ROLES}><Broadcast /></Admin>} />
         <Route path="/admin/access-lookup"          element={<Admin><AccessLookup /></Admin>} />
+        <Route path="/admin/failed-connections"     element={<Admin><ConnectionAttempts /></Admin>} />
 
         {/* Admin — system */}
         <Route path="/admin/settings"               element={<Admin roles={SUPER_ROLES}><SystemSettings /></Admin>} />

@@ -523,6 +523,11 @@ class SystemSettingSerializer(serializers.Serializer):
 
     # Not SystemSetting rows — these live on the tenant, and the view applies
     # them there. Declared here so one form saves everything on the page.
+    # Shown at the point of connection. Most jurisdictions expect an internet
+    # provider to present terms before somebody uses the service, and there was
+    # nowhere to put them.
+    HOTSPOT_TERMS_URL = serializers.URLField(required=False, allow_blank=True)
+
     SUPPORT_PHONE   = serializers.CharField(max_length=20, required=False, allow_blank=True)
     SUPPORT_PHONE_2 = serializers.CharField(max_length=20, required=False, allow_blank=True)
 

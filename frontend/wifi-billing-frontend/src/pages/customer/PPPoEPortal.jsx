@@ -5,6 +5,14 @@ import PPPoELiveStatus from "./PPPoEUsage";
 import PPPoEControls from "./PPPoEControls";
 import PPPoEUsageGraph from "../../components/usage/PPPoEUsageGraph";
 
+/** Bytes as something a person reads. */
+function humanBytes(bytes) {
+  const n = Number(bytes) || 0;
+  if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(2)} GB`;
+  if (n >= 1024 ** 2) return `${(n / 1024 ** 2).toFixed(1)} MB`;
+  return `${Math.round(n / 1024)} KB`;
+}
+
 export default function PPPoEPortal() {
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
@@ -107,6 +115,34 @@ export default function PPPoEPortal() {
           <p><b>Speed:</b> {data.package.download}M ↓ / {data.package.upload}M ↑</p>
           <p><b>Expires:</b> {new Date(data.expiry_date).toLocaleString()}</p>
         </div>
+
+        {data.usage && (
+          <div className="mt-6 rounded bg-gray-100 p-4 text-sm">
+            <p className="mb-2 font-semibold">Data used</p>
+            <p className="text-2xl font-bold text-gray-800">
+              {humanBytes(data.usage.used_bytes)}
+              <span className="ml-2 text-sm font-normal text-gray-500">
+                {data.usage.unlimited
+                  ? "of unlimited"
+                  : `of ${data.usage.cap_gb} GB`}
+              </span>
+            </p>
+            {!data.usage.unlimited && data.usage.percent_used != null && (
+              <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-gray-300">
+                <div
+                  className={`h-full rounded-full ${
+                    data.usage.percent_used >= 100
+                      ? "bg-red-500"
+                      : data.usage.percent_used >= 80
+                      ? "bg-amber-500"
+                      : "bg-blue-600"
+                  }`}
+                  style={{ width: `${Math.min(data.usage.percent_used, 100)}%` }}
+                />
+              </div>
+            )}
+          </div>
+        )}
 
         <PPPoELiveStatus />
         <PPPoEUsageGraph />

@@ -396,6 +396,12 @@ CELERY_BEAT_SCHEDULE = {
         "task": "billing.tasks.router_health.prune_router_events_task",
         "schedule": crontab(hour=5, minute=0),
     },
+    # Refused connections are a diagnostic, not a ledger. Without this they
+    # grow with every mistyped code and nothing ever removes a row.
+    "prune-connection-attempts": {
+        "task": "billing.tasks.router_health.prune_connection_attempts_task",
+        "schedule": crontab(hour=5, minute=10),
+    },
     "collect-pppoe-usage": {
         "task": "billing.tasks.usage_tasks.collect_pppoe_usage_snapshots",
         "schedule": crontab(minute="*/5"),
