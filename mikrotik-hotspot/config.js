@@ -222,6 +222,36 @@ function initLanguage() {
   applyLanguage();
 }
 
+/* ═══════════════════════════════════════════════════════════════════════
+   DEVICE TOKEN
+
+   Proof that this phone belongs to the account, rather than merely knowing
+   a MAC address. The backend hands one back when a code is redeemed or a
+   router lets a bound device back on, and asks for it before returning the
+   access code from /hotspot/status/ — because everyone else's MAC on a
+   shared hotspot is a scanner app away, and the endpoint cannot tell who
+   is really calling.
+
+   Kept per MAC: a phone that changes address, or a laptop that has been on
+   two accounts, should not present the wrong one. Storage can be refused
+   (private browsing, a locked-down WebView), and that is survivable — the
+   page then shows the package and time left without the code.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+function deviceTokenKey(mac) {
+  return 'portal_dt_' + String(mac || '').toUpperCase();
+}
+
+function saveDeviceToken(mac, token) {
+  if (!mac || !token) { return; }
+  try { window.localStorage.setItem(deviceTokenKey(mac), token); } catch (e) { /* fine */ }
+}
+
+function loadDeviceToken(mac) {
+  if (!mac) { return ''; }
+  try { return window.localStorage.getItem(deviceTokenKey(mac)) || ''; } catch (e) { return ''; }
+}
+
 /** Bytes as something a person reads. */
 function humanBytes(bytes) {
   var n = Number(bytes) || 0;

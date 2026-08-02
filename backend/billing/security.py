@@ -58,3 +58,49 @@ def poll_token_matches(invoice_number: str, supplied) -> bool:
     if not supplied or not invoice_number:
         return False
     return hmac.compare_digest(poll_token_for(invoice_number), str(supplied))
+
+
+# =====================================================
+# HOTSPOT DEVICE TOKEN
+# =====================================================
+
+def device_token_for(mac_address: str) -> str:
+    """
+    A secret held by a device that has proved it belongs to the account.
+
+    /hotspot/status/ answers on a MAC address supplied by the caller, and over
+    plain http on a shared network nothing can verify that the caller is that
+    device: the router knows, the API cannot. MAC addresses of everyone else on
+    the WiFi are a network-scanner app away, so asking for a stranger's status
+    returned their voucher code — a credential — along with their package and
+    what they had used.
+
+    Issued by exactly one thing: redeeming a working code. That is the only
+    step on the public surface where a caller demonstrates anything, and the
+    portal keeps what it is given and presents it back. Reconnect looks like
+    a candidate and is not — it takes the MAC on the caller's word too, so
+    issuing proof there would hand it to anyone who named a stranger's
+    address.
+
+    Derived rather than stored, like the poll token: an HMAC over the MAC needs
+    no column, no cleanup, and cannot be read out of the database.
+    """
+    import hashlib
+    import hmac
+
+    from django.conf import settings
+
+    return hmac.new(
+        settings.SECRET_KEY.encode(),
+        f"hotspot-device:{(mac_address or '').strip().upper()}".encode(),
+        hashlib.sha256,
+    ).hexdigest()[:32]
+
+
+def device_token_matches(mac_address: str, supplied) -> bool:
+    """Constant-time, so a wrong token leaks nothing by how long it took."""
+    import hmac
+
+    if not supplied or not mac_address:
+        return False
+    return hmac.compare_digest(device_token_for(mac_address), str(supplied))

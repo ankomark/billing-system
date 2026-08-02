@@ -19,7 +19,13 @@ from rest_framework.response import Response
 from rest_framework import status, permissions
 from rest_framework.exceptions import ValidationError
 from django.shortcuts import get_object_or_404
-from .security import is_trusted_mpesa_ip, poll_token_for, poll_token_matches
+from .security import (
+    device_token_for,
+    device_token_matches,
+    is_trusted_mpesa_ip,
+    poll_token_for,
+    poll_token_matches,
+)
 from billing.services.voucher_service import validate_voucher
 from billing.router_service import enable_customer_access
 from .mpesa_client import initiate_stk_push
@@ -1113,6 +1119,12 @@ class HotspotVoucherValidateView(APIView):
             {
                 "detail": "Access granted",
                 "expires_at": subscription.expiry_date,
+                # Proof, for later. This device has just presented a working
+                # code, so it has shown it belongs to the account; the portal
+                # keeps this and presents it back when asking for status, which
+                # is what distinguishes it from a phone that merely knows its
+                # MAC address.
+                "device_token": device_token_for(mac_address),
             },
             status=status.HTTP_200_OK,
         )
@@ -1725,31 +1737,39 @@ class HotspotStatusView(APIView):
 
         # 🎉 PAYMENT IS CONFIRMED + SUBSCRIPTION ACTIVE
         #
-        # The code and package come back too, so a device returning after a
-        # power cut can be shown what it is still on rather than only that it
-        # works. The voucher is already bound to this MAC, so it grants nothing
-        # to whoever is asking from this device — it is the same string the
-        # purchase SMS sent them.
-        voucher = (
-            Voucher.objects.all_tenants()
-            .filter(tenant_id=customer.tenant_id, subscription=subscription)
-            .order_by("-created_at")
-            .first()
-        )
-        return Response(
-            {
-                "status": "active",
-                "expires_at": subscription.expiry_date,
-                "voucher_code": voucher.code if voucher else None,
-                "package": getattr(subscription.package, "name", None),
-                # The connected page already makes this call, so the name it
-                # should be showing costs nothing extra here.
-                "provider": customer.tenant.business_name or customer.tenant.name,
-                # What they have used, and what they are allowed. The operator
-                # could see this and the person paying for it could not.
-                "usage": _subscriber_usage(customer, subscription),
-            }
-        )
+        # The code comes back only to a caller holding the token issued when
+        # this device redeemed it or was let back on. It used to come back to
+        # anyone who named the MAC, and this endpoint takes the MAC from the
+        # query string — over plain http nothing can check that the caller is
+        # that device, and everyone else's MAC on a shared hotspot is a
+        # scanner app away. "It is already bound to this MAC" only holds if
+        # the asker is this MAC, and nothing made that true.
+        #
+        # The package, expiry and usage stay open: a device that knows a MAC
+        # learns what plan it is on, which is worth less than the credential
+        # and is what a portal recovering from a reload needs to show.
+        body = {
+            "status": "active",
+            "expires_at": subscription.expiry_date,
+            "package": getattr(subscription.package, "name", None),
+            # The connected page already makes this call, so the name it
+            # should be showing costs nothing extra here.
+            "provider": customer.tenant.business_name or customer.tenant.name,
+            # What they have used, and what they are allowed. The operator
+            # could see this and the person paying for it could not.
+            "usage": _subscriber_usage(customer, subscription),
+        }
+
+        if device_token_matches(mac, request.GET.get("dt")):
+            voucher = (
+                Voucher.objects.all_tenants()
+                .filter(tenant_id=customer.tenant_id, subscription=subscription)
+                .order_by("-created_at")
+                .first()
+            )
+            body["voucher_code"] = voucher.code if voucher else None
+
+        return Response(body)
 class PPPoECustomerPortalView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -3255,6 +3275,13 @@ class HotspotReconnectView(APIView):
         # ✅ Re-enable access (ASYNC)
         enable_customer_task.delay(customer.id)
 
+        # Deliberately no device token here, though it would be convenient.
+        # This endpoint takes the MAC from the request body and cannot check
+        # it either, so handing out proof would let anyone who named a
+        # stranger's MAC collect a token and walk back through the gate on
+        # /hotspot/status/ with it. Redeeming a code is the only thing on the
+        # public surface that demonstrates anything, so it is the only thing
+        # that issues one.
         return Response({
             "status": "allowed",
             "expires_at": subscription.expiry_date,

@@ -330,8 +330,14 @@
     return;
   }
 
+  // The device token, if this phone has one. Without it the reply carries the
+  // package, time left and usage but not the access code — the code is a
+  // credential and the MAC in this URL is only a claim.
+  var dt = loadDeviceToken(MAC);
+
   var url = API_BASE + '/hotspot/status/?mac=' + encodeURIComponent(MAC)
-          + '&t=' + encodeURIComponent(TENANT_TOKEN);
+          + '&t=' + encodeURIComponent(TENANT_TOKEN)
+          + (dt ? '&dt=' + encodeURIComponent(dt) : '');
 
   var xhr = new XMLHttpRequest();
   xhr.open('GET', url, true);

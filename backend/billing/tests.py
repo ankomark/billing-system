@@ -25,7 +25,7 @@ from django.core.cache import cache
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import ProtectedError
 from django.db.utils import IntegrityError
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
@@ -8377,3 +8377,161 @@ class SubscriberFacingTests(TwoOperatorMixin, TestCase):
             "t": self.t1.public_token, "mac": "FF:FF:FF:FF:FF:FF"})
         self.assertEqual(resp.data["status"], "not_found")
         self.assertNotIn("usage", resp.data)
+
+
+# =====================================================
+# 49. Somebody else's MAC address
+# =====================================================
+
+class DeviceTokenTests(TwoOperatorMixin, TestCase):
+    """
+    /hotspot/status/ answers on a MAC supplied by the caller, and over plain
+    http nothing can check that the caller is that device. Everyone else's MAC
+    on a shared hotspot is a network-scanner app away, so asking about a
+    stranger returned their access code — a credential — with their package
+    and what they had used.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        d = self.data["t1"]
+        with tenant_context(self.t1):
+            self.customer = d["customer"]
+            self.customer.connection_type = "hotspot"
+            self.customer.pppoe_username = ""
+            self.customer.hotspot_username = ""
+            self.customer.save()
+
+            self.sub = d["sub"]
+            self.sub.expiry_date = timezone.now() + timezone.timedelta(days=2)
+            self.sub.status = "active"
+            self.sub.save()
+            self.sub.package.max_devices = 2
+            self.sub.package.save(update_fields=["max_devices"])
+
+            inv = self.sub.invoice
+            inv.payment_status = "paid"
+            inv.save(update_fields=["payment_status"])
+
+            Voucher.objects.create(
+                tenant=self.t1, code="WIFI-MINE01", subscription=self.sub,
+                expires_at=self.sub.expiry_date)
+
+        self.mac = "AA:BB:CC:00:00:01"
+
+    def redeem(self, mac=None):
+        return APIClient().post(
+            f"/api/hotspot/validate/?t={self.t1.public_token}",
+            {"code": "WIFI-MINE01", "mac_address": mac or self.mac},
+            format="json")
+
+    def status(self, mac=None, dt=None):
+        params = {"t": self.t1.public_token, "mac": mac or self.mac}
+        if dt is not None:
+            params["dt"] = dt
+        return APIClient().get("/api/hotspot/status/", params)
+
+    # ---- the leak ----------------------------------------------------------
+
+    def test_a_stranger_naming_the_mac_does_not_get_the_code(self):
+        """The whole point. They know the address; that is not the same thing."""
+        self.redeem()
+        self.assertNotIn("voucher_code", self.status().data)
+
+    def test_they_still_learn_it_is_active(self):
+        """A portal recovering from a reload needs this and it grants nothing."""
+        self.redeem()
+        body = self.status().data
+        self.assertEqual(body["status"], "active")
+        self.assertIn("package", body)
+        self.assertIn("usage", body)
+
+    def test_a_wrong_token_is_no_better_than_none(self):
+        self.redeem()
+        self.assertNotIn("voucher_code", self.status(dt="0" * 32).data)
+
+    def test_one_devices_token_does_not_open_another(self):
+        """Two phones on one package still do not get to read each other."""
+        first = self.redeem().data["device_token"]
+        self.redeem(mac="BB:BB:CC:00:00:02")
+        self.assertNotIn(
+            "voucher_code",
+            self.status(mac="BB:BB:CC:00:00:02", dt=first).data)
+
+    # ---- the device that paid ----------------------------------------------
+
+    def test_redeeming_a_code_hands_back_proof(self):
+        self.assertTrue(self.redeem().data["device_token"])
+
+    def test_the_device_that_redeemed_it_is_shown_it_again(self):
+        """
+        What the connected page is for: the code that reconnects this phone,
+        in front of the person who paid for it.
+        """
+        token = self.redeem().data["device_token"]
+        self.assertEqual(self.status(dt=token).data["voucher_code"], "WIFI-MINE01")
+
+    def test_the_token_is_not_the_mac_in_disguise(self):
+        """Derivable from public knowledge would be no gate at all."""
+        token = self.redeem().data["device_token"]
+        self.assertNotIn(self.mac.replace(":", "").lower(), token.lower())
+
+    def test_the_token_does_not_turn_on_capitals(self):
+        """
+        RouterOS writes a MAC in capitals and other things do not, and a token
+        that broke on the difference would fail in a way nobody could read.
+
+        Note this is the token only. Resolving a subscriber from a MAC is an
+        exact match and always has been, so a device really does have to
+        present the same spelling it registered with — not something this
+        change introduced, and not something it fixes.
+        """
+        from billing.security import device_token_for
+
+        self.assertEqual(
+            device_token_for(self.mac.lower()),
+            device_token_for(self.mac.upper()),
+        )
+
+    # ---- the way round it --------------------------------------------------
+
+    def test_reconnect_does_not_hand_out_proof(self):
+        """
+        It takes the MAC on the caller's word too, so a token from here would
+        let anyone name a stranger's address, collect one, and walk back
+        through the gate with it.
+        """
+        self.redeem()
+        resp = APIClient().post(
+            "/api/hotspot/reconnect/",
+            {"t": self.t1.public_token, "mac": self.mac}, format="json")
+        self.assertEqual(resp.data["status"], "allowed")
+        self.assertNotIn("device_token", resp.data)
+
+    def test_a_token_from_one_operator_is_worthless_at_another(self):
+        token = self.redeem().data["device_token"]
+        self.assertEqual(
+            APIClient().get("/api/hotspot/status/", {
+                "t": self.t2.public_token, "mac": self.mac, "dt": token,
+            }).data["status"],
+            "not_found")
+
+
+class SecretKeyGuardTests(SimpleTestCase):
+    """
+    The placeholder key is published in this repository, and both hotspot
+    secrets are HMACs over it and nothing else. Shipping on it is silent: the
+    site comes up, the tests pass, and every signed thing is forgeable.
+    """
+
+    SETTINGS = Path(__file__).resolve().parent.parent / "backend" / "settings.py"
+
+    def test_production_refuses_to_start_on_the_placeholder(self):
+        source = self.SETTINGS.read_text(encoding="utf-8")
+        self.assertIn("if not DEBUG and SECRET_KEY == _INSECURE_SECRET_KEY:", source)
+        self.assertIn("ImproperlyConfigured", source)
+
+    def test_the_check_names_how_to_fix_it(self):
+        """An error a deployer cannot act on gets worked around, not fixed."""
+        self.assertIn("get_random_secret_key", self.SETTINGS.read_text(encoding="utf-8"))

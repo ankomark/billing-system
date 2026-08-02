@@ -14,9 +14,37 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # 🔴 FORCE load .env from backend directory
 load_dotenv(BASE_DIR / ".env")
 
-SECRET_KEY = os.getenv("SECRET_KEY", "django-insecure-change-this-in-production")
+_INSECURE_SECRET_KEY = "django-insecure-change-this-in-production"
+
+SECRET_KEY = os.getenv("SECRET_KEY", _INSECURE_SECRET_KEY)
 
 DEBUG = os.getenv("DEBUG", "False") == "True"
+
+# Refuse to serve real traffic on the placeholder key.
+#
+# The fallback above is convenient locally and catastrophic in production,
+# because its value is public — it is committed to this repository. Everything
+# signed with it becomes forgeable by anyone who reads it: session cookies,
+# password-reset links, and both hotspot secrets, which are HMACs over this key
+# and nothing else. A forged device token reads a stranger's access code; a
+# forged poll token reads any voucher by invoice number. The gate is only as
+# real as the key behind it.
+#
+# Nothing here fails visibly. The site comes up, the tests pass, and the hole
+# is silent until somebody finds it — which is exactly the kind of mistake
+# worth spending a startup check on.
+if not DEBUG and SECRET_KEY == _INSECURE_SECRET_KEY:
+    from django.core.exceptions import ImproperlyConfigured
+
+    raise ImproperlyConfigured(
+        "SECRET_KEY is still the development placeholder, which is published "
+        "in this repository. Set SECRET_KEY in the environment before running "
+        "with DEBUG off — session cookies and the hotspot poll and device "
+        "tokens are all signed with it, and every one of them is forgeable "
+        "until you do. Generate one with:\n\n"
+        "  python -c \"from django.core.management.utils import "
+        "get_random_secret_key; print(get_random_secret_key())\"\n"
+    )
 
 ALLOWED_HOSTS = [
     h.strip() for h in os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")

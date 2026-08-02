@@ -368,7 +368,10 @@
     msg.className = 'msg';
 
     api('POST', '/hotspot/validate/', { code: code, mac_address: MAC, t: TENANT_TOKEN },
-      function () {
+      function (data) {
+        // Keep the proof. The connected page needs it to be shown the code
+        // again, and only a device that has redeemed one gets it.
+        if (data && data.device_token) { saveDeviceToken(MAC, data.device_token); }
         say(msg, t('code.checking'), 'ok');
         setTimeout(logIn, 600);
       },
@@ -561,7 +564,10 @@
             if (data.voucher_code) {
               api('POST', '/hotspot/validate/',
                 { code: data.voucher_code, mac_address: MAC, t: TENANT_TOKEN },
-                function () { setTimeout(logIn, 600); },
+                function (ok) {
+                  if (ok && ok.device_token) { saveDeviceToken(MAC, ok.device_token); }
+                  setTimeout(logIn, 600);
+                },
                 function () {
                   // Paid, but binding failed. Their code is real and the box
                   // above takes it, so say that rather than leaving them with
