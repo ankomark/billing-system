@@ -39,7 +39,15 @@ services:
       APP_DB_USER: ${POSTGRES_USER:?set POSTGRES_USER in backend/.env}
       APP_DB_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in backend/.env}
     ports:
-      - "5432:5432"
+      # Loopback only. Published as "5432:5432" this listens on every
+      # interface, and Docker writes its own iptables rules ahead of ufw — so
+      # on a public VPS the database would be reachable from the internet with
+      # a firewall that looked correctly configured. Flower already knew this;
+      # the two datastores did not.
+      #
+      # A GUI on the host still connects to localhost:5432. From anywhere else,
+      # tunnel: ssh -L 5432:localhost:5432 you@server
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       # Creates the app role without superuser. Without it the app connects as
@@ -58,7 +66,9 @@ services:
   redis:
     image: redis:7
     ports:
-      - "6379:6379"
+      # Loopback only — see postgres. Redis is worse if exposed: no password is
+      # set, because nothing outside this network was ever meant to reach it.
+      - "127.0.0.1:6379:6379"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]

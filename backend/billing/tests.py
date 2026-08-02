@@ -6393,6 +6393,54 @@ class MikrotikPortalPageTests(TestCase):
         self.assertIsNotNone(box, "the code box is gone")
         self.assertNotIn("maxlength", box.group(0))
 
+    def test_every_string_the_pages_ask_for_exists_in_both_languages(self):
+        """
+        t() falls back to English for a missing key and to the key itself for
+        one that exists in neither — so a forgotten translation is invisible
+        until a Swahili speaker is looking at a raw identifier. I shipped
+        exactly that while adding these strings: the English block took the
+        edit and the Swahili one did not, because I guessed its wording.
+        """
+        import re
+
+        config = (self.folder / "config.js").read_text(encoding="utf-8")
+
+        def block(lang):
+            # The last block carries no trailing comma.
+            m = re.search(lang + r":\s*\{(.*?)\n  \},?", config, re.S)
+            self.assertIsNotNone(m, "no " + lang + " block in config.js")
+            return set(re.findall(r"'([a-z]+\.[a-zA-Z]+|[a-z]+)':", m.group(1)))
+
+        en, sw = block("en"), block("sw")
+
+        asked = set()
+        for name in ("login.html", "alogin.html"):
+            page = (self.folder / name).read_text(encoding="utf-8")
+            # Not preceded by a word character, or createElement('div')
+            # contributes "div" — it ends in t( too.
+            asked |= set(re.findall(
+                r"""(?<![A-Za-z0-9_$])t\(['"]([^'"]+)['"]\)""", page))
+            asked |= set(re.findall(r'data-i18n(?:-ph)?="([^"]+)"', page))
+
+        self.assertTrue(asked, "no strings found — the check itself is broken")
+        self.assertEqual(asked - en, set(), "asked for but missing from English")
+        self.assertEqual(asked - sw, set(), "asked for but missing from Swahili")
+
+    def test_waiting_never_becomes_a_dead_end(self):
+        """
+        The overlay covers the page, so every path that stops has to take it
+        down again. One that does not leaves a customer watching a spinner
+        turn over a page they cannot reach, with their money already gone.
+        """
+        page = (self.folder / "login.html").read_text(encoding="utf-8")
+
+        shows = page.count("waitShow(")
+        closes = page.count("waitHide(") + page.count("waitDone(")
+        self.assertGreater(shows, 0, "the overlay is never shown")
+        self.assertGreaterEqual(
+            closes, shows,
+            "more ways in than out — some path leaves the spinner up")
+
     def test_the_router_page_sells_without_leaving_the_router(self):
         """
         Buying used to bounce to the web app: another origin, another page

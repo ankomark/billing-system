@@ -78,6 +78,49 @@
     .msg.ok   { background: #f0fdf4; color: #15803d; border: 1px solid #bbf7d0; }
     .msg.bad  { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; }
 
+    /* Waiting.
+
+       Provisioning is a real conversation with the router — the customer
+       cannot be logged in until it has heard of them — so this stands in
+       front of the page and says which part is happening. It closes itself
+       for anything that lasts: approving an M-Pesa prompt takes as long as
+       it takes, and trapping somebody behind a spinner while they look for
+       their phone helps nobody. */
+    .wait {
+      display: none; position: fixed; inset: 0; z-index: 50;
+      background: rgba(15,23,42,.72);
+      align-items: center; justify-content: center; padding: 1.5rem;
+    }
+    .wait.show { display: flex; }
+    .wait-card {
+      background: #fff; border-radius: .875rem; padding: 1.5rem 1.75rem;
+      text-align: center; max-width: 17rem; width: 100%;
+      box-shadow: 0 1rem 2.5rem rgba(0,0,0,.35);
+    }
+    .wait-spin {
+      width: 2.25rem; height: 2.25rem; margin: 0 auto .875rem;
+      border: 3px solid #e2e8f0; border-top-color: #2563eb; border-radius: 50%;
+      animation: wait-turn .7s linear infinite;
+    }
+    @keyframes wait-turn { to { transform: rotate(360deg); } }
+    .wait-tick {
+      display: none; width: 2.25rem; height: 2.25rem; margin: 0 auto .875rem;
+      border-radius: 50%; background: #16a34a;
+      align-items: center; justify-content: center;
+      animation: wait-pop .28s ease-out;
+    }
+    @keyframes wait-pop { from { transform: scale(.5); opacity: 0; } }
+    .wait.done .wait-spin { display: none; }
+    .wait.done .wait-tick { display: flex; }
+    .wait-text {
+      font-size: .875rem; font-weight: 600; color: #1e293b; margin: 0;
+      line-height: 1.45;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .wait-spin { animation-duration: 2s; }
+      .wait-tick { animation: none; }
+    }
+
     .router-error {
       background: #fef2f2; border: 1px solid #fecaca; color: #b91c1c;
       border-radius: .625rem; padding: .5rem .75rem; font-size: .75rem;
@@ -197,6 +240,19 @@
   <script src="md5.js"></script>
 </head>
 <body>
+<div class="wait" id="wait" role="status" aria-live="polite">
+  <div class="wait-card">
+    <div class="wait-spin"></div>
+    <div class="wait-tick">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff"
+           stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <polyline points="20 6 9 17 4 12"></polyline>
+      </svg>
+    </div>
+    <p class="wait-text" id="waitText"></p>
+  </div>
+</div>
+
 <button type="button" class="lang" id="langToggle">Kiswahili</button>
 
 <!-- Settings live in config.js, which is the only file to edit. -->
@@ -352,6 +408,27 @@
     el('loginForm').submit();
   }
 
+  /* ── Waiting ────────────────────────────────────────────────
+     Three states and nothing else: turning, succeeded, gone. */
+  function waitShow(text) {
+    var w = el('wait');
+    w.className = 'wait show';
+    el('waitText').textContent = text;
+  }
+
+  function waitSay(text) { el('waitText').textContent = text; }
+
+  function waitHide() { el('wait').className = 'wait'; }
+
+  /* Succeeded. Holds the tick long enough to be read, then hands over —
+     usually to the router's login form, which replaces the page. */
+  function waitDone(text, then) {
+    var w = el('wait');
+    w.className = 'wait show done';
+    el('waitText').textContent = text;
+    setTimeout(then, 700);
+  }
+
   function say(node, text, kind) {
     node.textContent = text;
     node.className = 'msg show ' + kind;
@@ -364,20 +441,22 @@
     if (!code) { say(msg, t('code.empty'), 'bad'); return; }
 
     el('connectBtn').disabled = true;
-    el('connectBtn').textContent = '…';
     msg.className = 'msg';
+    waitShow(t('wait.checking'));
 
     api('POST', '/hotspot/validate/', { code: code, mac_address: MAC, t: TENANT_TOKEN },
       function (data) {
         // Keep the proof. The connected page needs it to be shown the code
         // again, and only a device that has redeemed one gets it.
         if (data && data.device_token) { saveDeviceToken(MAC, data.device_token); }
-        say(msg, t('code.checking'), 'ok');
-        setTimeout(logIn, 600);
+        waitDone(t('wait.connected'), logIn);
       },
       function (detail) {
+        // Back to the page with the reason on it. Leaving the overlay up
+        // would hide the box they need to correct.
+        waitHide();
         el('connectBtn').disabled = false;
-        el('connectBtn').textContent = 'Connect';
+        el('connectBtn').textContent = t('code.connect');
         say(msg, detail || t('code.nomatch'), 'bad');
       });
   }
@@ -505,13 +584,19 @@
 
     submit.disabled = true;
     setStatus(status, t('pay.sending'), 'waiting');
+    waitShow(t('pay.sending'));
 
     api('POST', '/hotspot/purchase/', { t: TENANT_TOKEN, package_id: pkg.id, phone: phone },
       function (data) {
+        // Out of the way now. What follows is the customer finding their
+        // phone and typing a PIN, which takes as long as it takes — and the
+        // packages behind this are worth more to them than a spinner.
+        waitHide();
         setStatus(status, t('pay.approve'), 'waiting');
         awaitPayment(data && data.reference, data && data.poll_token, submit, status);
       },
       function (detail) {
+        waitHide();
         active = null;
         submit.disabled = false;
         setStatus(status, detail || t('pay.failed'), 'bad');
@@ -561,21 +646,25 @@
           if (data.status === 'paid') {
             stop();
             setStatus(status, t('pay.paid'), 'ok');
+            // Theirs is done; this next part is ours, and it is the one that
+            // takes a second while the router is told about them.
+            waitShow(t('wait.connecting'));
             if (data.voucher_code) {
               api('POST', '/hotspot/validate/',
                 { code: data.voucher_code, mac_address: MAC, t: TENANT_TOKEN },
                 function (ok) {
                   if (ok && ok.device_token) { saveDeviceToken(MAC, ok.device_token); }
-                  setTimeout(logIn, 600);
+                  waitDone(t('wait.connected'), logIn);
                 },
                 function () {
                   // Paid, but binding failed. Their code is real and the box
                   // above takes it, so say that rather than leaving them with
                   // a receipt and no instruction.
+                  waitHide();
                   setStatus(status, 'Paid. Enter ' + data.voucher_code + ' in the box at the top.', 'ok');
                 });
             } else {
-              setTimeout(logIn, 600);
+              waitDone(t('wait.connected'), logIn);
             }
             return;
           }
