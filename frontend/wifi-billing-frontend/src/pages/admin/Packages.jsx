@@ -116,7 +116,14 @@ export default function Packages() {
                     <tr key={p.id} className="hover:bg-white/5 transition-colors">
                       <td className="px-6 py-4 font-medium text-white">{p.name}</td>
                       <td className="px-6 py-4 text-slate-300">{p.download_speed}/{p.upload_speed} Mbps</td>
-                      <td className="px-6 py-4 text-slate-300">{p.duration_value} {p.duration_unit}</td>
+                      <td className="px-6 py-4 text-slate-300">
+                        {p.duration_value} {p.duration_unit}
+                        {p.max_devices > 1 && (
+                          <span className="ml-2 rounded bg-white/5 px-1.5 py-0.5 text-[11px] text-slate-400">
+                            {p.max_devices} devices
+                          </span>
+                        )}
+                      </td>
                       <td className="px-6 py-4 font-semibold text-white">
                         {Number(p.price).toLocaleString()}
                       </td>

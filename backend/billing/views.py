@@ -365,6 +365,7 @@ class CustomerViewSet(viewsets.ModelViewSet):
                         .order_by("-expiry_date"),
                 ),
                 "subscriptions__vouchers",
+                "devices",
             )
 
         status_filter = self.request.query_params.get("status")

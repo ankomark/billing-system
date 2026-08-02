@@ -54,7 +54,7 @@ function exportCSV(customers) {
     c.connection_type,
     identifierOf(c),
     c.status,
-    new Date(c.created_at).toLocaleDateString(),
+    new Date(c.created_at).toLocaleString(),
   ]);
   const csv = [headers, ...rows].map((r) => r.join(",")).join("\n");
   const blob = new Blob([csv], { type: "text/csv" });
@@ -317,9 +317,14 @@ export default function Customers() {
                       <td className="px-4 py-3">
                         <StatusBadge status={c.status} />
                       </td>
-                      <td className="px-4 py-3 text-slate-400 text-xs whitespace-nowrap">
-                        {new Date(c.created_at).toLocaleDateString("en-KE", {
+                      {/* The hour and minute too. "12 Aug" does not settle an
+                          argument about whether somebody was signed up before
+                          or after they paid, and that is the argument this
+                          column exists to settle. */}
+                      <td className="whitespace-nowrap px-4 py-3 text-xs text-slate-400">
+                        {new Date(c.created_at).toLocaleString("en-KE", {
                           day: "numeric", month: "short", year: "numeric",
+                          hour: "2-digit", minute: "2-digit",
                         })}
                       </td>
                       <td className="px-4 py-3">

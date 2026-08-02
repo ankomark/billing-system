@@ -886,11 +886,15 @@ class CustomerDetailSerializerTests(TestCase):
 
     def test_detail_query_count_does_not_grow_with_subscriptions(self):
         """Prefetching must keep the detail page at a fixed query count."""
-        # 3 = customer (+select_related) + subscriptions prefetch + vouchers
-        # prefetch. On Postgres add 2: the middleware sets the RLS scope on
-        # the connection at the start of the request and clears it at the end.
-        # Fixed overhead — the point of this test is that it does not grow.
-        expected = 3 + (2 if connection.vendor == "postgresql" else 0)
+        # 5 = customer (+select_related) + subscriptions prefetch + vouchers
+        # prefetch + devices prefetch + one aggregate for data used. On
+        # Postgres add 2: the middleware sets the RLS scope on the connection
+        # at the start of the request and clears it at the end.
+        #
+        # Fixed overhead — the point of this test is that it does not grow,
+        # and it earned its keep: the usage and devices panels first shipped
+        # querying per call and pushed this to ten.
+        expected = 5 + (2 if connection.vendor == "postgresql" else 0)
         with self.assertNumQueries(expected):
             self._detail()
 
@@ -903,11 +907,15 @@ class CustomerDetailSerializerTests(TestCase):
                 expires_at=timezone.now() + timezone.timedelta(days=5),
             )
 
-        # 3 = customer (+select_related) + subscriptions prefetch + vouchers
-        # prefetch. On Postgres add 2: the middleware sets the RLS scope on
-        # the connection at the start of the request and clears it at the end.
-        # Fixed overhead — the point of this test is that it does not grow.
-        expected = 3 + (2 if connection.vendor == "postgresql" else 0)
+        # 5 = customer (+select_related) + subscriptions prefetch + vouchers
+        # prefetch + devices prefetch + one aggregate for data used. On
+        # Postgres add 2: the middleware sets the RLS scope on the connection
+        # at the start of the request and clears it at the end.
+        #
+        # Fixed overhead — the point of this test is that it does not grow,
+        # and it earned its keep: the usage and devices panels first shipped
+        # querying per call and pushed this to ten.
+        expected = 5 + (2 if connection.vendor == "postgresql" else 0)
         with self.assertNumQueries(expected):
             resp = self._detail()
         self.assertEqual(len(resp.data["subscriptions"]), 5)
@@ -7612,3 +7620,130 @@ class VoucherDeviceLimitTests(TwoOperatorMixin, TestCase):
                 tenant=self.t2, customer=c2, mac_address="AA:00:00:00:00:01")
         self.allow(1)
         self.assertEqual(self.redeem("AA:00:00:00:00:01").status_code, 200)
+
+
+# =====================================================
+# 44. What they have used, and what they are allowed
+# =====================================================
+
+class DataUsageReportingTests(TwoOperatorMixin, TestCase):
+    """
+    An operator asking why a tower is saturated needs the number whether or not
+    there is a ceiling to compare it against, so an unlimited plan reports
+    consumption too.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        d = self.data["t1"]
+        self.customer = d["customer"]
+        with tenant_context(self.t1):
+            self.sub = d["sub"]
+            self.sub.start_date = timezone.now() - timezone.timedelta(days=2)
+            self.sub.expiry_date = timezone.now() + timezone.timedelta(days=5)
+            self.sub.status = "active"
+            self.sub.save()
+
+    def record(self, down, up, when=None):
+        with tenant_context(self.t1):
+            PPPoEUsageRecord.objects.create(
+                tenant=self.t1, customer=self.customer,
+                period_start=when or timezone.now(),
+                period_end=when or timezone.now(),
+                download_bytes=down, upload_bytes=up)
+
+    def usage(self):
+        resp = self.auth(self.admin1).get(f"/api/customers/{self.customer.id}/")
+        self.assertEqual(resp.status_code, 200, resp.data)
+        return resp.data["data_usage"]
+
+    def set_cap(self, gb):
+        with tenant_context(self.t1):
+            pkg = self.sub.package
+            pkg.monthly_data_cap_gb = gb
+            pkg.save(update_fields=["monthly_data_cap_gb"])
+
+    # ---- consumption -------------------------------------------------------
+
+    def test_nothing_used_reads_as_zero_not_as_missing(self):
+        u = self.usage()
+        self.assertEqual(u["used_bytes"], 0)
+        self.assertEqual(u["download_bytes"], 0)
+
+    def test_both_directions_are_counted(self):
+        self.record(3 * 1024 ** 3, 1 * 1024 ** 3)
+        u = self.usage()
+        self.assertEqual(u["download_bytes"], 3 * 1024 ** 3)
+        self.assertEqual(u["upload_bytes"], 1 * 1024 ** 3)
+        self.assertEqual(u["used_bytes"], 4 * 1024 ** 3)
+
+    def test_usage_before_this_subscription_is_not_counted(self):
+        """
+        The subscription is the thing that was sold, so it is what the
+        allowance is measured against — not the calendar month, and not
+        whatever they used on a package that has already ended.
+        """
+        self.record(9 * 1024 ** 3, 0,
+                    when=timezone.now() - timezone.timedelta(days=30))
+        self.record(1 * 1024 ** 3, 0)
+        self.assertEqual(self.usage()["used_bytes"], 1 * 1024 ** 3)
+
+    # ---- against the cap ---------------------------------------------------
+
+    def test_a_cap_of_zero_is_unlimited(self):
+        self.set_cap(0)
+        u = self.usage()
+        self.assertTrue(u["unlimited"])
+        self.assertIsNone(u["percent_used"])
+
+    def test_unlimited_still_reports_what_was_used(self):
+        """The number is the point, not the comparison."""
+        self.set_cap(0)
+        self.record(2 * 1024 ** 3, 0)
+        u = self.usage()
+        self.assertTrue(u["unlimited"])
+        self.assertEqual(u["used_bytes"], 2 * 1024 ** 3)
+
+    def test_a_cap_reports_how_much_of_it_is_gone(self):
+        self.set_cap(10)
+        self.record(2 * 1024 ** 3, 0.5 * 1024 ** 3)
+        u = self.usage()
+        self.assertFalse(u["unlimited"])
+        self.assertEqual(u["cap_gb"], 10)
+        self.assertEqual(u["percent_used"], 25.0)
+
+    def test_going_over_is_visible_rather_than_clamped_to_full(self):
+        """100% and 300% are different conversations."""
+        self.set_cap(1)
+        self.record(3 * 1024 ** 3, 0)
+        self.assertEqual(self.usage()["percent_used"], 300.0)
+
+    def test_a_customers_own_cap_beats_the_packages(self):
+        self.set_cap(10)
+        with tenant_context(self.t1):
+            self.customer.custom_data_cap_gb = 2
+            self.customer.save(update_fields=["custom_data_cap_gb"])
+        self.assertEqual(self.usage()["cap_gb"], 2)
+
+    # ---- devices -----------------------------------------------------------
+
+    def test_the_devices_panel_says_how_many_are_allowed(self):
+        with tenant_context(self.t1):
+            pkg = self.sub.package
+            pkg.max_devices = 3
+            pkg.save(update_fields=["max_devices"])
+            CustomerDevice.objects.create(
+                tenant=self.t1, customer=self.customer,
+                mac_address="AA:00:00:00:00:01")
+
+        resp = self.auth(self.admin1).get(f"/api/customers/{self.customer.id}/")
+        devices = resp.data["devices"]
+        self.assertEqual(devices["allowed"], 3)
+        self.assertEqual(len(devices["in_use"]), 1)
+        self.assertEqual(devices["in_use"][0]["mac_address"], "AA:00:00:00:00:01")
+
+    def test_another_operator_cannot_read_any_of_it(self):
+        self.assertEqual(
+            self.auth(self.admin2).get(f"/api/customers/{self.customer.id}/").status_code,
+            404)

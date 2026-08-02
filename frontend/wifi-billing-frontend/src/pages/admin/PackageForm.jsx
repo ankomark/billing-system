@@ -19,7 +19,7 @@ const DURATION_UNITS = [
 const EMPTY = {
   name: "", download_speed: "", upload_speed: "",
   duration_value: "", duration_unit: "days", price: "",
-  monthly_data_cap_gb: 0, is_hotspot: false,
+  monthly_data_cap_gb: 0, is_hotspot: false, max_devices: 1,
 };
 
 export default function PackageForm() {
@@ -49,6 +49,7 @@ export default function PackageForm() {
         price:               existing.price               ?? "",
         monthly_data_cap_gb: existing.monthly_data_cap_gb ?? 0,
         is_hotspot:          existing.is_hotspot          ?? false,
+        max_devices:         existing.max_devices         ?? 1,
       });
     }
   }, [existing]);
@@ -151,6 +152,24 @@ export default function PackageForm() {
               placeholder="0 = unlimited"
               min="0"
             />
+
+            {/* What the router is told as shared-users, and what the redeem
+                path counts against. One means the first phone to use the code
+                and only that phone. */}
+            <Field
+              label="Devices allowed"
+              type="number"
+              name="max_devices"
+              value={form.max_devices}
+              onChange={handleChange}
+              placeholder="1"
+              min="1"
+              max="20"
+            />
+            <p className="-mt-2 text-xs text-slate-500">
+              How many phones one voucher may be used on. The first devices to
+              use it claim the places; a further one is refused.
+            </p>
 
             <label className="flex items-center gap-3 cursor-pointer select-none">
               <div className="relative">

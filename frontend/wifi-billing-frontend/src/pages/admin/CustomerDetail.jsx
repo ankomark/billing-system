@@ -2,7 +2,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import toast from "react-hot-toast";
-import { ArrowLeft, Edit, Router as RouterIcon, Gift } from "lucide-react";
+import { ArrowLeft, Edit, Router as RouterIcon, Gift, Send } from "lucide-react";
 import AdminLayout from "../../components/admin/AdminLayout";
 import CompAccessModal from "../../components/admin/CompAccessModal";
 import { getUser } from "../../services/auth";
@@ -76,8 +76,10 @@ export default function CustomerDetail() {
   const handleResendVoucher = async () => {
     setActionLoading(true);
     try {
-      await resendVoucher(customer.id);
-      toast.success("Voucher sent via SMS & WhatsApp");
+      const res = await resendVoucher(customer.id);
+      // Messaging credentials belong to each operator and are optional. An
+      // operator without them sends nothing, and "sent" would be a lie.
+      toast.success(res?.detail || "Sending the code to the customer");
     } catch (err) {
       toast.error(err.response?.data?.detail || "Failed to send voucher");
     } finally {
@@ -205,6 +207,22 @@ export default function CustomerDetail() {
           </div>
         </div>
 
+        {/* Data used, against what they are allowed */}
+        <div className="rounded-xl border border-white/10 bg-slate-900/80 p-5 shadow-lg shadow-black/20">
+          <h2 className="mb-4 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">
+            Data
+          </h2>
+          <DataUsage usage={customer.data_usage} />
+        </div>
+
+        {/* Which phones are on this account */}
+        <div className="rounded-xl border border-white/10 bg-slate-900/80 p-5 shadow-lg shadow-black/20">
+          <h2 className="mb-4 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">
+            Devices
+          </h2>
+          <Devices devices={customer.devices} />
+        </div>
+
         {/* Router migration */}
         <div className="rounded-xl border border-white/10 bg-slate-900/80 shadow-lg shadow-black/20 p-5">
           <h2 className="text-[11px] font-semibold text-slate-400 uppercase tracking-[0.14em] mb-4">
@@ -284,6 +302,21 @@ export default function CustomerDetail() {
                   <span className="text-slate-500 text-xs">
                     Expires {new Date(v.expires_at).toLocaleDateString("en-KE")}
                   </span>
+                  {/* Beside the code, because this is the moment somebody asks
+                      for it again. The button at the top of the page does the
+                      same thing, but you have to know it is there and that it
+                      means this code. */}
+                  {v.is_active && (
+                    <button
+                      onClick={handleResendVoucher}
+                      disabled={actionLoading}
+                      title="Send this code to the customer"
+                      aria-label={`Send ${v.code} to ${customer.full_name}`}
+                      className="rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-blue-500/10 hover:text-blue-300 disabled:opacity-40"
+                    >
+                      <Send size={14} />
+                    </button>
+                  )}
                 </div>
               </div>
             ))}
@@ -299,6 +332,127 @@ function InfoRow({ label, value }) {
     <div>
       <p className="text-slate-500 text-xs mb-0.5">{label}</p>
       <p className="font-medium text-white capitalize">{value || "—"}</p>
+    </div>
+  );
+}
+
+/**
+ * How much they have used, and how much they are allowed.
+ *
+ * An unlimited plan still shows the number. An operator asking why one
+ * subscriber is saturating a tower needs to see consumption whether or not
+ * there is a ceiling to compare it against.
+ */
+function DataUsage({ usage }) {
+  if (!usage) return <p className="text-sm text-slate-500">No usage recorded yet.</p>;
+
+  const gb = (bytes) => (bytes || 0) / 1024 ** 3;
+  const fmt = (bytes) => {
+    const g = gb(bytes);
+    if (g >= 1) return `${g.toFixed(2)} GB`;
+    const mb = (bytes || 0) / 1024 ** 2;
+    if (mb >= 1) return `${mb.toFixed(1)} MB`;
+    return `${((bytes || 0) / 1024).toFixed(0)} KB`;
+  };
+
+  const pct = usage.percent_used;
+  const over = pct != null && pct >= 100;
+  const near = pct != null && pct >= 80 && !over;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-baseline justify-between gap-3">
+        <p className="text-2xl font-bold text-white">{fmt(usage.used_bytes)}</p>
+        <p className="text-sm text-slate-400">
+          {usage.unlimited ? "of unlimited" : `of ${usage.cap_gb} GB`}
+        </p>
+      </div>
+
+      {!usage.unlimited && (
+        <>
+          <div
+            className="h-2 w-full overflow-hidden rounded-full bg-white/10"
+            role="progressbar"
+            aria-valuenow={Math.min(pct ?? 0, 100)}
+            aria-valuemin={0}
+            aria-valuemax={100}
+          >
+            <div
+              className={`h-full rounded-full ${
+                over ? "bg-red-500" : near ? "bg-amber-500" : "bg-blue-500"
+              }`}
+              style={{ width: `${Math.min(pct ?? 0, 100)}%` }}
+            />
+          </div>
+          <p className={`text-xs ${over ? "text-red-300" : near ? "text-amber-300" : "text-slate-500"}`}>
+            {pct != null ? `${pct}% used` : "—"}
+            {over && " · over their allowance"}
+          </p>
+        </>
+      )}
+
+      <div className="flex gap-6 border-t border-white/5 pt-3 text-xs text-slate-500">
+        <span>Down <span className="text-slate-300">{fmt(usage.download_bytes)}</span></span>
+        <span>Up <span className="text-slate-300">{fmt(usage.upload_bytes)}</span></span>
+      </div>
+
+      {usage.since && (
+        <p className="text-[11px] text-slate-600">
+          Since this subscription started,{" "}
+          {new Date(usage.since).toLocaleString("en-KE", {
+            day: "numeric", month: "short", hour: "2-digit", minute: "2-digit",
+          })}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The phones on this account, against what the package allows.
+ *
+ * "Already in use on 2 devices" is what a third phone is told, so the operator
+ * on the line to that customer needs to be looking at the same thing.
+ */
+function Devices({ devices }) {
+  if (!devices) return null;
+  const used = devices.in_use ?? [];
+  const full = used.length >= devices.allowed;
+
+  return (
+    <div className="space-y-3">
+      <p className="text-sm">
+        <span className={`font-semibold ${full ? "text-amber-300" : "text-white"}`}>
+          {used.length} of {devices.allowed}
+        </span>
+        <span className="text-slate-500">
+          {" "}device{devices.allowed === 1 ? "" : "s"} used
+        </span>
+      </p>
+
+      {used.length === 0 ? (
+        <p className="text-sm text-slate-500">
+          Nothing has connected yet. The first phone to use the code claims a
+          place.
+        </p>
+      ) : (
+        <ul className="space-y-2">
+          {used.map((d) => (
+            <li
+              key={d.mac_address}
+              className="flex items-baseline justify-between gap-3 border-b border-white/5 pb-2 last:border-0 last:pb-0"
+            >
+              <code className="font-mono text-xs text-slate-300">{d.mac_address}</code>
+              <span className="whitespace-nowrap text-[11px] text-slate-500">
+                since{" "}
+                {new Date(d.first_seen).toLocaleString("en-KE", {
+                  day: "numeric", month: "short", hour: "2-digit", minute: "2-digit",
+                })}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

@@ -121,13 +121,115 @@ class CustomerDetailSerializer(CustomerSerializer):
     router_name   = serializers.SerializerMethodField()
     subscriptions = CustomerSubscriptionSerializer(many=True, read_only=True)
     vouchers      = serializers.SerializerMethodField()
+    devices       = serializers.SerializerMethodField()
+    data_usage    = serializers.SerializerMethodField()
 
     class Meta(CustomerSerializer.Meta):
         fields = CustomerSerializer.Meta.fields + [
             "router_name",
             "subscriptions",
             "vouchers",
+            "devices",
+            "data_usage",
         ]
+
+    @staticmethod
+    def _current_subscription(obj):
+        """
+        The subscription in force, chosen from what the view already fetched.
+
+        Deliberately not a query. `obj.subscriptions.filter(...)` on a
+        prefetched manager ignores the prefetch and goes back to the database
+        — which is how two convenience lookups here turned a fixed-cost detail
+        page into five extra queries, caught by the test that exists to stop
+        exactly that.
+        """
+        subs = list(obj.subscriptions.all())   # prefetched, already ordered
+        if not subs:
+            return None
+        return next((s for s in subs if s.status == "active"), subs[0])
+
+    def get_devices(self, obj):
+        """
+        Which phones are on this account, and how many the package allows.
+
+        Worth showing plainly: "already in use on 2 devices" is the answer a
+        subscriber gets when a third tries, and the operator on the phone to
+        them needs to see the same thing.
+        """
+        subscription = self._current_subscription(obj)
+        allowed = 1
+        if subscription and subscription.package_id:
+            allowed = max(1, getattr(subscription.package, "max_devices", 1) or 1)
+
+        # Prefetched; sorted here rather than by the database, which would be
+        # a second query per customer.
+        devices = sorted(obj.devices.all(), key=lambda d: d.first_seen)
+        return {
+            "allowed": allowed,
+            "in_use": [
+                {
+                    "mac_address": d.mac_address,
+                    "first_seen": d.first_seen,
+                    "last_seen": d.last_seen,
+                }
+                for d in devices
+            ],
+        }
+
+    def get_data_usage(self, obj):
+        """
+        What they have used, against what they are allowed.
+
+        A cap of 0 means unlimited, and an unlimited plan still wants the
+        number — an operator asking why one subscriber is saturating a tower
+        needs to see consumption whether or not there is a ceiling to compare
+        it against.
+
+        Counted from the start of the current subscription rather than the
+        calendar month: the subscription is the thing that was sold.
+        """
+        from django.db.models import Sum
+
+        from .models import HotspotUsageRecord, PPPoEUsageRecord
+
+        subscription = self._current_subscription(obj)
+
+        cap_gb = obj.custom_data_cap_gb
+        if cap_gb is None and subscription and subscription.package_id:
+            cap_gb = subscription.package.monthly_data_cap_gb
+        cap_gb = cap_gb or 0
+
+        model = (
+            HotspotUsageRecord if obj.connection_type == "hotspot"
+            else PPPoEUsageRecord
+        )
+        rows = model.objects.all_tenants().filter(
+            tenant_id=obj.tenant_id, customer_id=obj.id)
+        since = getattr(subscription, "start_date", None)
+        if since:
+            rows = rows.filter(period_start__gte=since)
+
+        # The one query this serializer adds, and it is a fixed one: summing in
+        # the database beats fetching every usage row to add them up here.
+        totals = rows.aggregate(
+            down=Sum("download_bytes"), up=Sum("upload_bytes"))
+        down = totals["down"] or 0
+        up = totals["up"] or 0
+        used = down + up
+
+        cap_bytes = cap_gb * 1024 ** 3 if cap_gb else 0
+        return {
+            "download_bytes": down,
+            "upload_bytes": up,
+            "used_bytes": used,
+            "cap_gb": cap_gb,          # 0 means unlimited
+            "unlimited": cap_gb == 0,
+            "percent_used": (
+                round(min(used / cap_bytes * 100, 999), 1) if cap_bytes else None
+            ),
+            "since": since,
+        }
 
     def get_router_name(self, obj):
         return obj.router.name if obj.router_id else None
