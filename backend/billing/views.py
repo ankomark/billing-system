@@ -1588,18 +1588,13 @@ def _subscriber_usage(customer, subscription):
         cap_gb = subscription.package.monthly_data_cap_gb
     cap_gb = cap_gb or 0
 
-    model = (
-        HotspotUsageRecord if customer.connection_type == "hotspot"
-        else PPPoEUsageRecord
-    )
-    rows = model.objects.all_tenants().filter(
-        tenant_id=customer.tenant_id, customer_id=customer.id)
-    since = getattr(subscription, "start_date", None)
-    if since:
-        rows = rows.filter(period_start__gte=since)
+    # Through the shared reader, so this and the cap check can never disagree.
+    # They were two separate sums of the same thing, and the way that drift
+    # shows up is somebody being cut off while their own screen says they have
+    # data left.
+    from .services.usage import usage_since
 
-    totals = rows.aggregate(down=Sum("download_bytes"), up=Sum("upload_bytes"))
-    used = (totals["down"] or 0) + (totals["up"] or 0)
+    used = usage_since(customer, getattr(subscription, "start_date", None))
     cap_bytes = cap_gb * 1024 ** 3 if cap_gb else 0
 
     return {
@@ -2348,9 +2343,33 @@ from billing.router_service import get_all_pppoe_sessions
 from billing.models import RouterDevice, Customer
       
 class AdminPPPoESessionsView(APIView):
+    """
+    Who is connected right now, asked of the hardware itself.
+
+    Cached for a few seconds per operator. The page polls this every ten
+    seconds and the answer costs a conversation with every router the operator
+    owns — so two people watching it doubled the load on their network
+    equipment, a third tripled it, and a tab left open on a wall display
+    carried on all night. The cache is shorter than the poll interval, so a
+    single viewer still sees fresh data; what it removes is the same question
+    being asked of the same routers several times at once.
+    """
+
     permission_classes = [IsTenantMember]
 
+    # Under the 10s the dashboard polls at, so one viewer is never served
+    # something staler than they would have got anyway.
+    CACHE_SECONDS = 8
+
     def get(self, request):
+        from django.core.cache import cache
+
+        tenant_id = getattr(request.user, "tenant_id", None)
+        cache_key = f"pppoe-sessions:{tenant_id}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return Response(cached)
+
         # Pre-load all PPPoE customers into a dict for O(1) lookup per session.
         # Without this, the original code fired one DB query per active PPPoE
         # session (N+1): with 300 sessions = 300 individual SELECT queries.
@@ -2384,6 +2403,7 @@ class AdminPPPoESessionsView(APIView):
                     "tx_bytes": s.get("tx_bytes", 0),
                 })
 
+        cache.set(cache_key, data, self.CACHE_SECONDS)
         return Response(data)
     
 class AdminDisconnectPPPoEView(APIView):
@@ -4035,6 +4055,41 @@ class RouterEventsView(APIView):
         for e in events:
             by_router.setdefault(e.router_id, []).append(e)
 
+        # Uptime needs every transition in the window, not the 500 most recent
+        # kept for display, and it needs the last one before the window to know
+        # which state the router started in. Both are loaded here for all the
+        # routers at once: router_uptime fetches its own otherwise, which was
+        # two queries per router and — since it is called again for the
+        # per-router list below — four in total, on a page the dashboard polls
+        # every ten seconds. An operator with a dozen boxes was paying fifty
+        # queries for a number that comes out of rows already in memory.
+        uptime_events = {}
+        for e in (
+            RouterEvent.objects.filter(router__in=routers, created_at__gte=since)
+            .order_by("created_at")
+            .only("router_id", "kind", "created_at")
+        ):
+            uptime_events.setdefault(e.router_id, []).append(e)
+
+        # DISTINCT ON is PostgreSQL's, which is what this runs on — one row per
+        # router, the newest before the window.
+        prior_events = {
+            e.router_id: e
+            for e in (
+                RouterEvent.objects.filter(router__in=routers, created_at__lt=since)
+                .order_by("router_id", "-created_at")
+                .distinct("router_id")
+                .only("router_id", "kind", "created_at")
+            )
+        }
+
+        def availability_for(router):
+            return router_uptime(
+                router, since,
+                events=uptime_events.get(router.id, []),
+                prior=prior_events.get(router.id),
+            )
+
         # Rolled up per site. A router-by-router list answers "is this box up";
         # an operator with two towns is usually asking "is Kilifi up", which is
         # a different question and was not answerable before.
@@ -4050,7 +4105,7 @@ class RouterEventsView(APIView):
                 "outages": 0,
                 "_uptimes": [],
             })
-            availability = router_uptime(r, since)
+            availability = availability_for(r)
             bucket["routers"] += 1
             bucket["routers_offline"] += 0 if r.is_online else 1
             bucket["downtime_seconds"] += availability["downtime_seconds"]
@@ -4080,7 +4135,7 @@ class RouterEventsView(APIView):
                     "is_online": r.is_online,
                     "last_seen": r.last_seen,
                     "last_error": r.last_error,
-                    "availability": router_uptime(r, since),
+                    "availability": availability_for(r),
                     "events": [
                         {
                             "kind": e.kind,

@@ -8917,3 +8917,483 @@ class RouterFlapTests(TwoOperatorMixin, TestCase):
             run_auto_failover_task()
 
         self.assertEqual(move.delay.call_count, 1)
+
+
+# =====================================================
+# 52. Configuration that fails silently
+# =====================================================
+
+class ProductionGuardTests(SimpleTestCase):
+    """
+    Two keys whose absence is invisible. Nothing errors, every test passes,
+    and the hole waits to be found by somebody else.
+    """
+
+    SETTINGS = Path(__file__).resolve().parent.parent / "backend" / "settings.py"
+
+    def source(self):
+        return self.SETTINGS.read_text(encoding="utf-8")
+
+    def test_the_placeholder_secret_key_is_refused(self):
+        self.assertIn("if not DEBUG and SECRET_KEY == _INSECURE_SECRET_KEY:", self.source())
+
+    def test_a_missing_field_encryption_key_is_refused(self):
+        """
+        Unset, EncryptedCharField stores plaintext by design — right for
+        development, and in production it puts every operator's router admin
+        password in clear text in a database that is copied offsite nightly.
+        """
+        self.assertIn("if not DEBUG and not FIELD_ENCRYPTION_KEY:", self.source())
+
+    def test_both_checks_say_how_to_fix_themselves(self):
+        """An error a deployer cannot act on gets worked around, not fixed."""
+        source = self.source()
+        self.assertIn("get_random_secret_key", source)
+        self.assertIn("Fernet.generate_key", source)
+
+    def test_neither_check_fires_in_development(self):
+        """A guard that stops the test suite is a guard nobody keeps."""
+        source = self.source()
+        self.assertEqual(source.count("if not DEBUG and"), 2)
+
+
+class ScheduledWorkTests(SimpleTestCase):
+    """
+    A periodic task that is written, tested and never added to the schedule
+    does nothing at all, and looks entirely healthy doing it — no error, no
+    log line, just a number that stays zero.
+
+    collect_hotspot_usage_snapshots was exactly that: every hotspot cap
+    compared against zero bytes, and the usage figure shown to subscribers was
+    empty for everybody.
+    """
+
+    def test_every_periodic_task_is_actually_scheduled(self):
+        import re
+
+        from django.conf import settings
+
+        tasks_dir = Path(__file__).resolve().parent / "tasks"
+        scheduled = {
+            entry["task"] for entry in settings.CELERY_BEAT_SCHEDULE.values()
+        }
+
+        # Dispatched by other code rather than by the clock. Every one of
+        # these has a .delay() somewhere that is not a test.
+        ON_DEMAND = {
+            "migrate_single_customer_task", "enable_customer_task",
+            "disable_customer_task", "send_sms_task", "stk_push_task",
+            "notify_customer_task", "send_whatsapp_task",
+            "notify_admin_task", "initiate_stk_push_task",
+            "dispatch_broadcast_task", "ensure_customer_access_task",
+            "disconnect_pppoe_task",
+        }
+
+        # Off on purpose, with the reason written down. This is the difference
+        # between a decision and an oversight, and the whole point of the test
+        # is that the second one stops being invisible.
+        DELIBERATELY_OFF = {
+            # Cutting a paying customer off automatically is a policy choice,
+            # not a default. Note the consequence while it stays off: caps are
+            # sold, shown on the dashboard and now shown to subscribers, and
+            # nothing enforces them.
+            "enforce_usage_caps",
+        }
+
+        unscheduled = []
+        for path in sorted(tasks_dir.glob("*.py")):
+            source = path.read_text(encoding="utf-8")
+            for name in re.findall(r"@shared_task[^\n]*\n(?:[^\n]*\n)*?def (\w+)", source):
+                if name in ON_DEMAND or name in DELIBERATELY_OFF:
+                    continue
+                dotted = f"billing.tasks.{path.stem}.{name}"
+                if dotted not in scheduled:
+                    unscheduled.append(dotted)
+
+        self.assertEqual(
+            unscheduled, [],
+            "written but never scheduled — add a CELERY_BEAT_SCHEDULE entry, "
+            "or name it in ON_DEMAND or DELIBERATELY_OFF with the reason")
+
+    def test_nothing_hides_in_the_exemption_list(self):
+        """
+        ON_DEMAND is only honest if something really does dispatch each one.
+        Otherwise it becomes the place unscheduled tasks go to stop failing
+        this test, which is worse than not having the test.
+        """
+        import re
+
+        root = Path(__file__).resolve().parent
+        source = "\n".join(
+            p.read_text(encoding="utf-8")
+            for p in root.rglob("*.py")
+            if p.name != "tests.py"
+        )
+
+        names = re.search(
+            r"ON_DEMAND = \{(.*?)\}",
+            Path(__file__).read_text(encoding="utf-8"), re.S).group(1)
+
+        for name in re.findall(r'"(\w+)"', names):
+            self.assertRegex(
+                source, name + r"\.(delay|apply_async|s)\(",
+                name + " is exempt as on-demand but nothing dispatches it")
+
+    def test_the_two_usage_collectors_do_not_run_together(self):
+        """
+        Both walk every router of every operator. Starting them on the same
+        minute means two sets of connections to the same hardware at once, for
+        no reason — they are independent.
+        """
+        from django.conf import settings
+
+        schedule = settings.CELERY_BEAT_SCHEDULE
+        pppoe = schedule["collect-pppoe-usage"]["schedule"]
+        hotspot = schedule["collect-hotspot-usage"]["schedule"]
+        self.assertEqual(pppoe.minute & hotspot.minute, set())
+
+
+# =====================================================
+# 53. Pages that stay the same speed as the business grows
+# =====================================================
+
+class ListQueryGrowthTests(TwoOperatorMixin, TestCase):
+    """
+    A list view that runs one extra query per row is invisible on a
+    development database with three of them, and is the whole page at five
+    hundred. The count, not the timing, is the thing to assert — timing on a
+    laptop tells you nothing about a shared box in Germany.
+
+    Each of these compares a small page against a larger one. Equal counts
+    mean the work is bounded by the query, not the result.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+
+    def make_customers(self, n, start=0):
+        with tenant_context(self.t1):
+            for i in range(start, start + n):
+                Customer.objects.create(
+                    tenant=self.t1, full_name=f"Grower {i}",
+                    phone=f"25476{i:07d}", connection_type="hotspot",
+                    hotspot_username=f"AA:BB:CC:00:{i // 256:02X}:{i % 256:02X}",
+                    status="active")
+
+    def count_for(self, url, user=None):
+        client = self.auth(user or self.admin1)
+        client.get(url)                      # warm anything cached per-process
+        with CaptureQueriesContext(connection) as ctx:
+            resp = client.get(url)
+        self.assertEqual(resp.status_code, 200, url)
+        return len(ctx)
+
+    def assert_flat(self, url):
+        self.make_customers(5)
+        few = self.count_for(url)
+        self.make_customers(25, start=100)
+        many = self.count_for(url)
+        self.assertEqual(
+            few, many,
+            f"{url} ran {few} queries for 5 customers and {many} for 30 — "
+            f"that is a query per row, and it will be the whole page at 500")
+
+    def test_the_customer_list_does_not_grow(self):
+        """The page an operator has open all day."""
+        self.assert_flat("/api/customers/?page=1&page_size=50")
+
+    def test_the_customer_list_does_not_grow_when_filtered(self):
+        """Filtering is what they actually do, and it takes a different path."""
+        self.assert_flat("/api/customers/?connection_type=hotspot&page_size=50")
+
+    def test_searching_customers_does_not_grow(self):
+        self.assert_flat("/api/customers/?search=Grower&page_size=50")
+
+    def test_unpaid_invoices_does_not_grow(self):
+        self.assert_flat("/api/dashboard/invoices/unpaid/")
+
+    def test_the_mpesa_ledger_does_not_grow(self):
+        with tenant_context(self.t1):
+            for i in range(30):
+                MpesaTransaction.objects.create(
+                    tenant=self.t1, phone_number=f"25471{i:07d}",
+                    amount=50, mpesa_receipt=f"RCT{i:06d}",
+                    account_reference=f"INV-{i}", status="success",
+                    raw_payload={})
+        first = self.count_for("/api/mpesa/transactions/?page_size=10")
+        second = self.count_for("/api/mpesa/transactions/?page_size=30")
+        self.assertEqual(first, second)
+
+    def test_failed_connections_does_not_grow(self):
+        with tenant_context(self.t1):
+            for i in range(30):
+                ConnectionAttempt.objects.create(
+                    tenant=self.t1, code_tried=f"WIFI-{i:06d}",
+                    mac_address=f"AA:00:00:00:{i // 256:02X}:{i % 256:02X}",
+                    outcome=ConnectionAttempt.INVALID)
+        first = self.count_for("/api/admin/connection-attempts/?page_size=10")
+        second = self.count_for("/api/admin/connection-attempts/?page_size=30")
+        self.assertEqual(first, second)
+
+    def test_router_health_does_not_grow_with_routers(self):
+        """Twenty operators with a few routers each is the shape of this."""
+        url = "/api/admin/routers/events/"
+        before = self.count_for(url)
+        with tenant_context(self.t1):
+            for i in range(8):
+                RouterDevice.objects.create(
+                    tenant=self.t1, name=f"r{i}", ip_address=f"10.9.0.{i + 1}",
+                    username="a", password="p", is_active=True)
+        after = self.count_for(url)
+        self.assertEqual(
+            before, after,
+            f"router health ran {before} queries and then {after} — a query "
+            f"per router, and every operator has several")
+
+
+class LiveSessionsLoadTests(TwoOperatorMixin, TestCase):
+    """
+    The live sessions page polls every ten seconds and each answer costs a
+    conversation with every router the operator owns. Nothing stopped two
+    people watching it from doubling the load on their network hardware.
+    """
+
+    URL = "/api/admin/pppoe/sessions/"
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        with tenant_context(self.t1):
+            self.router = RouterDevice.objects.create(
+                tenant=self.t1, name="r1", ip_address="10.7.0.1",
+                username="a", password="p", is_active=True)
+
+    def test_watchers_share_one_conversation_with_the_hardware(self):
+        with patch("billing.views.get_all_pppoe_sessions", return_value=[]) as ask:
+            self.auth(self.admin1).get(self.URL)
+            # One conversation per router this operator owns — that is the
+            # irreducible cost of asking the hardware who is connected.
+            alone = ask.call_count
+            self.assertGreater(alone, 0)
+
+            self.auth(self.admin1).get(self.URL)
+            self.auth(self.admin1).get(self.URL)
+
+        self.assertEqual(
+            ask.call_count, alone,
+            "two more viewers cost two more rounds of connections to the same "
+            "routers, which is what a wall display left open does all night")
+
+    def test_the_answer_is_still_the_answer(self):
+        rows = [{"username": "u1", "ip_address": "10.0.0.5", "uptime": "1h",
+                 "rx_bytes": 10, "tx_bytes": 20}]
+        with patch("billing.views.get_all_pppoe_sessions", return_value=rows):
+            resp = self.auth(self.admin1).get(self.URL)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data[0]["username"], "u1")
+
+    def test_one_operator_is_never_served_anothers_sessions(self):
+        """A cache keyed carelessly is a cross-tenant leak with a timer on it."""
+        with patch("billing.views.get_all_pppoe_sessions",
+                   return_value=[{"username": "t1-secret"}]):
+            self.auth(self.admin1).get(self.URL)
+
+        with patch("billing.views.get_all_pppoe_sessions", return_value=[]):
+            resp = self.auth(self.admin2).get(self.URL)
+
+        self.assertEqual(
+            [r["username"] for r in resp.data], [],
+            "the other operator was served a cached answer that was not theirs")
+
+
+# =====================================================
+# 54. Rolling usage up without changing the answer
+# =====================================================
+
+class UsageRollupTests(TwoOperatorMixin, TestCase):
+    """
+    One raw row per subscriber per five minutes is 2.88 million a day at ten
+    thousand subscribers. The daily rollup of the same information is ten
+    thousand — but only if it is the same information, which is what these
+    check. A rollup that quietly disagrees with the raw rows would show a
+    customer one number and cut them off against another.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        with tenant_context(self.t1):
+            self.customer = self.data["t1"]["customer"]
+            self.customer.connection_type = "pppoe"
+            self.customer.pppoe_username = "roll1"
+            self.customer.save()
+
+        self.today = timezone.localdate(timezone.now())
+        self.yesterday = self.today - timezone.timedelta(days=1)
+
+    def add_raw(self, day, down, up, hour=12):
+        when = timezone.make_aware(
+            timezone.datetime.combine(day, timezone.datetime.min.time()),
+            timezone.get_current_timezone()) + timezone.timedelta(hours=hour)
+        with tenant_context(self.t1):
+            PPPoEUsageRecord.objects.create(
+                tenant=self.t1, customer=self.customer,
+                period_start=when, period_end=when,
+                download_bytes=down, upload_bytes=up)
+
+    def roll(self, day=None):
+        from billing.services.usage import roll_up_day
+        return roll_up_day(day or self.yesterday)
+
+    def used(self, since):
+        from billing.services.usage import usage_since
+        return usage_since(self.customer, since)
+
+    def midnight(self, day):
+        return timezone.make_aware(
+            timezone.datetime.combine(day, timezone.datetime.min.time()),
+            timezone.get_current_timezone())
+
+    # ---- the rollup says what the raw rows said -----------------------------
+
+    def test_a_rolled_day_totals_what_its_raw_rows_totalled(self):
+        self.add_raw(self.yesterday, 1000, 500, hour=3)
+        self.add_raw(self.yesterday, 2000, 300, hour=9)
+        self.roll()
+
+        with tenant_context(self.t1):
+            row = UsageRecord.objects.get(customer=self.customer, date=self.yesterday)
+        self.assertEqual(row.rx_bytes, 3000)
+        self.assertEqual(row.tx_bytes, 800)
+
+    def test_the_total_is_the_same_before_and_after_rolling(self):
+        """The whole point. A different number here is a customer cut off
+        against a figure their own screen never showed them."""
+        self.add_raw(self.yesterday, 4000, 1000)
+        self.add_raw(self.today, 500, 250)
+        since = self.midnight(self.yesterday)
+
+        before = self.used(since)
+        self.roll()
+        after = self.used(since)
+
+        self.assertEqual(before, 5750)
+        self.assertEqual(before, after)
+
+    def test_rolling_twice_does_not_double_anything(self):
+        """A task that cannot be safely re-run is one nobody dares re-run."""
+        self.add_raw(self.yesterday, 1000, 0)
+        self.roll()
+        self.roll()
+
+        with tenant_context(self.t1):
+            self.assertEqual(
+                UsageRecord.objects.filter(customer=self.customer).count(), 1)
+        self.assertEqual(self.used(self.midnight(self.yesterday)), 1000)
+
+    def test_a_late_arriving_row_is_picked_up_on_the_next_run(self):
+        """A collector retrying past midnight adds to a day already rolled."""
+        self.add_raw(self.yesterday, 1000, 0)
+        self.roll()
+        self.add_raw(self.yesterday, 500, 0, hour=23)
+        self.roll()
+        self.assertEqual(self.used(self.midnight(self.yesterday)), 1500)
+
+    # ---- the edges ---------------------------------------------------------
+
+    def test_today_is_never_rolled_up(self):
+        """It is not over. Rolling it would freeze a number still moving."""
+        self.add_raw(self.today, 900, 100)
+        self.roll(self.today)
+        self.assertEqual(self.used(self.midnight(self.today)), 1000)
+
+    def test_a_window_starting_mid_day_does_not_charge_for_the_morning(self):
+        """
+        A subscription starts when it is bought, not at midnight. Taking the
+        whole of that day from the rollup bills somebody for traffic from
+        before they paid.
+        """
+        self.add_raw(self.yesterday, 8000, 0, hour=6)    # before they bought
+        self.add_raw(self.yesterday, 1000, 0, hour=18)   # after
+        self.roll()
+
+        bought_at = self.midnight(self.yesterday) + timezone.timedelta(hours=12)
+        self.assertEqual(self.used(bought_at), 1000)
+
+    def test_an_unrolled_day_still_counts(self):
+        """
+        The rollup runs at 01:20, so between midnight and then yesterday has
+        none. Treating a missing rollup as a missing day dropped a full day
+        from everybody's total for eighty minutes every night — under-reporting
+        to the customer and under-enforcing every cap.
+        """
+        self.add_raw(self.yesterday, 4000, 1000)
+        # deliberately not rolled
+        self.assertEqual(self.used(self.midnight(self.yesterday)), 5000)
+
+    def test_a_day_is_never_counted_from_both_sources(self):
+        """Raw rows survive the rollup, so double counting is the other risk."""
+        self.add_raw(self.yesterday, 4000, 1000)
+        self.roll()
+        with tenant_context(self.t1):
+            self.assertTrue(
+                PPPoEUsageRecord.objects.filter(customer=self.customer).exists(),
+                "raw rows should still be there — nothing prunes them yet")
+        self.assertEqual(self.used(self.midnight(self.yesterday)), 5000)
+
+    def test_nothing_used_is_nothing_owed(self):
+        self.assertEqual(self.used(self.midnight(self.yesterday)), 0)
+
+    # ---- scoping -----------------------------------------------------------
+
+    def test_a_rollup_belongs_to_one_operator(self):
+        self.add_raw(self.yesterday, 1000, 0)
+        self.roll()
+        with tenant_context(self.t1):
+            row = UsageRecord.objects.get(customer=self.customer)
+        self.assertEqual(row.tenant_id, self.t1.id)
+
+    def test_hotspot_and_pppoe_are_rolled_separately(self):
+        """One subscriber can be both over time, and the two are billed
+        against different packages."""
+        with tenant_context(self.t1):
+            other = Customer.objects.create(
+                tenant=self.t1, full_name="Hot", phone="254799000001",
+                connection_type="hotspot", hotspot_username="AA:BB:CC:DD:EE:01",
+                status="active")
+            when = self.midnight(self.yesterday) + timezone.timedelta(hours=4)
+            HotspotUsageRecord.objects.create(
+                tenant=self.t1, customer=other, period_start=when,
+                period_end=when, download_bytes=700, upload_bytes=300)
+
+        self.add_raw(self.yesterday, 1000, 0)
+        self.roll()
+
+        with tenant_context(self.t1):
+            kinds = dict(
+                UsageRecord.objects.values_list("customer_id", "connection_type"))
+        self.assertEqual(kinds[self.customer.id], "pppoe")
+        self.assertEqual(kinds[other.id], "hotspot")
+
+    # ---- the two readers agree ---------------------------------------------
+
+    def test_the_portal_and_the_cap_check_read_the_same_number(self):
+        """
+        They were separate sums of the same thing. Drift shows up as somebody
+        disconnected while their own screen says they have data left.
+        """
+        from billing.services.usage import usage_since
+
+        self.add_raw(self.yesterday, 3 * 1024 ** 3, 0)
+        self.roll()
+
+        sub = self.data["t1"]["sub"]
+        with tenant_context(self.t1):
+            sub.start_date = self.midnight(self.yesterday)
+            sub.save(update_fields=["start_date"])
+
+        from billing.views import _subscriber_usage
+        shown = _subscriber_usage(self.customer, sub)["used_bytes"]
+        enforced = usage_since(self.customer, self.midnight(self.yesterday))
+        self.assertEqual(shown, enforced)

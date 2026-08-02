@@ -39,10 +39,8 @@ describe('Customers', () => {
 
   test('renders customer rows from paginated API response', async () => {
     renderWithProviders(<Customers />)
-    await waitFor(() => {
-      expect(screen.getByText('John Doe')).toBeInTheDocument()
-      expect(screen.getByText('254712345678')).toBeInTheDocument()
-    })
+    expect(await screen.findByText('John Doe')).toBeInTheDocument()
+    expect(screen.getByText('254712345678')).toBeInTheDocument()
   })
 
   test('shows total customer count in page header', async () => {

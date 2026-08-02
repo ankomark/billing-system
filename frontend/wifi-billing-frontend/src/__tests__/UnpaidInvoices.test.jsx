@@ -11,12 +11,14 @@ jest.mock('../components/admin/AdminLayout', () =>
 describe('UnpaidInvoices', () => {
   test('renders a row for each invoice in the results array', async () => {
     renderWithProviders(<UnpaidInvoices />)
-    await waitFor(() => {
-      expect(screen.getByText('INV-001')).toBeInTheDocument()
-      expect(screen.getByText('John Doe')).toBeInTheDocument()
-      expect(screen.getByText('INV-002')).toBeInTheDocument()
-      expect(screen.getByText('Jane Smith')).toBeInTheDocument()
-    })
+    // Wait for one, then assert the rest outright: they arrive in the same
+    // render, so waiting on one is waiting on all — and a missing row now
+    // fails immediately naming itself, instead of timing out a second later
+    // reporting whichever assertion happened to throw last.
+    expect(await screen.findByText('INV-001')).toBeInTheDocument()
+    expect(screen.getByText('John Doe')).toBeInTheDocument()
+    expect(screen.getByText('INV-002')).toBeInTheDocument()
+    expect(screen.getByText('Jane Smith')).toBeInTheDocument()
   })
 
   test('calculates and displays total outstanding from results array', async () => {

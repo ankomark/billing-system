@@ -70,11 +70,11 @@ describe('PackageForm — create mode', () => {
     fireEvent.change(screen.getByPlaceholderText('e.g. 30'),          { target: { value: '30'  } })
     fireEvent.change(screen.getByPlaceholderText('e.g. 500'),         { target: { value: '500' } })
     fireEvent.click(screen.getByRole('button', { name: /create package/i }))
-    await waitFor(() => {
-      expect(capturedBody).not.toBeNull()
-      expect(capturedBody.name).toBe('Test Pkg')
-      expect(mockNavigate).toHaveBeenCalledWith('/admin/packages')
-    })
+    // Wait for the request to land, then assert what it carried. Retrying the
+    // body checks adds nothing — once capturedBody is set it will not change.
+    await waitFor(() => expect(capturedBody).not.toBeNull())
+    expect(capturedBody.name).toBe('Test Pkg')
+    await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith('/admin/packages'))
   })
 })
 
@@ -83,11 +83,10 @@ describe('PackageForm — edit mode', () => {
 
   test('pre-fills all fields from fetched data including monthly_data_cap_gb and is_hotspot', async () => {
     renderEdit()
-    await waitFor(() => {
-      expect(screen.getByDisplayValue('Basic 30d')).toBeInTheDocument()
-      expect(screen.getByDisplayValue('500.00')).toBeInTheDocument() // price
-      expect(screen.getByDisplayValue('10')).toBeInTheDocument()     // monthly_data_cap_gb
-    })
+    // One fetch fills every field, so waiting on the first covers the rest.
+    expect(await screen.findByDisplayValue('Basic 30d')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('500.00')).toBeInTheDocument() // price
+    expect(screen.getByDisplayValue('10')).toBeInTheDocument()     // monthly_data_cap_gb
     expect(screen.getByRole('checkbox')).not.toBeChecked()           // is_hotspot: false
   })
 
@@ -118,9 +117,7 @@ describe('PackageForm — edit mode', () => {
     renderEdit()
     await screen.findByDisplayValue('Basic 30d')
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
-    await waitFor(() => {
-      expect(method).toBe('PATCH')
-      expect(mockNavigate).toHaveBeenCalledWith('/admin/packages')
-    })
+    await waitFor(() => expect(method).toBe('PATCH'))
+    await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith('/admin/packages'))
   })
 })

@@ -17,6 +17,7 @@ from billing.router_service import (
     get_pppoe_sessions,
     tenant_sessions,
 )
+from billing.services.usage import roll_up_day, usage_since
 from billing.tenancy import tenant_context
 
 logger = logging.getLogger(__name__)
@@ -131,9 +132,13 @@ def collect_hotspot_usage_snapshots(self):
     billing/tasks_usage_hotspot.py, which wrote rows without a tenant and so
     would have failed once a second operator existed.
 
-    Not in CELERY_BEAT_SCHEDULE — there was no hotspot entry before either, so
-    scheduling it would be a behaviour change rather than a fix. Add one
-    alongside collect-pppoe-usage to switch it on.
+    Scheduled at collect-hotspot-usage, offset two minutes from its PPPoE twin
+    so the two do not open connections to the same routers at once.
+
+    It went unscheduled for a long time, which meant nothing had ever recorded
+    a hotspot byte: every hotspot data cap compared against zero, and the usage
+    figure a subscriber is shown on the connected page was empty for everybody.
+    Written, tested, and never switched on.
     """
     now = timezone.now()
     processed = 0
@@ -240,17 +245,10 @@ def enforce_usage_caps(self):
         if not cap_gb:
             continue  # 0 / None = unlimited
 
-        if customer.connection_type == "pppoe":
-            model = PPPoEUsageRecord
-        else:
-            model = HotspotUsageRecord
-
-        total = model.objects.filter(
-            customer=customer,
-            period_start__gte=month_start,
-        ).aggregate(
-            used=Sum("download_bytes") + Sum("upload_bytes")
-        )["used"] or 0
+        # The same reader the subscriber's own screen uses. Two sums of one
+        # number drift, and the way that surfaces is a customer disconnected
+        # while the portal tells them they have data left.
+        total = usage_since(customer, month_start)
 
         used_gb = total / (1024 ** 3)
         if used_gb < cap_gb:
@@ -275,3 +273,37 @@ def enforce_usage_caps(self):
 
     logger.info(f"[usage-caps] Capped {capped} customers over their limit")
     return capped
+
+
+@shared_task(
+    bind=True,
+    autoretry_for=(Exception,),
+    retry_backoff=60,
+    retry_kwargs={"max_retries": 3},
+    retry_jitter=True,
+)
+def roll_up_usage_daily(self, days_back=2):
+    """
+    Fold finished days of five-minute deltas into one row per subscriber.
+
+    One raw row per subscriber per five minutes is 2.88 million a day at ten
+    thousand subscribers, and a billion a year. The same information as a daily
+    total is ten thousand rows a day.
+
+    Re-rolls the last couple of days rather than only yesterday: a collector
+    that was retrying, or a router that came back late, can add rows to a day
+    after midnight has passed, and roll_up_day recomputes rather than adds so
+    doing it twice costs nothing but time.
+
+    Nothing prunes the raw rows yet. That comes once these two have agreed on
+    live data for a while — the saving is in the prune, the correctness is in
+    getting here first, and deleting the only copy before the replacement has
+    been watched is how a data loss happens.
+    """
+    today = timezone.localdate(timezone.now())
+    written = 0
+    for back in range(1, max(1, days_back) + 1):
+        written += roll_up_day(today - timezone.timedelta(days=back))
+
+    logger.info(f"[usage] Daily rollup wrote {written} rows")
+    return written

@@ -451,6 +451,22 @@ CELERY_BEAT_SCHEDULE = {
         "schedule": crontab(minute="*/5"),
         "options": {"expires": 240},
     },
+    # Its hotspot twin was written, tested and never scheduled — so the data
+    # figure on the connected page and every hotspot cap read zero, because
+    # nothing had ever recorded a byte. Offset by two minutes so the two
+    # collectors do not open connections to the same routers at once.
+    "collect-hotspot-usage": {
+        "task": "billing.tasks.usage_tasks.collect_hotspot_usage_snapshots",
+        "schedule": crontab(minute="2-59/5"),
+        "options": {"expires": 240},
+    },
+    # Fold finished days of five-minute deltas into one row per subscriber per
+    # day. Before the platform invoicing at 02:00, so a month's totals are
+    # rolled up before anything bills against them.
+    "roll-up-usage": {
+        "task": "billing.tasks.usage_tasks.roll_up_usage_daily",
+        "schedule": crontab(hour=1, minute=20),
+    },
     # Platform billing — charges operators, not subscribers.
     "generate-platform-invoices": {
         "task": "billing.tasks.platform_billing_tasks.generate_tenant_invoices",
@@ -514,6 +530,31 @@ WHATSAPP_PHONE_ID = os.getenv("WHATSAPP_PHONE_ID", "")
 # =====================================================
 # Generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 FIELD_ENCRYPTION_KEY = os.getenv("FIELD_ENCRYPTION_KEY", "")
+
+# Refuse to serve real traffic without it.
+#
+# EncryptedCharField falls back to plaintext when this is unset — deliberately,
+# so development and the test suite need no key. In production that fallback
+# means every operator's router admin password is stored in clear text, in a
+# database that gets copied to object storage every night, with nothing
+# anywhere reporting a problem. A password that protects other people's network
+# hardware is not something to leave to whether someone remembered.
+#
+# Reading is unaffected either way: the field returns legacy plaintext as-is,
+# so an existing database keeps working the moment a key is added, and rows
+# encrypt as they are next written.
+if not DEBUG and not FIELD_ENCRYPTION_KEY:
+    from django.core.exceptions import ImproperlyConfigured
+
+    raise ImproperlyConfigured(
+        "FIELD_ENCRYPTION_KEY is not set. Router passwords would be stored in "
+        "plain text, and nothing would say so. Set it before running with "
+        "DEBUG off. Generate one with:\n\n"
+        "  python -c \"from cryptography.fernet import Fernet; "
+        "print(Fernet.generate_key().decode())\"\n\n"
+        "Keep it somewhere separate from your database backups — a dump "
+        "restored without this key leaves every router password unreadable."
+    )
 
 # =====================================================
 # ERROR MONITORING (SENTRY)

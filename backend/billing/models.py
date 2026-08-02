@@ -729,7 +729,10 @@ class RouterEvent(TenantScopedModel):
         return f"{self.router} {self.kind} at {self.created_at}"
 
 
-def router_uptime(router, since):
+_UNSET = object()
+
+
+def router_uptime(router, since, *, events=_UNSET, prior=_UNSET):
     """
     Availability for one router since `since`, derived from its transitions.
 
@@ -738,24 +741,35 @@ def router_uptime(router, since):
     the starting state is whatever the last event before the window said — or
     the current state if there were no events at all, which is the common case
     for a router that has simply been up the whole time.
+
+    `events` and `prior` may be supplied by a caller that has already loaded
+    them for several routers at once. Left alone this fetches its own, which
+    costs two queries — fine for one router and not for a page listing every
+    router an operator owns, where it was four queries per box on a view the
+    dashboard polls every ten seconds.
+
+    `prior=None` means "there is genuinely no earlier event", which is why the
+    default is a sentinel rather than None.
     """
     now = timezone.now()
     window = (now - since).total_seconds()
     if window <= 0:
         return {"uptime_percent": 100.0, "outages": 0, "downtime_seconds": 0}
 
-    events = list(
-        RouterEvent.objects.all_tenants()
-        .filter(router=router, created_at__gte=since)
-        .order_by("created_at")
-    )
+    if events is _UNSET:
+        events = list(
+            RouterEvent.objects.all_tenants()
+            .filter(router=router, created_at__gte=since)
+            .order_by("created_at")
+        )
 
-    prior = (
-        RouterEvent.objects.all_tenants()
-        .filter(router=router, created_at__lt=since)
-        .order_by("-created_at")
-        .first()
-    )
+    if prior is _UNSET:
+        prior = (
+            RouterEvent.objects.all_tenants()
+            .filter(router=router, created_at__lt=since)
+            .order_by("-created_at")
+            .first()
+        )
     if prior is not None:
         online = prior.kind == RouterEvent.CAME_ONLINE
     elif events:
