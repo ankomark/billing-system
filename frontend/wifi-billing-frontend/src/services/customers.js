@@ -41,6 +41,23 @@ export const suspendOrResumeCustomer = async (id, action) => {
  * revenue and staying countable in the figures. Admin only; a reason is
  * required.
  */
+/**
+ * Sell or give a voucher to a phone number, in one step.
+ *
+ * The counter version of the captive portal: no M-Pesa prompt and no waiting
+ * for a callback, because the money has already changed hands — or is being
+ * waived, in which case a reason is required.
+ */
+export const issueVoucher = async ({ packageId, phone, paidWith, reason }) => {
+  const res = await api.post("admin/vouchers/issue/", {
+    package_id: packageId,
+    phone,
+    paid_with: paidWith,
+    ...(reason ? { reason } : {}),
+  });
+  return res.data;
+};
+
 export const compAccess = async (customerId, { packageId, reason }) => {
   const res = await api.post(`admin/customers/${customerId}/comp/`, {
     package_id: packageId,

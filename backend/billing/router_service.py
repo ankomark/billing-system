@@ -63,16 +63,43 @@ def enable_hotspot(api, router, mac_address, package, expiry_date):
     for u in users:
         if u.get("name") == mac_address:
             users.remove(**{".id": u[".id"]})
-    users.add(
-        name=mac_address,
-        password="",
-        profile=profile,
-        limit_uptime=f"{remaining_seconds}s",
-        comment="AUTO | WIFI BILLING SYSTEM",
-    )
+    users.add(**{
+        "name": mac_address,
+        "password": "",
+        "profile": profile,
+        # Hyphenated, like every RouterOS attribute. As limit_uptime this was
+        # sent as a word the router does not know, so no hotspot session ever
+        # expired on the router — the only thing ending them was our own
+        # nightly sweep, and only if it ran.
+        "limit-uptime": f"{remaining_seconds}s",
+        "comment": "AUTO | WIFI BILLING SYSTEM",
+    })
 def disable_hotspot(api, mac_address):
+    """
+    Take a device off the hotspot.
+
+    Removing the user is not enough on its own. RouterOS keeps an established
+    session running until it times out of its own accord, so an expired
+    customer stayed online — sometimes for hours — while the system recorded
+    them as expired and the operator saw them as cut off. The session has to be
+    ended as well, which is what ip/hotspot/active is for. PPPoE has always
+    done this; hotspot never did.
+    """
     if not mac_address:
         return
+
+    # The live session first, so there is no window where the user is gone but
+    # the session survives to be re-established.
+    try:
+        actives = api.path("ip", "hotspot", "active")
+        for session in list(actives):
+            if session.get("user") == mac_address or session.get("mac-address") == mac_address:
+                actives.remove(**{".id": session[".id"]})
+    except Exception:
+        # An unreachable router is handled by the caller; losing the session
+        # kick must not stop the account being removed.
+        logger.warning("[hotspot] could not end the live session for %s", mac_address)
+
     users = api.path("ip", "hotspot", "user")
     for u in users:
         if u.get("name") == mac_address:

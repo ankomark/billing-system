@@ -5,6 +5,7 @@ import AdminLayout from "../../components/admin/AdminLayout";
 import AdminUsageGraph from "../../components/usage/AdminUsageGraph";
 import AnalyticsPanels from "../../components/admin/AnalyticsPanels";
 import CustomerQuickSearch from "../../components/admin/CustomerQuickSearch";
+import IssueVoucherCard from "../../components/admin/IssueVoucherCard";
 import {
   Card, CardHeader, Note, PageHeader, Section, StatTile, KES, num,
 } from "../../components/admin/ui";
@@ -121,6 +122,10 @@ export default function Dashboard() {
             )}
           </div>
         </Section>
+
+        {/* Selling comes before looking anything up: it is the transaction,
+            not a report about transactions. */}
+        <IssueVoucherCard />
 
         {/* Above the charts on purpose. Looking one person up is the thing an
             operator does most, and it used to mean leaving this page for the

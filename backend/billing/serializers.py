@@ -162,7 +162,7 @@ class PublicPackageSerializer(serializers.ModelSerializer):
             "id", "name", "price",
             "download_speed", "upload_speed",
             "duration_value", "duration_unit", "duration",
-            "monthly_data_cap_gb",
+            "monthly_data_cap_gb", "max_devices",
         )
 
     def get_duration(self, obj):

@@ -48,7 +48,7 @@ from billing.models import Voucher
 from billing.tasks.mpesa_tasks import initiate_stk_push_task
 from django.utils import timezone
 from rest_framework import viewsets
-from .models import Customer, Package, Subscription,Invoice, Payment,MpesaTransaction,SystemSetting,RouterFailoverLog, HotspotUsageRecord, AccessAuditLog, Tenant
+from .models import Customer, CustomerDevice, Package, Subscription,Invoice, Payment,MpesaTransaction,SystemSetting,RouterFailoverLog, HotspotUsageRecord, AccessAuditLog, Tenant
 from .models import PlatformPlan, TenantSubscription, TenantInvoice, TenantPayment, TenantStatusChange
 from .models import RouterEvent, Station, TenantScopedModel, router_uptime
 from .models import ImpersonationLog
@@ -885,12 +885,12 @@ class HotspotVoucherValidateView(APIView):
 
         customer = subscription.customer
 
-        # 🔐 Prevent this customer moving their voucher to a different device
-        if customer.hotspot_username and customer.hotspot_username != mac_address:
-            return Response(
-                {"detail": "Voucher already bound to another device"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        # Which devices may use this is decided below, by counting them against
+        # the package's allowance. This used to be a single comparison against
+        # the one MAC on the customer row: it enforced a limit of exactly one,
+        # by overwriting rather than by counting, so a package sold for three
+        # devices could not be honoured and the answer to a second phone was a
+        # flat 400 with no indication of how many were allowed.
 
         # 🔐 Prevent this device being claimed while another customer still holds it.
         # The check above only guarded the customer's side, so nothing stopped two
@@ -939,7 +939,62 @@ class HotspotVoucherValidateView(APIView):
                     ),
                 )
 
-            customer.hotspot_username = mac_address
+            # How many devices this package is good for, and which ones are
+            # already using it.
+            allowed = max(1, getattr(subscription.package, "max_devices", 1) or 1)
+            devices = list(
+                CustomerDevice.objects.all_tenants()
+                .select_for_update()
+                .filter(tenant_id=customer.tenant_id, customer=customer)
+                .order_by("first_seen")
+            )
+
+            # A subscriber bound before the device table existed has a MAC on
+            # their row and no device row, and the count reads rows — so their
+            # voucher would silently be good for one more phone than it was
+            # sold for. 0050 backfills these; this heals anything that slips
+            # past, because the cost of missing one is free internet.
+            legacy = (customer.hotspot_username or "").strip()
+            if legacy and not any(d.mac_address == legacy for d in devices):
+                devices.append(
+                    CustomerDevice.objects.create(
+                        tenant_id=customer.tenant_id,
+                        customer=customer,
+                        mac_address=legacy,
+                    )
+                )
+            known = next((d for d in devices if d.mac_address == mac_address), None)
+
+            if known is None:
+                if len(devices) >= allowed:
+                    # The limit, and the reason it exists. One code bought for
+                    # one phone was being passed around a room.
+                    return Response(
+                        {
+                            "detail": (
+                                f"This code is already in use on {allowed} "
+                                f"device{'s' if allowed > 1 else ''}."
+                                if allowed > 1 else
+                                "This code is already in use on another phone."
+                            ),
+                            "devices_allowed": allowed,
+                            "devices_used": len(devices),
+                        },
+                        status=status.HTTP_409_CONFLICT,
+                    )
+                CustomerDevice.objects.create(
+                    tenant_id=customer.tenant_id,
+                    customer=customer,
+                    mac_address=mac_address,
+                )
+            else:
+                known.save(update_fields=["last_seen"])
+
+            # The first device stays on the customer row: the public status and
+            # reconnect endpoints resolve a subscriber by it, and a great deal
+            # depends on that lookup.
+            if not customer.hotspot_username:
+                customer.hotspot_username = mac_address
             customer.status = "active"
             customer.save(update_fields=["hotspot_username", "status"])
 
@@ -952,6 +1007,115 @@ class HotspotVoucherValidateView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+
+class IssueVoucherView(APIView):
+    """
+    Sell or give a voucher to a phone number, in one step.
+
+    The counter version of the captive portal. Somebody is standing there, or
+    on the phone: pick a package, take their number, say how it was paid, hand
+    over the code. No STK prompt, no waiting for a callback — the operator has
+    already taken the money, or is choosing not to.
+
+    Reuses the subscriber if that number has bought before, so a regular does
+    not accumulate a new record every time they top up.
+
+    Admin only, and a reason is required when nothing is being charged: giving
+    away what the business sells is a decision about money, and in three months
+    the question will be why.
+    """
+    permission_classes = [IsTenantAdmin]
+
+    def post(self, request):
+        tenant = getattr(request.user, "tenant", None)
+        if tenant is None:
+            return Response({"detail": "Operator account required."}, status=403)
+
+        phone = _normalise_msisdn(request.data.get("phone"))
+        if not phone:
+            return Response(
+                {"detail": "Enter a valid phone number, e.g. 0712345678."}, status=400)
+
+        package = (
+            Package.objects.all_tenants()
+            .filter(id=request.data.get("package_id"), tenant=tenant, is_hotspot=True)
+            .first()
+        )
+        if package is None:
+            return Response({"detail": "Choose a hotspot package."}, status=400)
+
+        paid_with = request.data.get("paid_with")
+        if paid_with not in ("cash", "mpesa", "bank", "comp"):
+            return Response(
+                {"detail": "Say how this was paid for."}, status=400)
+
+        reason = (request.data.get("reason") or "").strip()
+        if paid_with == "comp" and not reason:
+            return Response(
+                {"detail": "Say why this is free — it is the answer to a question "
+                           "somebody will ask later."},
+                status=400,
+            )
+
+        try:
+            with tenant_context(tenant), transaction.atomic():
+                customer = (
+                    Customer.objects.all_tenants()
+                    .filter(tenant=tenant, phone=phone)
+                    .first()
+                )
+                created_customer = customer is None
+                if created_customer:
+                    customer = Customer.objects.create(
+                        tenant=tenant,
+                        full_name=(request.data.get("full_name") or "").strip()
+                                  or f"Hotspot {phone[-4:]}",
+                        phone=phone,
+                        connection_type="hotspot",
+                    )
+
+                subscription = Subscription.objects.create(
+                    tenant=tenant, customer=customer, package=package,
+                )
+                Payment.objects.create(
+                    tenant=tenant,
+                    customer=customer,
+                    subscription=subscription,
+                    # Zero when given away: revenue is untouched and the row
+                    # still exists, so free internet stays countable.
+                    amount=Decimal("0.00") if paid_with == "comp" else package.price,
+                    method=paid_with,
+                    reference=(reason or request.data.get("payment_reference") or "")[:100],
+                )
+        except Exception as exc:
+            logger.exception("[issue] could not issue for %s", phone)
+            return Response({"detail": f"Could not issue this: {exc}"}, status=500)
+
+        if paid_with == "comp":
+            record_admin_action(
+                request.user,
+                AdminActionLog.COMP_VOUCHER,
+                target_tenant=tenant,
+                label=customer.full_name,
+                detail=f"{package.name} at no charge — {reason}",
+            )
+
+        voucher = (
+            Voucher.objects.all_tenants()
+            .filter(tenant=tenant, subscription=subscription)
+            .order_by("-created_at")
+            .first()
+        )
+        return Response({
+            "detail": f"{package.name} issued to {phone}.",
+            "voucher_code": voucher.code if voucher else None,
+            "expires_at": subscription.expiry_date,
+            "customer_id": customer.id,
+            "customer_name": customer.full_name,
+            "new_customer": created_customer,
+            "free": paid_with == "comp",
+        }, status=201)
+
 
 class CompAccessView(APIView):
     """
@@ -1143,7 +1307,12 @@ def _hotspot_customer_for(request, mac, **extra):
         if isinstance(data, dict):
             token = data.get("t")
 
-    qs = Customer.objects.all_tenants().filter(hotspot_username=mac, **extra)
+    # Any of the subscriber's devices, not only the first one bound. A second
+    # phone on a multi-device package is as much theirs as the first, and
+    # resolving only the first would tell it that it is not registered.
+    qs = Customer.objects.all_tenants().filter(
+        Q(hotspot_username=mac) | Q(devices__mac_address=mac), **extra
+    ).distinct()
 
     if token:
         tenant = Tenant.objects.filter(public_token=token).first()

@@ -73,6 +73,7 @@ from .views import (
     CustomerSuspendResumeView,
     ResendVoucherView,
     CompAccessView,
+    IssueVoucherView,
     AdminMigrateCustomerView,
 
     # Admin — access
@@ -208,6 +209,9 @@ urlpatterns = [
         CustomerSuspendResumeView.as_view(),
         name="customer-suspend-resume",
     ),
+    # Sell or give a voucher to a phone number in one step, at the counter.
+    path("api/admin/vouchers/issue/", IssueVoucherView.as_view(), name="voucher-issue"),
+
     # Access without a charge, for a customer the operator has let down.
     path(
         "api/admin/customers/<int:customer_id>/comp/",

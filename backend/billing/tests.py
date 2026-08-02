@@ -19,7 +19,7 @@ from unittest import skipUnless
 from unittest.mock import MagicMock, patch
 from cryptography.fernet import Fernet
 
-from django.db import connection
+from django.db import connection, transaction
 
 from django.core.cache import cache
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -68,7 +68,7 @@ from billing.router_service import (
 from billing.tenancy import TenantManager, all_tenants, tenant_context
 
 from billing.models import (
-    User, Customer, Package, Subscription,
+    User, Customer, CustomerDevice, Package, Subscription,
     Invoice, Payment, Voucher, MpesaTransaction, RouterDevice,
     AccessAuditLog, Tenant, RouterFailoverLog, ExpiryReminderLog,
     SystemSetting, PPPoEUsageSnapshot, PPPoEUsageState, PPPoEUsageRecord,
@@ -539,13 +539,27 @@ class VoucherValidationTests(TestCase):
         self.assertEqual(resp.status_code, 200)
 
     def test_different_mac_on_bound_voucher_rejected(self):
+        """
+        The guarantee is unchanged — a code bought for one phone does not work
+        on another. What changed is the answer: 409 rather than a flat 400,
+        carrying how many devices the package allows and how many are in use,
+        because "already in use on 2 devices" is something a customer can act
+        on and "bad request" is not.
+
+        This subscriber is bound the old way, with a MAC on their row and no
+        device row. That is exactly the state every existing subscriber was in
+        when the device table arrived, and the count reads rows — so without
+        the backfill and the healing beside it, this would answer 200 and the
+        voucher would be good for one more phone than it was sold for.
+        """
         self.customer.hotspot_username = "AA:BB:CC:DD:EE:FF"
         self.customer.save(update_fields=["hotspot_username"])
         resp = self.client.post(self.URL, {
             "code": "WIFI-TEST01",
             "mac_address": "11:22:33:44:55:66",
         })
-        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.status_code, 409, resp.data)
+        self.assertEqual(resp.data["devices_used"], 1)
 
     def test_expired_voucher_rejected(self):
         self.voucher.expires_at = timezone.now() - timezone.timedelta(hours=1)
@@ -2028,10 +2042,15 @@ class PublicHotspotPurchaseTests(TwoOperatorMixin, TestCase):
 
     def test_public_package_payload_stays_minimal(self):
         resp = self.client.get("/api/hotspot/packages/", {"t": self.t1.public_token})
+        # max_devices belongs here: the portal has to be able to say how many
+        # phones a package covers, and a customer deciding what to buy needs
+        # it. Everything in this set is deliberate — the test exists so a
+        # column cannot join the public payload by accident.
         self.assertEqual(
             set(resp.data["results"][0]),
             {"id", "name", "price", "download_speed", "upload_speed",
-             "duration_value", "duration_unit", "duration", "monthly_data_cap_gb"},
+             "duration_value", "duration_unit", "duration",
+             "monthly_data_cap_gb", "max_devices"},
         )
 
     def test_unknown_token_is_rejected(self):
@@ -7201,3 +7220,395 @@ class CompAccessTests(TwoOperatorMixin, TestCase):
             username="comp_cust", password="pw", role=User.CUSTOMER, tenant=self.t1)
         resp = self.comp(self.hotspot, self.hs_pkg, user=sub_user)
         self.assertEqual(resp.status_code, 403)
+
+
+# =====================================================
+# 42. Issuing a voucher at the counter
+# =====================================================
+
+class IssueVoucherTests(TwoOperatorMixin, TestCase):
+    """
+    The captive portal's flow, run by the operator instead of the customer:
+    pick a package, take their number, say how it was paid, hand over the
+    code. No M-Pesa prompt and no callback to wait for, because the money has
+    already changed hands — or is being waived.
+    """
+
+    URL = "/api/admin/vouchers/issue/"
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        with tenant_context(self.t1):
+            self.pkg = Package.objects.create(
+                tenant=self.t1, name="t1-counter", download_speed=5, upload_speed=5,
+                price=Decimal("50.00"), duration_value=3, duration_unit="hours",
+                monthly_data_cap_gb=0, is_hotspot=True)
+
+    def issue(self, user=None, **body):
+        payload = {"package_id": self.pkg.id, "phone": "0712000111",
+                   "paid_with": "cash"}
+        payload.update(body)
+        return self.auth(user or self.admin1).post(self.URL, payload, format="json")
+
+    # ---- selling -----------------------------------------------------------
+
+    def test_a_cash_sale_produces_a_code(self):
+        resp = self.issue()
+        self.assertEqual(resp.status_code, 201, resp.data)
+        self.assertTrue(resp.data["voucher_code"])
+        self.assertFalse(resp.data["free"])
+
+    def test_the_code_redeems(self):
+        code = self.issue().data["voucher_code"]
+        resp = APIClient().post(
+            f"/api/hotspot/validate/?t={self.t1.public_token}",
+            {"code": code, "mac_address": "11:22:33:44:55:66"}, format="json")
+        self.assertEqual(resp.status_code, 200, resp.data)
+
+    def test_a_cash_sale_is_worth_the_package_price(self):
+        resp = self.issue()
+        with tenant_context(self.t1):
+            payment = Payment.objects.get(subscription__customer_id=resp.data["customer_id"])
+        self.assertEqual(payment.amount, self.pkg.price)
+        self.assertEqual(payment.method, "cash")
+
+    def test_a_returning_number_is_reused(self):
+        """A regular topping up should not collect a new record each time."""
+        first = self.issue()
+        second = self.issue()
+        self.assertTrue(first.data["new_customer"])
+        self.assertFalse(second.data["new_customer"])
+        self.assertEqual(first.data["customer_id"], second.data["customer_id"])
+
+    def test_the_number_is_normalised(self):
+        resp = self.issue(phone="0712000111")
+        with tenant_context(self.t1):
+            customer = Customer.objects.get(id=resp.data["customer_id"])
+        self.assertEqual(customer.phone, "254712000111")
+
+    # ---- giving away -------------------------------------------------------
+
+    def test_free_costs_nothing_and_still_works(self):
+        resp = self.issue(paid_with="comp", reason="Router down all morning")
+        self.assertEqual(resp.status_code, 201, resp.data)
+        self.assertTrue(resp.data["voucher_code"])
+        self.assertTrue(resp.data["free"])
+        with tenant_context(self.t1):
+            payment = Payment.objects.get(subscription__customer_id=resp.data["customer_id"])
+        self.assertEqual(payment.amount, Decimal("0.00"))
+        self.assertEqual(payment.method, "comp")
+
+    def test_free_needs_a_reason(self):
+        resp = self.issue(paid_with="comp")
+        self.assertEqual(resp.status_code, 400)
+        with tenant_context(self.t1):
+            self.assertFalse(Customer.objects.filter(phone="254712000111").exists())
+
+    def test_a_giveaway_is_on_the_record(self):
+        self.issue(paid_with="comp", reason="Second outage this week")
+        log = AdminActionLog.objects.filter(action=AdminActionLog.COMP_VOUCHER).first()
+        self.assertIsNotNone(log)
+        self.assertIn("Second outage this week", log.detail)
+
+    def test_a_paid_sale_writes_no_giveaway_record(self):
+        self.issue(paid_with="cash")
+        self.assertFalse(
+            AdminActionLog.objects.filter(action=AdminActionLog.COMP_VOUCHER).exists())
+
+    # ---- the guards --------------------------------------------------------
+
+    def test_a_bad_number_is_refused(self):
+        self.assertEqual(self.issue(phone="123").status_code, 400)
+
+    def test_a_package_is_required(self):
+        self.assertEqual(self.issue(package_id=999999).status_code, 400)
+
+    def test_a_pppoe_package_cannot_be_sold_as_a_voucher(self):
+        resp = self.issue(package_id=self.data["t1"]["package"].id)
+        self.assertEqual(resp.status_code, 400)
+
+    def test_another_operators_package_cannot_be_sold(self):
+        resp = self.issue(package_id=self.data["t2"]["package"].id)
+        self.assertEqual(resp.status_code, 400)
+
+    def test_how_it_was_paid_must_be_said(self):
+        resp = self.issue(paid_with="")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_operator_staff_cannot_issue(self):
+        staff = User.objects.create_user(
+            username="issue_staff", password="pw", role=User.TENANT_STAFF,
+            tenant=self.t1, is_staff=True)
+        self.assertEqual(self.issue(user=staff).status_code, 403)
+
+    def test_the_subscriber_belongs_to_the_issuing_operator(self):
+        resp = self.issue()
+        with tenant_context(self.t1):
+            customer = Customer.objects.get(id=resp.data["customer_id"])
+        self.assertEqual(customer.tenant_id, self.t1.id)
+
+
+# =====================================================
+# 43. The limits that were never reaching the router
+# =====================================================
+
+class RouterAttributeNameTests(TestCase):
+    """
+    RouterOS attributes are hyphenated and librouteros sends keyword arguments
+    through verbatim. A Python keyword cannot contain a hyphen, so rate_limit=
+    put the literal word "rate_limit" on the wire and RouterOS did not know it.
+
+    Nothing failed loudly. Speed tiers were unlimited, a PPPoE account could be
+    logged in from anywhere as often as you liked, a hotspot voucher had no
+    device limit, and no session ever timed out at the router. Every one of
+    those is a paid boundary that simply was not there.
+
+    These read the exact keys the calls send, because that is the only place
+    the mistake is visible.
+    """
+
+    class FakePath:
+        """Records what was sent, and iterates as empty so nothing is reused."""
+
+        def __init__(self):
+            self.added = []
+
+        def __iter__(self):
+            return iter([])
+
+        def add(self, **kwargs):
+            self.added.append(kwargs)
+            return "*1"
+
+        def remove(self, **kwargs):
+            pass
+
+    def setUp(self):
+        cache.clear()
+        self.tenant = Tenant.objects.get(slug="skylink")
+        with tenant_context(self.tenant):
+            self.router = RouterDevice.objects.create(
+                name="r", ip_address="10.0.0.1", username="a", password="p",
+                tenant=self.tenant)
+            self.package = Package.objects.create(
+                tenant=self.tenant, name="p", download_speed=10, upload_speed=5,
+                price=Decimal("100.00"), duration_value=1, duration_unit="days",
+                monthly_data_cap_gb=0, is_hotspot=True, max_devices=3)
+
+    def _profile_call(self, ensure):
+        path = self.FakePath()
+        api = MagicMock()
+        api.path.return_value = path
+        with patch("billing.router_profiles.connect_router", return_value=api):
+            ensure(self.router, self.package)
+        self.assertTrue(path.added, "nothing was sent to the router")
+        return path.added[0]
+
+    # ---- profiles ----------------------------------------------------------
+
+    def test_the_hotspot_speed_limit_uses_the_name_routeros_knows(self):
+        from billing.router_profiles import ensure_hotspot_profile
+
+        sent = self._profile_call(ensure_hotspot_profile)
+        self.assertIn("rate-limit", sent)
+        self.assertNotIn("rate_limit", sent, "the router would ignore this")
+
+    def test_the_device_limit_reaches_the_router(self):
+        from billing.router_profiles import ensure_hotspot_profile
+
+        sent = self._profile_call(ensure_hotspot_profile)
+        self.assertIn("shared-users", sent)
+        self.assertEqual(sent["shared-users"], "3", "the package allows three")
+
+    def test_the_pppoe_speed_limit_uses_the_name_routeros_knows(self):
+        from billing.router_profiles import ensure_pppoe_profile
+
+        sent = self._profile_call(ensure_pppoe_profile)
+        self.assertIn("rate-limit", sent)
+        self.assertNotIn("rate_limit", sent)
+
+    def test_one_session_per_pppoe_account_reaches_the_router(self):
+        """Without it a household shares one login with the whole street."""
+        from billing.router_profiles import ensure_pppoe_profile
+
+        sent = self._profile_call(ensure_pppoe_profile)
+        self.assertEqual(sent.get("only-one"), "yes")
+        self.assertNotIn("only_one", sent)
+
+    def test_the_profile_name_carries_the_device_count(self):
+        """
+        A package edited from one device to three would otherwise keep the
+        profile it already had, and the new limit would never arrive.
+        """
+        from billing.router_profiles import ensure_hotspot_profile
+
+        sent = self._profile_call(ensure_hotspot_profile)
+        self.assertIn("_D3", sent["name"])
+
+    # ---- the user itself ---------------------------------------------------
+
+    def test_the_session_time_limit_reaches_the_router(self):
+        from billing.router_service import enable_hotspot
+
+        path = self.FakePath()
+        api = MagicMock()
+        api.path.return_value = path
+        with patch("billing.router_service.ensure_hotspot_profile", return_value="P"):
+            enable_hotspot(api, self.router, "AA:BB:CC:DD:EE:FF", self.package,
+                           timezone.now() + timezone.timedelta(hours=2))
+        sent = path.added[0]
+        self.assertIn("limit-uptime", sent)
+        self.assertNotIn("limit_uptime", sent, "no session would ever expire")
+
+    def test_taking_a_device_off_ends_its_live_session(self):
+        """
+        Removing the user alone leaves an established session running until it
+        times out of its own accord, so an expired customer stayed online while
+        the system recorded them as cut off.
+        """
+        from billing.router_service import disable_hotspot
+
+        removed = []
+
+        class Active:
+            def __iter__(self):
+                return iter([{".id": "*9", "user": "AA:BB:CC:DD:EE:FF"}])
+
+            def remove(self, **kwargs):
+                removed.append(("active", kwargs))
+
+        class Users:
+            def __iter__(self):
+                return iter([{".id": "*1", "name": "AA:BB:CC:DD:EE:FF"}])
+
+            def remove(self, **kwargs):
+                removed.append(("user", kwargs))
+
+        api = MagicMock()
+        api.path.side_effect = lambda *p: Active() if "active" in p else Users()
+        disable_hotspot(api, "AA:BB:CC:DD:EE:FF")
+
+        self.assertIn("active", [kind for kind, _ in removed],
+                      "the live session was left running")
+        self.assertIn("user", [kind for kind, _ in removed])
+
+
+class VoucherDeviceLimitTests(TwoOperatorMixin, TestCase):
+    """
+    One code, bought for one phone, was being passed around a room. And a
+    household paying for three devices had no way to say so — access was bound
+    to a single MAC on the customer row, so the limit was always exactly one
+    and was enforced by overwriting rather than by counting.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        d = self.data["t1"]
+        with tenant_context(self.t1):
+            d["customer"].connection_type = "hotspot"
+            d["customer"].pppoe_username = ""
+            d["customer"].save()
+            self.sub = d["sub"]
+            self.sub.expiry_date = timezone.now() + timezone.timedelta(days=2)
+            self.sub.status = "active"
+            self.sub.save()
+            self.voucher = Voucher.objects.create(
+                tenant=self.t1, code="WIFI-DEV001", subscription=self.sub,
+                expires_at=self.sub.expiry_date)
+            # A real voucher only exists because a payment minted it. This one
+            # is hand-built, so the invoice has to be settled to match — the
+            # portal reports "pending" until it is.
+            invoice = self.sub.invoice
+            invoice.payment_status = "paid"
+            invoice.save(update_fields=["payment_status"])
+
+    def allow(self, n):
+        with tenant_context(self.t1):
+            pkg = self.sub.package
+            pkg.max_devices = n
+            pkg.save(update_fields=["max_devices"])
+
+    def redeem(self, mac):
+        return APIClient().post(
+            f"/api/hotspot/validate/?t={self.t1.public_token}",
+            {"code": "WIFI-DEV001", "mac_address": mac}, format="json")
+
+    # ---- one device --------------------------------------------------------
+
+    def test_one_device_means_one_phone(self):
+        self.allow(1)
+        self.assertEqual(self.redeem("AA:00:00:00:00:01").status_code, 200)
+        second = self.redeem("BB:00:00:00:00:02")
+        self.assertEqual(second.status_code, 409, second.data)
+        self.assertIn("another phone", second.data["detail"])
+
+    def test_the_same_phone_may_come_back(self):
+        """Reconnecting is not a second device."""
+        self.allow(1)
+        self.assertEqual(self.redeem("AA:00:00:00:00:01").status_code, 200)
+        self.assertEqual(self.redeem("AA:00:00:00:00:01").status_code, 200)
+
+    # ---- more than one -----------------------------------------------------
+
+    def test_three_devices_means_three_and_no_more(self):
+        self.allow(3)
+        for i in range(3):
+            with self.subTest(device=i):
+                self.assertEqual(
+                    self.redeem(f"AA:00:00:00:00:0{i}").status_code, 200)
+        fourth = self.redeem("FF:00:00:00:00:99")
+        self.assertEqual(fourth.status_code, 409, fourth.data)
+        self.assertEqual(fourth.data["devices_allowed"], 3)
+        self.assertEqual(fourth.data["devices_used"], 3)
+
+    def test_every_allowed_device_can_reconnect(self):
+        self.allow(2)
+        self.redeem("AA:00:00:00:00:01")
+        self.redeem("AA:00:00:00:00:02")
+        for mac in ("AA:00:00:00:00:01", "AA:00:00:00:00:02"):
+            with self.subTest(mac=mac):
+                self.assertEqual(self.redeem(mac).status_code, 200)
+
+    def test_a_second_device_is_recognised_by_the_portal(self):
+        """
+        Resolving a subscriber used to read the one MAC on the customer row, so
+        a second phone on a multi-device package was told it was not registered.
+        """
+        self.allow(2)
+        self.redeem("AA:00:00:00:00:01")
+        self.redeem("AA:00:00:00:00:02")
+        resp = APIClient().get(
+            "/api/hotspot/status/",
+            {"t": self.t1.public_token, "mac": "AA:00:00:00:00:02"})
+        self.assertEqual(resp.data["status"], "active", resp.data)
+
+    # ---- across operators --------------------------------------------------
+
+    def test_a_device_belongs_to_one_subscriber(self):
+        """
+        Otherwise one phone gets two allowances out of one payment by being
+        registered to two accounts.
+        """
+        self.allow(1)
+        self.redeem("AA:00:00:00:00:01")
+        with tenant_context(self.t1):
+            other = Customer.objects.create(
+                tenant=self.t1, full_name="Other", phone="254733000999",
+                connection_type="hotspot")
+            # Contained, or the failed insert poisons the surrounding
+            # transaction and every later query in this test raises instead.
+            with self.assertRaises(IntegrityError), transaction.atomic():
+                CustomerDevice.objects.create(
+                    tenant=self.t1, customer=other,
+                    mac_address="AA:00:00:00:00:01")
+
+    def test_devices_are_counted_per_operator(self):
+        """The same MAC may legitimately be a subscriber of two operators."""
+        with tenant_context(self.t2):
+            c2 = self.data["t2"]["customer"]
+            CustomerDevice.objects.create(
+                tenant=self.t2, customer=c2, mac_address="AA:00:00:00:00:01")
+        self.allow(1)
+        self.assertEqual(self.redeem("AA:00:00:00:00:01").status_code, 200)

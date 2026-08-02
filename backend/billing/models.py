@@ -929,6 +929,12 @@ class Package(TenantScopedModel):
         help_text="Is this a hotspot-only package?"
     )
 
+    max_devices = models.PositiveSmallIntegerField(
+        default=1,
+        help_text="How many devices one voucher may be used on. 1 means the "
+                  "first phone to use it, and only that phone.",
+    )
+
     def clean(self):
         if self.duration_value <= 0:
             raise ValidationError("Duration value must be greater than zero")
@@ -1122,6 +1128,39 @@ class Voucher(TenantScopedModel):
 
     def __str__(self):
         return self.code
+
+class CustomerDevice(TenantScopedModel):
+    """
+    A device a subscriber has used their access on.
+
+    Access used to be bound to one MAC held on the customer row, so a package
+    could only ever be good for a single phone — and a family paying for three
+    had no way to say so. This is the same binding, counted.
+
+    A MAC belongs to one subscriber per operator, so a device cannot be shared
+    between two accounts to get two allowances out of one payment.
+    """
+
+    customer = models.ForeignKey(
+        Customer, on_delete=models.CASCADE, related_name="devices")
+    mac_address = models.CharField(max_length=50)
+    first_seen = models.DateTimeField(auto_now_add=True)
+    last_seen = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["tenant", "mac_address"],
+                name="customer_device_tenant_mac_uniq",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["tenant", "customer"], name="device_tenant_customer_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.mac_address} ({self.customer_id})"
+
 
 # =====================================================
 # PAYMENT
