@@ -25,6 +25,7 @@ from django.core.cache import cache
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import ProtectedError
 from django.db.utils import IntegrityError
+from django.conf import settings as django_settings
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
@@ -3797,6 +3798,23 @@ class OperatorWarningTests(PlatformBillingMixin, TestCase):
 # 20. Phase 3 — router event history and platform health
 # =====================================================
 
+def take_router_down(router, **kw):
+    """
+    Drive a router past the offline threshold.
+
+    One failed probe no longer marks a router down — auto-failover migrates
+    every subscriber off an offline router, and the links these operators run
+    drop briefly as a matter of course. See RouterDevice.record_health.
+
+    The tests below are about what happens once a router is down. How many
+    probes it takes to decide that is RouterFlapTests' business.
+    """
+    changed = False
+    for _ in range(django_settings.ROUTER_OFFLINE_AFTER_FAILURES):
+        changed = router.record_health(False, **kw)
+    return changed
+
+
 class RouterEventTests(TwoOperatorMixin, TestCase):
     """Transitions are recorded; steady state is not."""
 
@@ -3809,9 +3827,11 @@ class RouterEventTests(TwoOperatorMixin, TestCase):
         self.router.record_health(True)
         RouterEvent.objects.all_tenants().all().delete()
 
-        self.router.record_health(
-            False, error="TCP unreachable", cause=RouterEvent.CAUSE_UNREACHABLE)
+        take_router_down(
+            self.router, error="TCP unreachable",
+            cause=RouterEvent.CAUSE_UNREACHABLE)
 
+        # One transition, not one per failed probe.
         event = RouterEvent.objects.all_tenants().get()
         self.assertEqual(event.kind, RouterEvent.WENT_OFFLINE)
         self.assertEqual(event.cause, RouterEvent.CAUSE_UNREACHABLE)
@@ -3842,8 +3862,13 @@ class RouterEventTests(TwoOperatorMixin, TestCase):
             RouterEvent.objects.all_tenants()
             .filter(kind=RouterEvent.CAME_ONLINE).exists())
 
+    @override_settings(ROUTER_OFFLINE_AFTER_FAILURES=3)
     def test_record_health_reports_whether_it_changed(self):
+        """True means the state turned over, which is not the same as a
+        failed probe — the first two change nothing anybody should act on."""
         self.router.record_health(True)
+        self.assertFalse(self.router.record_health(False, error="down"))
+        self.assertFalse(self.router.record_health(False, error="down"))
         self.assertTrue(self.router.record_health(False, error="down"))
         self.assertFalse(self.router.record_health(False, error="down"))
 
@@ -3854,8 +3879,8 @@ class RouterEventTests(TwoOperatorMixin, TestCase):
         them loses the distinction that decides who fixes it.
         """
         self.router.record_health(True)
-        self.router.record_health(
-            False, error="invalid user name or password",
+        take_router_down(
+            self.router, error="invalid user name or password",
             cause=RouterEvent.CAUSE_AUTH_FAILED)
         event = RouterEvent.objects.all_tenants().filter(
             kind=RouterEvent.WENT_OFFLINE).first()
@@ -3881,9 +3906,9 @@ class RouterEventTests(TwoOperatorMixin, TestCase):
         That is the gap this table exists to fill.
         """
         self.router.record_health(True)
-        self.router.record_health(False, error="first failure")
+        take_router_down(self.router, error="first failure")
         self.router.record_health(True)
-        self.router.record_health(False, error="second failure")
+        take_router_down(self.router, error="second failure")
 
         details = list(
             RouterEvent.objects.all_tenants()
@@ -3956,7 +3981,7 @@ class RouterEventsEndpointTests(TwoOperatorMixin, TestCase):
 
     def test_returns_events_and_availability(self):
         self.router.record_health(True)
-        self.router.record_health(False, error="TCP unreachable")
+        take_router_down(self.router, error="TCP unreachable")
 
         resp = self.auth(self.admin1).get(self.URL)
         self.assertEqual(resp.status_code, 200)
@@ -4783,7 +4808,7 @@ class StationRollupTests(TwoOperatorMixin, TestCase):
         self.assertIn("Mtwapa", names)
 
     def test_an_offline_router_shows_against_its_own_station(self):
-        self.m1.record_health(False, error="down")
+        take_router_down(self.m1, error="down")
 
         resp = self.auth(self.admin1).get("/api/admin/routers/events/")
         by_name = {s["name"]: s for s in resp.data["stations"]}
@@ -8692,3 +8717,155 @@ class SessionTableTests(TwoOperatorMixin, TestCase):
             tenant_sessions(self.t1.id, lambda r: {"john": {"connected": True}})
 
         self.assertEqual(seen, [self.t1.id])
+
+
+# =====================================================
+# 51. A blip is not an outage
+# =====================================================
+
+@override_settings(ROUTER_OFFLINE_AFTER_FAILURES=3)
+class RouterFlapTests(TwoOperatorMixin, TestCase):
+    """
+    One failed probe declared a router down, and auto-failover then moved
+    every subscriber off it within three minutes.
+
+    On the connections these operators actually run that is a bug with
+    physical consequences. Starlink pauses at satellite handover; LTE blips.
+    Neither is an outage, and the response was to reconfigure hardware for
+    every customer on the router and move them elsewhere — then the link came
+    back and they were all on the wrong one.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+
+        # The fixture routers default to offline, and auto-failover sweeps
+        # every operator — so without this the counts below would include
+        # subscribers on hardware these tests are not about.
+        RouterDevice.objects.all_tenants().update(is_online=True)
+
+        with tenant_context(self.t1):
+            self.router = RouterDevice.objects.create(
+                tenant=self.t1, name="starlink-1", ip_address="10.0.0.1",
+                username="admin", password="pw", is_active=True, is_online=True)
+
+    def fail(self, times=1):
+        for _ in range(times):
+            self.router.record_health(False, error="timeout")
+
+    # ---- the threshold -----------------------------------------------------
+
+    def test_one_missed_probe_does_not_take_a_router_down(self):
+        self.fail()
+        self.assertTrue(self.router.is_online)
+
+    def test_nor_does_two(self):
+        self.fail(2)
+        self.assertTrue(self.router.is_online)
+
+    def test_three_in_a_row_does(self):
+        """Six minutes of silence at two-minute polling. A handover is not."""
+        self.fail(3)
+        self.assertFalse(self.router.is_online)
+
+    def test_one_success_wipes_the_count(self):
+        """A link that recovers has cost nothing."""
+        self.fail(2)
+        self.router.record_health(True)
+        self.fail(2)
+        self.assertTrue(self.router.is_online)
+        self.assertEqual(self.router.consecutive_failures, 2)
+
+    def test_coming_back_is_immediate(self):
+        """Slow to condemn is prudence. Slow to notice recovery is an outage."""
+        self.fail(3)
+        self.assertTrue(self.router.record_health(True))
+        self.assertTrue(self.router.is_online)
+
+    # ---- what an operator sees ---------------------------------------------
+
+    def test_the_error_shows_from_the_first_failure(self):
+        """Watching a link degrade is the point; condemning it is separate."""
+        self.fail()
+        self.router.refresh_from_db()
+        self.assertEqual(self.router.last_error, "timeout")
+        self.assertTrue(self.router.is_online)
+
+    def test_a_blip_is_not_logged_as_an_outage(self):
+        """RouterEvent records transitions. A wobble is not one."""
+        self.fail(2)
+        with tenant_context(self.t1):
+            self.assertEqual(RouterEvent.objects.filter(router=self.router).count(), 0)
+
+    def test_a_real_outage_is_logged_once(self):
+        self.fail(5)
+        with tenant_context(self.t1):
+            events = RouterEvent.objects.filter(
+                router=self.router, kind=RouterEvent.WENT_OFFLINE)
+            self.assertEqual(events.count(), 1)
+
+    # ---- and nobody is moved -----------------------------------------------
+
+    def test_a_blip_moves_nobody(self):
+        """
+        The consequence the threshold exists to prevent: five hundred
+        subscribers reconfigured onto other hardware because a satellite
+        handed over.
+        """
+        from billing.tasks.auto_failover import run_auto_failover_task
+
+        with tenant_context(self.t1):
+            for i in range(5):
+                Customer.objects.create(
+                    tenant=self.t1, full_name=f"Sub {i}",
+                    phone=f"2547330000{i:02d}", connection_type="pppoe",
+                    pppoe_username=f"sub{i}", status="active", router=self.router)
+
+        self.fail(2)
+
+        with patch("billing.tasks.auto_failover.migrate_single_customer_task") as move:
+            run_auto_failover_task()
+        move.delay.assert_not_called()
+
+    def test_failover_asks_the_router_before_moving_anyone(self):
+        """
+        is_online was written by another task up to three minutes ago. A TCP
+        check costs far less than reconfiguring two routers for a customer who
+        was never cut off.
+        """
+        from billing.tasks.auto_failover import run_auto_failover_task
+
+        with tenant_context(self.t1):
+            Customer.objects.create(
+                tenant=self.t1, full_name="Sub", phone="254733000099",
+                connection_type="pppoe", pppoe_username="sub99",
+                status="active", router=self.router)
+
+        self.fail(3)
+
+        with patch("billing.router_service.is_router_reachable", return_value=True), \
+             patch("billing.tasks.auto_failover.migrate_single_customer_task") as move:
+            run_auto_failover_task()
+
+        move.delay.assert_not_called()
+        self.router.refresh_from_db()
+        self.assertTrue(self.router.is_online)
+
+    def test_a_router_that_is_genuinely_gone_still_fails_over(self):
+        """The threshold must not have quietly disabled failover."""
+        from billing.tasks.auto_failover import run_auto_failover_task
+
+        with tenant_context(self.t1):
+            Customer.objects.create(
+                tenant=self.t1, full_name="Sub", phone="254733000098",
+                connection_type="pppoe", pppoe_username="sub98",
+                status="active", router=self.router)
+
+        self.fail(3)
+
+        with patch("billing.router_service.is_router_reachable", return_value=False), \
+             patch("billing.tasks.auto_failover.migrate_single_customer_task") as move:
+            run_auto_failover_task()
+
+        self.assertEqual(move.delay.call_count, 1)

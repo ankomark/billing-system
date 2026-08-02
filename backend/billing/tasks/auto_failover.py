@@ -29,8 +29,22 @@ def run_auto_failover_task(self):
     if not offline_routers.exists():
         return 0
 
+    from billing.router_service import is_router_reachable
+
     dispatched = 0
     for router in offline_routers:
+        # Ask the router itself before moving anybody. is_online was written by
+        # a different task up to three minutes ago, and migrating a subscriber
+        # costs a reconfiguration on two pieces of hardware — far more than one
+        # TCP check. A router that answers here has recovered between the sweep
+        # and now, which on a satellite or mobile link is the common case
+        # rather than the rare one.
+        if is_router_reachable(router):
+            router.record_health(True)
+            logger.info(
+                "[auto-failover] %s answered on re-check — nobody moved.", router)
+            continue
+
         customer_ids = list(
             Customer.objects.all_tenants()
             .filter(router=router, status="active")

@@ -402,6 +402,22 @@ CELERY_WORKER_PREFETCH_MULTIPLIER = 1
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
 
 # Pre-seed schedules on fresh deploys (DatabaseScheduler syncs these to DB)
+# =====================================================
+# ROUTER HEALTH
+# =====================================================
+# Failed probes in a row before a router is declared down.
+#
+# Auto-failover migrates every subscriber off an offline router, so this
+# number decides how much of a wobble it takes to move hundreds of people onto
+# different hardware. One was the old behaviour and far too twitchy for the
+# links these operators run: Starlink pauses at satellite handover and LTE
+# blips, and neither is an outage. Three probes at two-minute polling is about
+# six minutes of genuine silence.
+#
+# Raise it for operators on especially unstable backhaul; lower it only if
+# failover has become fast enough that a false one is cheap, which it is not.
+ROUTER_OFFLINE_AFTER_FAILURES = int(os.getenv("ROUTER_OFFLINE_AFTER_FAILURES", "3"))
+
 CELERY_BEAT_SCHEDULE = {
     "expire-subscriptions": {
         "task": "billing.tasks.subscription_tasks.enforce_subscription_expiry",

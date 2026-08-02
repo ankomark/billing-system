@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.db import models, transaction
 from django.utils import timezone
 from django.contrib.auth.models import AbstractUser, UserManager
@@ -585,6 +586,16 @@ class RouterDevice(TenantScopedModel):
     is_online = models.BooleanField(default=False)
     last_seen = models.DateTimeField(null=True, blank=True)
     last_error = models.TextField(blank=True, default="")
+
+    # How many probes in a row have failed. One failure used to be enough to
+    # declare a router down, and failover then moved every subscriber off it
+    # within three minutes. On the connections these operators actually run —
+    # Starlink, which pauses briefly at satellite handover, and LTE, which
+    # blips — that is normal healthy behaviour being read as an outage, and
+    # the response was to reconfigure hardware for hundreds of people and
+    # move them somewhere else. Then the link came back and they were all on
+    # the wrong router.
+    consecutive_failures = models.PositiveSmallIntegerField(default=0)
     max_pppoe_sessions = models.PositiveIntegerField(default=0)  # 0 = unlimited
 
     # Which site this box is at. NULL means the operator has not divided their
@@ -615,19 +626,40 @@ class RouterDevice(TenantScopedModel):
         per day, all of them saying the same thing as the row before. The edges
         are where the information is.
 
+        A router is not declared down on one missed probe. It takes
+        ROUTER_OFFLINE_AFTER_FAILURES in a row — about six minutes at the
+        default — because auto-failover migrates every subscriber off an
+        offline router, and the links these operators run drop briefly as a
+        matter of course. A Starlink handover does not survive six minutes; a
+        real outage does. One success resets the count, so a link that recovers
+        costs nothing.
+
+        Coming back is immediate. Being cautious about declaring a router dead
+        is prudence; being slow to notice it is alive again would just be a
+        second outage.
+
         Returns True if the state changed.
         """
         was_online = self.is_online
-        changed = was_online != online
+        fields = ["is_online", "last_error", "consecutive_failures"]
 
-        self.is_online = online
-        fields = ["is_online", "last_error"]
         if online:
+            self.consecutive_failures = 0
+            self.is_online = True
             self.last_seen = timezone.now()
             self.last_error = ""
             fields.append("last_seen")
         else:
+            self.consecutive_failures += 1
             self.last_error = str(error)[:2000]
+            # The error is recorded from the first failure — an operator
+            # watching a link degrade should see why before it is condemned —
+            # but the flag only turns over once it has failed enough times.
+            if self.consecutive_failures >= settings.ROUTER_OFFLINE_AFTER_FAILURES:
+                self.is_online = False
+
+        changed = was_online != self.is_online
+        online = self.is_online
         self.save(update_fields=fields)
 
         if changed:
