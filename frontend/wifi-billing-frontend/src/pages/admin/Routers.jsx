@@ -39,6 +39,9 @@ export default function Routers() {
         )}
 
         <div className="rounded-xl border border-white/10 bg-slate-900/80 shadow-lg shadow-black/20 overflow-hidden">
+          {/* The card clips; this scrolls. Without it the right-hand columns
+              are not merely off-screen on a phone, they are unreachable. */}
+          <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-white/5 border-b border-white/10">
               <tr>
@@ -90,6 +93,7 @@ export default function Routers() {
               )}
             </tbody>
           </table>
+          </div>
         </div>
       </div>
     </AdminLayout>

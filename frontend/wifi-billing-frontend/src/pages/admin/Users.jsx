@@ -180,6 +180,7 @@ export default function Users() {
           {isLoading ? (
             <div className="px-5 py-10 text-center text-sm text-slate-500">Loading…</div>
           ) : (
+            <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-white/5 border-b border-white/10">
                 <tr>
@@ -248,6 +249,7 @@ export default function Users() {
                 })}
               </tbody>
             </table>
+            </div>
           )}
         </div>
       </div>

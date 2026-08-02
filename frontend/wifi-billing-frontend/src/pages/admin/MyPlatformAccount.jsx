@@ -84,7 +84,7 @@ export default function MyPlatformAccount() {
             Plan
           </h2>
           {data.subscription ? (
-            <div className="grid grid-cols-2 gap-4 text-sm">
+            <div className="grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
               <Row label="Plan" value={data.subscription.plan_name} />
               <Row label="Price" value={KES(data.subscription.plan_price)} />
               <Row label="Status" value={data.subscription.status} />
@@ -144,9 +144,9 @@ export default function MyPlatformAccount() {
 
 function Row({ label, value }) {
   return (
-    <div>
-      <p className="text-slate-500 text-xs">{label}</p>
-      <p className="font-medium text-white capitalize">{value}</p>
+    <div className="min-w-0">
+      <p className="text-xs text-slate-500">{label}</p>
+      <p className="break-words font-medium capitalize text-white">{value}</p>
     </div>
   );
 }

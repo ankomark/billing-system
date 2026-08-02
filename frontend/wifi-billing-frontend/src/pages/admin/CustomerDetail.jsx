@@ -223,7 +223,9 @@ export default function CustomerDetail() {
           <h2 className="text-[11px] font-semibold text-slate-400 uppercase tracking-[0.14em] mb-4">
             Profile
           </h2>
-          <div className="grid grid-cols-2 gap-4 text-sm">
+          {/* One column on a phone. Two 160px columns is not enough for a
+              PPPoE username beside its label. */}
+          <div className="grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
             <InfoRow label="Phone"      value={customer.phone} />
             <InfoRow label="Connection" value={customer.connection_type} />
             <div>
@@ -408,9 +410,11 @@ export default function CustomerDetail() {
 
 function InfoRow({ label, value }) {
   return (
-    <div>
-      <p className="text-slate-500 text-xs mb-0.5">{label}</p>
-      <p className="font-medium text-white capitalize">{value || "—"}</p>
+    <div className="min-w-0">
+      <p className="mb-0.5 text-xs text-slate-500">{label}</p>
+      {/* A PPPoE username or a MAC has nothing to break on, so without this it
+          runs past the edge of the card and drags the page width with it. */}
+      <p className="break-words font-medium capitalize text-white">{value || "—"}</p>
     </div>
   );
 }
@@ -619,7 +623,7 @@ function DetailSkeleton() {
         </div>
         <div className="rounded-xl border border-white/10 bg-slate-900/80 shadow-lg shadow-black/20 p-5">
           <Skeleton className="h-3 w-16 mb-4" />
-          <div className="grid grid-cols-2 gap-4"><SkeletonText /><SkeletonText /><SkeletonText /><SkeletonText /></div>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2"><SkeletonText /><SkeletonText /><SkeletonText /><SkeletonText /></div>
         </div>
         <div className="rounded-xl border border-white/10 bg-slate-900/80 shadow-lg shadow-black/20 p-5">
           <Skeleton className="h-3 w-24 mb-4" /><SkeletonText lines={2} />
