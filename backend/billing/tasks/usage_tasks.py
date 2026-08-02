@@ -13,8 +13,9 @@ from billing.models import (
 from billing.notifications import notify_customer
 from billing.router_service import (
     disable_customer_access,
-    get_hotspot_live_usage_any_router,
-    get_pppoe_live_usage_any_router,
+    get_hotspot_sessions,
+    get_pppoe_sessions,
+    tenant_sessions,
 )
 from billing.tenancy import tenant_context
 
@@ -45,16 +46,28 @@ def collect_pppoe_usage_snapshots(self):
             connection_type="pppoe",
             pppoe_username__isnull=False,
         )
+        .order_by("tenant_id")
     )
 
+    # One read of each router's session table per operator, rather than one
+    # connection per subscriber. See _sessions_by_user() for why: the old shape
+    # could not finish inside the five minutes between runs once an operator
+    # had a few hundred subscribers, and a task that does not finish in time is
+    # dropped, not delayed — so collection stopped without saying so.
+    sessions = {}
+
     for customer in customers:
-        try:
-            router, usage = get_pppoe_live_usage_any_router(customer)
-        except Exception as e:
-            logger.warning(
-                f"[usage] Router error for customer {customer.id}: {e}"
-            )
-            continue
+        if customer.tenant_id not in sessions:
+            try:
+                sessions[customer.tenant_id] = tenant_sessions(
+                    customer.tenant_id, get_pppoe_sessions)
+            except Exception as e:
+                logger.warning(
+                    f"[usage] Router error for operator {customer.tenant_id}: {e}")
+                sessions[customer.tenant_id] = {}
+
+        router, usage = sessions[customer.tenant_id].get(
+            customer.pppoe_username, (None, None))
 
         if not usage or not usage.get("connected"):
             continue
@@ -130,14 +143,27 @@ def collect_hotspot_usage_snapshots(self):
         .select_related("router", "tenant")
         .filter(status="active", connection_type="hotspot")
         .exclude(hotspot_username="")
+        .order_by("tenant_id")
     )
 
+    # Read each router's table once per operator, as above. This one matters
+    # more: a hotspot operator has far more subscribers than a PPPoE one, and
+    # they are the whole product.
+    sessions = {}
+
     for customer in customers:
-        try:
-            router, usage = get_hotspot_live_usage_any_router(customer)
-        except Exception as e:
-            logger.warning(f"[usage] Hotspot router error for customer {customer.id}: {e}")
-            continue
+        if customer.tenant_id not in sessions:
+            try:
+                sessions[customer.tenant_id] = tenant_sessions(
+                    customer.tenant_id, get_hotspot_sessions)
+            except Exception as e:
+                logger.warning(
+                    f"[usage] Hotspot router error for operator "
+                    f"{customer.tenant_id}: {e}")
+                sessions[customer.tenant_id] = {}
+
+        router, usage = sessions[customer.tenant_id].get(
+            customer.hotspot_username, (None, None))
 
         if not usage or not usage.get("connected"):
             continue

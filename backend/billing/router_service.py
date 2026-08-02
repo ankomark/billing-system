@@ -610,6 +610,86 @@ def get_hotspot_live_usage(router, username):
             }
 
     return {"connected": False}
+def _sessions_by_user(router, path, name_field, rx_field, tx_field):
+    """
+    Every live session on one router, keyed by the name it logged in with.
+
+    The per-customer helpers below ask a router for one username, and the only
+    way to answer is to read the whole session table and discard the rest. Done
+    in a loop over subscribers that is one connection each — and, when the
+    assigned router has no session, one connection to every other router the
+    operator owns. At a few hundred subscribers that stops fitting in the five
+    minutes between runs, and the task is dropped rather than finishing late:
+    usage collection quietly stops, caps stop being enforced, and nothing
+    reports an error.
+
+    The table costs the same to read whether one name is wanted or a thousand,
+    so read it once and match in memory.
+    """
+    api = safe_connect_router(router)
+    if not api:
+        return None
+
+    sessions = {}
+    try:
+        for row in api.path(*path):
+            name = row.get(name_field)
+            if not name:
+                continue
+            sessions[name] = {
+                "connected": True,
+                "ip_address": row.get("address"),
+                "uptime": row.get("uptime"),
+                "rx_bytes": int(row.get(rx_field, 0) or 0),
+                "tx_bytes": int(row.get(tx_field, 0) or 0),
+                "interface": row.get("interface"),
+            }
+    except Exception:
+        # An unreadable table is not an empty one. Returning {} would look like
+        # every subscriber on this router had disconnected, and the callers
+        # treat "not connected" as nothing to record — so a transient fault
+        # would silently skip a collection round instead of retrying.
+        return None
+
+    return sessions
+
+
+def get_pppoe_sessions(router):
+    """Live PPPoE sessions on one router, keyed by username."""
+    return _sessions_by_user(
+        router, ("ppp", "active"), "name", "rx-bytes", "tx-bytes")
+
+
+def get_hotspot_sessions(router):
+    """Live hotspot sessions on one router, keyed by login name."""
+    return _sessions_by_user(
+        router, ("ip", "hotspot", "active"), "user", "bytes-in", "bytes-out")
+
+
+def tenant_sessions(tenant_id, reader):
+    """
+    One operator's live sessions across all of their routers.
+
+    Keyed by username, valued with the router the session was found on, which
+    is what the usage records store. Scoped to the one operator: matching a
+    subscriber against another operator's session table would attribute
+    somebody else's traffic to them, and on a platform where two operators can
+    both have a "john" that is not hypothetical.
+
+    A router that cannot be read is skipped rather than treated as empty, so a
+    subscriber on an unreachable router is left alone instead of being recorded
+    as disconnected.
+    """
+    found = {}
+    for router in _tenant_routers(tenant_id):
+        sessions = reader(router)
+        if sessions is None:
+            continue
+        for username, data in sessions.items():
+            found.setdefault(username, (router, data))
+    return found
+
+
 def get_hotspot_live_usage_any_router(customer):
     from .models import RouterDevice
 

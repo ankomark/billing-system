@@ -8535,3 +8535,160 @@ class SecretKeyGuardTests(SimpleTestCase):
     def test_the_check_names_how_to_fix_it(self):
         """An error a deployer cannot act on gets worked around, not fixed."""
         self.assertIn("get_random_secret_key", self.SETTINGS.read_text(encoding="utf-8"))
+
+
+# =====================================================
+# 50. Usage collection that finishes
+# =====================================================
+
+class UsageCollectionScaleTests(TwoOperatorMixin, TestCase):
+    """
+    Both collectors asked the router about one subscriber at a time, and the
+    only way a router answers that is to hand over the whole session table.
+    So a run cost one connection per subscriber — and, when the assigned
+    router held no session, one to every other router the operator owned.
+
+    At a few hundred subscribers that stops fitting in the five minutes
+    between runs, and Celery drops a late task rather than finishing it:
+    collection stops, caps stop being enforced, the usage figures customers
+    were shown go stale, and nothing anywhere reports an error.
+
+    These tests count connections, because the number of connections is the
+    thing that broke. Asserting only that the bytes came out right would have
+    passed against the old code too.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        with tenant_context(self.t1):
+            self.router = RouterDevice.objects.create(
+                tenant=self.t1, name="r1", ip_address="10.0.0.1",
+                username="admin", password="pw", is_active=True)
+            self.customers = []
+            for i in range(12):
+                c = Customer.objects.create(
+                    tenant=self.t1, full_name=f"PPPoE {i}",
+                    phone=f"2547110000{i:02d}", connection_type="pppoe",
+                    pppoe_username=f"user{i}", status="active",
+                    router=self.router)
+                self.customers.append(c)
+
+    def fake_sessions(self):
+        return {
+            f"user{i}": {"connected": True, "rx_bytes": 1000 * (i + 1),
+                         "tx_bytes": 500 * (i + 1)}
+            for i in range(12)
+        }
+
+    def run_collector(self):
+        """
+        Collect once, counting how many times a router was dialled.
+
+        The real grouping runs — only the router list and the session read are
+        faked, so this exercises tenant_sessions() rather than standing in for
+        it. The other operator owns no routers here, which is also what keeps
+        the count attributable to this one.
+        """
+        from billing.tasks.usage_tasks import collect_pppoe_usage_snapshots
+
+        calls = []
+
+        def reader(router):
+            calls.append(router.id)
+            return self.fake_sessions()
+
+        def routers(tenant_id):
+            return [self.router] if tenant_id == self.t1.id else []
+
+        with patch("billing.router_service._tenant_routers", side_effect=routers), \
+             patch("billing.tasks.usage_tasks.get_pppoe_sessions", reader):
+            collect_pppoe_usage_snapshots()
+        return calls
+
+    def test_one_read_per_router_not_one_per_subscriber(self):
+        """The whole point. Twelve subscribers, one router, one connection."""
+        self.assertEqual(len(self.run_collector()), 1)
+
+    def test_every_subscriber_is_still_accounted_for(self):
+        """Cheaper is worthless if it stops recording anybody."""
+        self.run_collector()
+        with tenant_context(self.t1):
+            self.assertEqual(PPPoEUsageRecord.objects.count(), 12)
+
+    def test_the_bytes_are_the_ones_the_router_reported(self):
+        self.run_collector()
+        with tenant_context(self.t1):
+            rec = PPPoEUsageRecord.objects.get(customer=self.customers[0])
+            self.assertEqual(rec.download_bytes, 1000)
+            self.assertEqual(rec.upload_bytes, 500)
+
+    def test_a_second_run_records_only_the_difference(self):
+        """State carries across runs, so a delta is not a total."""
+        self.run_collector()
+        self.run_collector()
+        with tenant_context(self.t1):
+            # By id, not period_start: the second run's window opens exactly
+            # where the first one closed, so the two share a timestamp and
+            # ordering on it picks arbitrarily between them.
+            recs = PPPoEUsageRecord.objects.filter(
+                customer=self.customers[0]).order_by("id")
+            self.assertEqual(recs.count(), 2)
+            self.assertEqual(recs.last().download_bytes, 0)
+
+    def test_a_subscriber_with_no_live_session_records_nothing(self):
+        from billing.tasks.usage_tasks import collect_pppoe_usage_snapshots
+
+        with patch("billing.tasks.usage_tasks.tenant_sessions", return_value={}):
+            collect_pppoe_usage_snapshots()
+        with tenant_context(self.t1):
+            self.assertEqual(PPPoEUsageRecord.objects.count(), 0)
+
+
+class SessionTableTests(TwoOperatorMixin, TestCase):
+    """The reader underneath both collectors."""
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        with tenant_context(self.t1):
+            self.router = RouterDevice.objects.create(
+                tenant=self.t1, name="r1", ip_address="10.0.0.1",
+                username="admin", password="pw", is_active=True)
+
+    def test_an_unreadable_router_is_not_an_empty_one(self):
+        """
+        Returning {} would look like every subscriber on it had disconnected,
+        and the callers skip anyone not connected — so a transient fault would
+        silently drop a collection round instead of leaving them alone.
+        """
+        from billing.router_service import get_pppoe_sessions
+
+        with patch("billing.router_service.safe_connect_router", return_value=None):
+            self.assertIsNone(get_pppoe_sessions(self.router))
+
+    def test_a_router_that_cannot_be_read_is_skipped_not_counted(self):
+        from billing.router_service import tenant_sessions
+
+        with patch("billing.router_service._tenant_routers",
+                   return_value=[self.router]):
+            self.assertEqual(tenant_sessions(self.t1.id, lambda r: None), {})
+
+    def test_sessions_never_cross_operators(self):
+        """
+        Two operators can both have a subscriber called john. Matching one
+        against the other's session table would bill somebody else's traffic
+        to them.
+        """
+        from billing.router_service import tenant_sessions
+
+        seen = []
+
+        def routers(tenant_id):
+            seen.append(tenant_id)
+            return [self.router]
+
+        with patch("billing.router_service._tenant_routers", side_effect=routers):
+            tenant_sessions(self.t1.id, lambda r: {"john": {"connected": True}})
+
+        self.assertEqual(seen, [self.t1.id])
