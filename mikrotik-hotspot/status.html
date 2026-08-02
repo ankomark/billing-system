@@ -75,6 +75,7 @@
 
     .refresh-note { text-align: center; color: #94a3b8; font-size: .75rem; margin-top: 1rem; }
   </style>
+  <script src="config.js"></script>
 </head>
 <body>
 <div class="container">
@@ -87,7 +88,7 @@
       <path d="M8.53 16.11a6 6 0 0 1 6.95 0"/>
       <circle cx="12" cy="20" r="1" fill="#60a5fa" stroke="none"/>
     </svg>
-    <h1>Connected</h1>
+    <h1 id="provider">Connected</h1>
   </div>
 
   <div class="card">
@@ -158,6 +159,9 @@
 </div>
 
 <script>
+  /* Whose WiFi this is, from the operator's own account. */
+  loadProviderName(function (name) { applyProviderName('provider', name); });
+
   /* Format raw bytes from MikroTik into human-readable */
   function fmtBytes(el) {
     // Outside a hotspot session RouterOS substitutes nothing and the literal

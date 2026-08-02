@@ -63,6 +63,12 @@
       font-weight: 800; letter-spacing: -.02em;
     }
     .hero p { color: var(--ink-soft); font-size: .9375rem; margin-top: .375rem; }
+    /* Whose WiFi this is. A subscriber is the operator's customer and has
+       never heard of the company that bills them. */
+    .hero .provider {
+      color: var(--ink); font-weight: 600; font-size: 1rem;
+      margin-top: .5rem;
+    }
 
     /* ── Cards ────────────────────────────────────────────────── */
     .card {
@@ -193,14 +199,8 @@
 </head>
 <body>
 
-<!-- ═══════════════════════════════════════════════════════════
-     CONFIGURATION — must match login.html
-     ═══════════════════════════════════════════════════════════ -->
-<script>
-  var API_BASE     = 'https://your-backend.com/api';  // ← no trailing slash
-  var TENANT_TOKEN = 'YOUR-OPERATOR-TOKEN';           // ← Admin → Settings
-</script>
-<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- Settings live in config.js, which is the only file to edit. -->
+<script src="config.js"></script>
 
 <div class="wrap">
 
@@ -212,6 +212,7 @@
       </svg>
     </div>
     <h1>You're connected</h1>
+    <p id="provider" class="provider">Your provider</p>
     <p id="sub">Your session is active. Enjoy the internet.</p>
   </div>
 
@@ -332,6 +333,9 @@
     try { d = JSON.parse(xhr.responseText); } catch (e) { return; }
     if (d.status !== 'active') return;
 
+    // Comes back on this call, so the name costs no extra request.
+    if (d.provider) { applyProviderName('provider', d.provider); }
+
     if (d.voucher_code) {
       document.getElementById('code').textContent = d.voucher_code;
       document.getElementById('voucherCard').classList.add('show');
@@ -350,6 +354,15 @@
   };
   xhr.onerror = xhr.ontimeout = function () { /* stay quiet */ };
   xhr.send();
+
+  // The status call only answers for a device it knows. Somebody who reached
+  // this page another way still deserves to see whose WiFi they are on.
+  loadProviderName(function (name) {
+    var shown = document.getElementById('provider');
+    if (shown && shown.textContent === 'Your provider') {
+      applyProviderName('provider', name);
+    }
+  });
 })();
 </script>
 

@@ -185,18 +185,8 @@
 </head>
 <body>
 
-<!-- ═══════════════════════════════════════════════════════════
-     CONFIGURATION — edit these to match your setup
-     ═══════════════════════════════════════════════════════════ -->
-<script>
-  var API_BASE     = 'https://your-backend.com/api';  // ← no trailing slash
-
-  // ← Your operator token, from Admin → Settings. A device MAC is only unique
-  //    within one operator, so without this the backend cannot tell whose
-  //    subscriber is connecting and refuses rather than guessing.
-  var TENANT_TOKEN = 'YOUR-OPERATOR-TOKEN';
-</script>
-<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- Settings live in config.js, which is the only file to edit. -->
+<script src="config.js"></script>
 
 <div class="wrap">
 

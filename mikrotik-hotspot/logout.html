@@ -57,7 +57,9 @@
     .btn-ghost:hover { background: #e2e8f0; }
 
     .footer { color: #475569; font-size: .75rem; margin-top: .5rem; }
+    .provider { color: #cbd5e1; font-size: .9375rem; font-weight: 600; margin-bottom: .5rem; }
   </style>
+  <script src="config.js"></script>
 </head>
 <body>
 
@@ -73,6 +75,7 @@
   </div>
 
   <h1>Disconnected</h1>
+  <p class="provider" id="provider"></p>
   <p class="sub">Your session has ended. Thank you.</p>
 
   <div class="card">
@@ -112,6 +115,9 @@
 </div>
 
 <script>
+  /* Whose WiFi this was, from the operator's own account. */
+  loadProviderName(function (name) { applyProviderName('provider', name); });
+
   function fmtBytes(el) {
     // Outside a hotspot session RouterOS substitutes nothing and the literal
     // "$(bytes-in)" is what sits in the element. Hide it rather than show it.

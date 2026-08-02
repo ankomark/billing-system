@@ -47,6 +47,7 @@ from .views import (
     HotspotPaymentStatusView,
     HotspotVoucherValidateView,
     HotspotStatusView,
+    HotspotProviderView,
     HotspotReconnectView,
 
     # PPPoE — customer
@@ -176,6 +177,9 @@ urlpatterns = [
     path("api/hotspot/payment-status/", HotspotPaymentStatusView.as_view(), name="hotspot-payment-status"),
     path("api/hotspot/validate/",  HotspotVoucherValidateView.as_view(), name="hotspot-validate"),
     path("api/hotspot/status/",    HotspotStatusView.as_view(),          name="hotspot-status"),
+    # Just the operator's name, for the pages on the router that show nothing
+    # else from us.
+    path("api/hotspot/provider/",  HotspotProviderView.as_view(),        name="hotspot-provider"),
     path("api/hotspot/reconnect/", HotspotReconnectView.as_view(),       name="hotspot-reconnect"),
 
     # ─── Hotspot usage ───────────────────────────────────────────────────────

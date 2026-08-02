@@ -6301,18 +6301,54 @@ class MikrotikPortalPageTests(TestCase):
         self.assertTrue(logo.exists())
         self.assertLess(logo.stat().st_size, 120_000, "the portal logo has grown")
 
-    def test_pages_that_call_the_api_declare_both_config_values(self):
+    def test_settings_live_in_one_file(self):
         """
-        Spelled the same way in every file, or one page quietly talks to the
-        wrong place while the others work.
+        Each page used to carry its own copy of the backend address and the
+        operator token: four places to keep in step by hand, and nothing to
+        notice when they drifted. They read config.js now, so a page that
+        talks to the API must include it and must not redeclare either value.
         """
+        config = self.folder / "config.js"
+        self.assertTrue(config.exists(), "the one file to edit is missing")
+
+        text = config.read_text(encoding="utf-8")
+        for name in ("API_BASE", "TENANT_TOKEN"):
+            self.assertRegex(text, rf"var {name}\s*=")
+
         for page in self.pages():
-            text = page.read_text(encoding="utf-8")
-            if "API_BASE" not in text:
+            body = page.read_text(encoding="utf-8")
+            if "API_BASE" not in body and "loadProviderName" not in body:
                 continue
             with self.subTest(page=page.name):
-                for name in ("API_BASE", "TENANT_TOKEN"):
-                    self.assertRegex(text, rf"var {name}\s*=")
+                self.assertIn('src="config.js"', body, "does not read the shared config")
+                self.assertNotRegex(
+                    body, r"var API_BASE\s*=",
+                    "declares its own copy of a value that lives in config.js")
+
+    def test_every_page_shows_whose_wifi_it_is(self):
+        """
+        These sit on a router and cannot know whose they are without asking.
+        They carried one operator's name hardcoded, and after that was removed
+        they carried nothing — which left a subscriber looking at the billing
+        platform's branding instead of the provider they actually pay.
+        """
+        for name in ("login.html", "alogin.html", "status.html", "logout.html"):
+            page = self.folder / name
+            with self.subTest(page=name):
+                body = page.read_text(encoding="utf-8")
+                self.assertRegex(
+                    body, r'id="provider"',
+                    "has nowhere to put the operator's name")
+                self.assertTrue(
+                    "loadProviderName" in body or "data.provider" in body
+                    or "d.provider" in body,
+                    "never asks who the operator is")
+
+    def test_no_page_hardcodes_an_operator(self):
+        """The name belongs to whoever deployed it, not to whoever wrote it."""
+        for page in self.pages():
+            with self.subTest(page=page.name):
+                self.assertNotIn("Skylink", page.read_text(encoding="utf-8"))
 
     def test_every_page_is_built_for_a_phone(self):
         for page in self.pages():

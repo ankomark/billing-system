@@ -1581,6 +1581,36 @@ def _hotspot_customer_for(request, mac, **extra):
     return qs.first()
 
 
+class HotspotProviderView(APIView):
+    """
+    Who this portal belongs to.
+
+    The connected, status and logout pages are static files on a router, so
+    they cannot know an operator's name without asking. They used to carry it
+    hardcoded — one operator's business, in a template every operator
+    deploys — and after that was removed they carried nothing, which left a
+    subscriber looking at the platform's branding instead of the provider they
+    actually pay.
+
+    Its own endpoint because those pages need the name and nothing else;
+    fetching the package list for it would be a catalogue to render one line.
+    """
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [HotspotPollThrottle]
+
+    def get(self, request):
+        tenant = _public_tenant(request)
+        if tenant is None:
+            return Response({"detail": "Unknown provider."}, status=404)
+
+        return Response({
+            "provider": tenant.business_name or tenant.name,
+            "support_phones": [
+                n for n in (tenant.support_phone, tenant.support_phone_2) if n
+            ],
+        })
+
+
 class HotspotStatusView(APIView):
     permission_classes = [permissions.AllowAny]
     # Polled by the portal on every load, so it shares the poll budget rather
@@ -1642,6 +1672,9 @@ class HotspotStatusView(APIView):
                 "expires_at": subscription.expiry_date,
                 "voucher_code": voucher.code if voucher else None,
                 "package": getattr(subscription.package, "name", None),
+                # The connected page already makes this call, so the name it
+                # should be showing costs nothing extra here.
+                "provider": customer.tenant.business_name or customer.tenant.name,
             }
         )
 class PPPoECustomerPortalView(APIView):
