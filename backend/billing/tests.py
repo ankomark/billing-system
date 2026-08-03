@@ -76,7 +76,7 @@ from billing.models import (
     HotspotUsageState, HotspotUsageRecord, UsageRecord,
     PlatformPlan, PlatformSetting, TenantSubscription, TenantInvoice, TenantPayment,
     TenantStatusChange, ImpersonationLog, AdminActionLog, RouterEvent, Station,
-    set_tenant_status, router_uptime,
+    TetheringCase, set_tenant_status, router_uptime,
 )
 from billing.fields import ENCRYPTED_PREFIX
 
@@ -9397,3 +9397,1120 @@ class UsageRollupTests(TwoOperatorMixin, TestCase):
         shown = _subscriber_usage(self.customer, sub)["used_bytes"]
         enforced = usage_since(self.customer, self.midnight(self.yesterday))
         self.assertEqual(shown, enforced)
+
+
+# =====================================================
+# 55. One package feeding a second network
+# =====================================================
+
+class FakeMikrotik:
+    """
+    A router that remembers what was done to it.
+
+    Enough of librouteros' shape to exercise the real rule installation and the
+    real sweep, rather than standing in for them. What the tests then read is
+    the table itself — which is where the mistakes live, because a rule
+    RouterOS does not understand is a rule that silently never matches.
+    """
+
+    class Table:
+        def __init__(self, router, rows):
+            self.router = router
+            self.rows = rows
+
+        def __iter__(self):
+            return iter(list(self.rows))
+
+        def add(self, **kwargs):
+            self.router.counter += 1
+            row = dict(kwargs)
+            row[".id"] = f"*{self.router.counter}"
+            self.rows.append(row)
+            return row[".id"]
+
+        def update(self, **kwargs):
+            target = kwargs.pop(".id")
+            for row in self.rows:
+                if row[".id"] == target:
+                    row.update(kwargs)
+                    return
+
+        def remove(self, **kwargs):
+            target = kwargs.get(".id")
+            self.rows[:] = [r for r in self.rows if r[".id"] != target]
+
+    def __init__(self):
+        self.counter = 0
+        self.tables = {}
+
+    def path(self, *parts):
+        return self.Table(self, self.tables.setdefault(tuple(parts), []))
+
+    # ---- what the tests set up and read back -------------------------------
+
+    def rows(self, *parts):
+        return self.tables.setdefault(tuple(parts), [])
+
+    def mangle(self):
+        return self.rows("ip", "firewall", "mangle")
+
+    def queues(self):
+        return self.rows("queue", "simple")
+
+    def suspect(self, ip, list_name="tether-hop1", timeout="10m"):
+        """
+        `timeout` is what RouterOS reports as *remaining*, so the default is a
+        freshly written entry. Lower it to model one left behind by traffic
+        that stopped — which is how an address changing hands looks.
+        """
+        self.counter += 1
+        self.rows("ip", "firewall", "address-list").append(
+            {".id": f"*{self.counter}", "list": list_name, "address": ip,
+             "timeout": timeout})
+
+    def session(self, ip, user, mac=None, uptime="1h"):
+        self.counter += 1
+        self.rows("ip", "hotspot", "active").append(
+            {".id": f"*{self.counter}", "address": ip, "user": user,
+             "mac-address": mac or user, "uptime": uptime})
+
+
+class TetheringRuleTests(TestCase):
+    """
+    The rules themselves, which is where RouterOS punishes guesswork.
+
+    Two of these encode facts that cost people hours: the ttl matcher exists
+    only in mangle, and in chain=forward the value has already been decremented
+    by this router — so a rule written for the forward chain is looking for the
+    wrong number and matches nothing at all. Nothing fails; it just never fires.
+    """
+
+    def rules(self):
+        from billing.services import tethering
+        return tethering.mangle_rules()
+
+    def ttl_rules(self):
+        """The hop-counter rules. The connection-count rule carries no ttl —
+        that is the whole point of it, and it is covered separately."""
+        return [r for r in self.rules() if "ttl" in r]
+
+    def test_the_rules_read_the_value_as_it_arrived(self):
+        """
+        chain=forward sees a value this router has already decremented, so the
+        numbers below would all be one out and nothing would ever match.
+        """
+        self.assertTrue(all(r["chain"] == "prerouting" for r in self.rules()))
+
+    def test_the_ttl_matcher_uses_the_syntax_routeros_parses(self):
+        """`ttl=63` is not it — the matcher takes a comparison."""
+        self.assertTrue(self.ttl_rules())
+        for rule in self.ttl_rules():
+            self.assertRegex(rule["ttl"], r"^equal:\d+$")
+
+    def test_one_hop_below_every_starting_value_is_looked_for(self):
+        """
+        64 is Android, iOS, Linux and macOS; 128 is Windows. Looking only for
+        63 would miss every Windows laptop shared to.
+        """
+        caught = {
+            int(r["ttl"].split(":")[1])
+            for r in self.rules() if r["address-list"] == "tether-hop1"
+        }
+        self.assertEqual(caught, {63, 127, 254})
+
+    def test_the_normal_values_are_recorded_too(self):
+        """
+        An address sending at both 64 and 63 in one window is the phone itself
+        browsing while something else browses through it. That is the strongest
+        evidence available, and it needs the normal values to be seen.
+        """
+        caught = {
+            int(r["ttl"].split(":")[1])
+            for r in self.rules() if r["address-list"] == "tether-normal"
+        }
+        self.assertEqual(caught, {64, 128, 255})
+
+    def test_nothing_matches_below_two_hops(self):
+        """
+        A VPN or a mangled packet can leave any value at all. "Anything under
+        64" accuses people who are doing nothing wrong.
+        """
+        values = {int(r["ttl"].split(":")[1]) for r in self.ttl_rules()}
+        self.assertEqual(values, {64, 63, 62, 128, 127, 126, 255, 254, 253})
+
+    def test_only_hotspot_clients_are_examined(self):
+        """
+        Without hotspot=auth the rule matches replies coming back from the
+        internet, which arrive with whatever is left after a dozen hops — and
+        the address list fills with the addresses of web servers.
+        """
+        self.assertTrue(all(r.get("hotspot") == "auth" for r in self.rules()))
+
+    def test_only_the_first_packet_of_a_connection_is_examined(self):
+        """On a busy hotspot this is the difference between free and noticed."""
+        self.assertTrue(
+            all(r.get("connection-state") == "new" for r in self.rules()))
+
+    def test_the_keys_are_the_ones_routeros_knows(self):
+        """
+        Hyphenated, like every other attribute. librouteros passes keywords
+        through verbatim, so an underscore is a word the router ignores — and
+        a rule with no address list attached records nothing, quietly.
+        """
+        for rule in self.rules():
+            self.assertIn("address-list", rule)
+            self.assertIn("address-list-timeout", rule)
+            self.assertNotIn("address_list", rule)
+
+
+class TetheringInstallTests(TestCase):
+    """Putting the rules on a router, and taking them off again."""
+
+    def setUp(self):
+        cache.clear()
+        self.api = FakeMikrotik()
+
+    def install(self, **kwargs):
+        from billing.services import tethering
+        return tethering.ensure_rules(self.api, **kwargs)
+
+    def test_a_bare_router_gets_the_whole_set(self):
+        from billing.services import tethering
+
+        result = self.install()
+        self.assertEqual(result["added"], len(tethering.mangle_rules()))
+        self.assertEqual(len(self.api.mangle()), len(tethering.mangle_rules()))
+
+    def test_installing_twice_changes_nothing(self):
+        """
+        The sweep calls this every five minutes. Rules that are re-added each
+        time would fill the mangle chain within a day.
+        """
+        self.install()
+        result = self.install()
+        self.assertEqual(result, {"added": 0, "updated": 0, "removed": 0})
+
+    def test_a_timeout_written_back_in_routeros_form_is_not_drift(self):
+        """
+        "10m" goes in and "00:10:00" comes back. Comparing the strings would
+        rewrite every rule on every sweep, forever.
+        """
+        self.install(timeout="10m")
+        for row in self.api.mangle():
+            row["address-list-timeout"] = "00:10:00"
+        self.assertEqual(self.install(timeout="10m")["updated"], 0)
+
+    def test_a_changed_timeout_does_reach_the_router(self):
+        self.install(timeout="10m")
+        self.assertGreater(self.install(timeout="20m")["updated"], 0)
+
+    def test_a_rule_from_an_older_release_is_removed(self):
+        """
+        Otherwise a change to which values we look for leaves both generations
+        firing, and the older one keeps writing to a list nothing reads.
+        """
+        from billing.services import tethering
+
+        self.api.mangle().append({
+            ".id": "*99", "comment": f"{tethering.RULE_COMMENT} ttl=60",
+            "address-list": "tether-hop1"})
+        self.install()
+        comments = [r.get("comment") for r in self.api.mangle()]
+        self.assertNotIn(f"{tethering.RULE_COMMENT} ttl=60", comments)
+
+    def test_a_rule_that_is_not_ours_is_left_alone(self):
+        """An operator's own mangle rules are not ours to tidy up."""
+        self.api.mangle().append(
+            {".id": "*98", "comment": "mark VOIP", "chain": "prerouting"})
+        self.install()
+        self.assertIn("mark VOIP", [r.get("comment") for r in self.api.mangle()])
+
+    def test_a_rule_the_router_rejects_does_not_stop_the_others(self):
+        from billing.services import tethering
+
+        calls = {"n": 0}
+        original = FakeMikrotik.Table.add
+
+        def flaky(self, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise Exception("unknown parameter")
+            return original(self, **kwargs)
+
+        with patch.object(FakeMikrotik.Table, "add", flaky):
+            result = tethering.ensure_rules(self.api)
+
+        self.assertEqual(result["added"], len(tethering.mangle_rules()) - 1)
+
+    def test_removing_takes_back_everything_we_put_there(self):
+        """
+        Turning the feature off must leave the router as it was found. An
+        operator who cannot watch that happen will not trust what did it.
+        """
+        from billing.services import tethering
+
+        self.install()
+        self.api.suspect("10.5.50.14")
+        self.api.queues().append(
+            {".id": "*77", "name": "TETHER 10.5.50.14",
+             "comment": tethering.RULE_COMMENT})
+        self.api.queues().append({".id": "*78", "name": "office", "comment": ""})
+
+        tethering.remove_rules(self.api)
+
+        self.assertEqual(self.api.mangle(), [])
+        self.assertEqual(self.api.rows("ip", "firewall", "address-list"), [])
+        self.assertEqual([q["name"] for q in self.api.queues()], ["office"])
+
+
+class TetheringSweepTests(TwoOperatorMixin, TestCase):
+    """
+    What happens to a paying customer, and how much it takes.
+
+    The signal says "this packet crossed a router", not "this person is
+    cheating" — a travel router or a NATted VM looks identical. So the rule
+    these tests hold the code to is that nothing happens to anybody on one
+    sighting, and nothing happens at all unless the operator asked for it.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        self.api = FakeMikrotik()
+        self.router = self.data["t1"]["router"]
+        with tenant_context(self.t1):
+            self.customer = Customer.objects.create(
+                tenant=self.t1, full_name="Sharer", phone="254711000111",
+                connection_type="hotspot", hotspot_username="AA:BB:CC:DD:EE:01",
+                router=self.router, status="active")
+        self.api.session("10.5.50.14", "AA:BB:CC:DD:EE:01")
+        self.api.suspect("10.5.50.14")
+
+    def set_policy(self, value, tenant=None, **extra):
+        tenant = tenant or self.t1
+        with tenant_context(tenant):
+            SystemSetting.objects.update_or_create(
+                tenant=tenant, key="TETHERING_POLICY",
+                defaults={"value": value})
+            for key, val in extra.items():
+                SystemSetting.objects.update_or_create(
+                    tenant=tenant, key=key, defaults={"value": str(val)})
+        cache.clear()
+
+    def sweep(self, times=1, tenant=None):
+        """Run the real sweep against the fake router, n times."""
+        from billing.services import tethering
+
+        tenant = tenant or self.t1
+        results = []
+        with patch("billing.router_service.safe_connect_router",
+                   return_value=self.api), \
+             patch("billing.tasks.notification_tasks."
+                   "notify_customer_task.delay") as sent:
+            for i in range(times):
+                with tenant_context(tenant):
+                    results.append(tethering.sweep_router(
+                        self.router,
+                        now=timezone.now() + timezone.timedelta(minutes=5 * i)))
+        self.sent = sent
+        return results
+
+    def case(self):
+        with tenant_context(self.t1):
+            return TetheringCase.objects.filter(customer=self.customer).first()
+
+    # ---- the switch --------------------------------------------------------
+
+    def test_an_operator_who_has_not_asked_gets_nothing(self):
+        """
+        This writes firewall rules onto hardware somebody else owns. Default
+        off means that happens because they asked, not because they upgraded.
+        """
+        self.assertIsNone(self.sweep()[0])
+        self.assertEqual(self.api.mangle(), [])
+        self.assertIsNone(self.case())
+
+    def test_off_for_one_operator_is_not_off_for_the_other(self):
+        from billing.services import tethering
+
+        self.set_policy("warn", self.t1)
+        self.set_policy("off", self.t2)
+        with tenant_context(self.t1):
+            self.assertEqual(tethering.policy(self.t1.id), "warn")
+        with tenant_context(self.t2):
+            self.assertEqual(tethering.policy(self.t2.id), "off")
+
+    def test_an_unknown_policy_is_treated_as_off(self):
+        """A typo in a settings row must not decide to cut people off."""
+        from billing.services import tethering
+
+        self.set_policy("disconnect-everybody")
+        with tenant_context(self.t1):
+            self.assertEqual(tethering.policy(self.t1.id), "off")
+
+    # ---- evidence, not proof -----------------------------------------------
+
+    def test_one_sighting_is_written_down_and_nothing_else(self):
+        self.set_policy("kick", TETHERING_MIN_OBSERVATIONS=3)
+        self.sweep()
+        case = self.case()
+        self.assertEqual(case.observations, 1)
+        self.assertEqual(case.status, TetheringCase.WATCHING)
+        self.assertFalse(self.sent.called)
+        self.assertEqual(len(self.api.rows("ip", "hotspot", "active")), 1,
+                         "one sighting ended somebody's session")
+
+    def test_sightings_accumulate_onto_one_case(self):
+        """
+        Not a row per sweep. An operator looking at twenty rows for one evening
+        cannot tell whether that is twenty people or one.
+        """
+        self.set_policy("log")
+        self.sweep(times=4)
+        with tenant_context(self.t1):
+            self.assertEqual(
+                TetheringCase.objects.filter(customer=self.customer).count(), 1)
+        self.assertEqual(self.case().observations, 4)
+
+    def test_logging_never_touches_anybody(self):
+        """The setting an operator should start on, and it must be inert."""
+        self.set_policy("log", TETHERING_MIN_OBSERVATIONS=2)
+        self.sweep(times=5)
+        self.assertEqual(self.case().status, TetheringCase.WATCHING)
+        self.assertFalse(self.sent.called)
+        self.assertEqual(self.api.queues(), [])
+
+    def test_the_threshold_is_where_something_happens(self):
+        self.set_policy("warn", TETHERING_MIN_OBSERVATIONS=3)
+        self.sweep(times=2)
+        self.assertEqual(self.case().status, TetheringCase.WATCHING)
+        self.sweep()
+        self.assertEqual(self.case().status, TetheringCase.WARNED)
+
+    def test_a_warned_customer_is_not_warned_again_every_five_minutes(self):
+        self.set_policy("warn", TETHERING_MIN_OBSERVATIONS=2)
+        self.sweep(times=6)
+        self.assertEqual(self.sent.call_count, 1)
+
+    def test_the_message_goes_out_through_the_owning_operator(self):
+        """
+        A worker has no request context. Without the operator travelling with
+        the message it would be sent — and billed — through somebody else's
+        account.
+        """
+        self.set_policy("warn", TETHERING_MIN_OBSERVATIONS=2)
+        self.sweep(times=2)
+        self.assertEqual(self.sent.call_args.kwargs["tenant_id"], self.t1.id)
+        self.assertEqual(self.sent.call_args.args[0], self.customer.phone)
+
+    # ---- what each policy does ---------------------------------------------
+
+    def test_throttling_slows_the_address_down(self):
+        self.set_policy("throttle", TETHERING_MIN_OBSERVATIONS=2,
+                        TETHERING_THROTTLE_KBPS=256)
+        self.sweep(times=2)
+        queue = self.api.queues()[0]
+        self.assertEqual(queue["target"], "10.5.50.14/32")
+        self.assertEqual(queue["max-limit"], "256k/256k")
+        self.assertEqual(self.case().status, TetheringCase.THROTTLED)
+
+    def test_ending_the_session_is_what_returns_them_to_the_login_page(self):
+        """
+        A firewall rule cannot do it. Once a client is authenticated the
+        hotspot passes their traffic, so dropping packets gives them a broken
+        connection rather than a login form.
+        """
+        self.set_policy("kick", TETHERING_MIN_OBSERVATIONS=2)
+        self.sweep(times=2)
+        self.assertEqual(self.api.rows("ip", "hotspot", "active"), [])
+        self.assertEqual(self.case().status, TetheringCase.KICKED)
+
+    def test_someone_who_logs_back_in_and_carries_on_is_ended_again(self):
+        """
+        A kick lasts a moment. Applied once per case, the deterrent fires on
+        the first evening and never again however long they keep going.
+        """
+        self.set_policy("kick", TETHERING_MIN_OBSERVATIONS=2)
+        self.sweep(times=2)
+        self.assertEqual(self.api.rows("ip", "hotspot", "active"), [])
+
+        # They log back in and carry on sharing.
+        self.api.session("10.5.50.14", "AA:BB:CC:DD:EE:01")
+        self.sweep(times=2)
+        self.assertEqual(self.api.rows("ip", "hotspot", "active"), [])
+        self.assertEqual(self.case().observations, 4)
+
+    def test_a_second_kick_does_not_come_with_a_second_text(self):
+        """The reason has already been given. Repeating it is nagging."""
+        self.set_policy("kick", TETHERING_MIN_OBSERVATIONS=2)
+        self.sweep(times=2)
+        self.api.session("10.5.50.14", "AA:BB:CC:DD:EE:01")
+        self.sweep(times=2)
+        self.assertEqual(self.sent.call_count, 0,
+                         "the second round texted them again")
+
+    def test_a_lingering_list_entry_does_not_open_a_second_case(self):
+        """
+        An address-list entry outlives the session that caused it, so the sweep
+        right after a kick sees the address with nobody logged in on it. That
+        must attach to the case it belongs to, not open an orphan.
+        """
+        self.set_policy("kick", TETHERING_MIN_OBSERVATIONS=2)
+        self.sweep(times=3)
+        with tenant_context(self.t1):
+            self.assertEqual(TetheringCase.objects.count(), 1)
+
+    def test_nobody_loses_what_they_paid_for(self):
+        """
+        The strongest setting ends a session. It does not expire a
+        subscription, block a device or delete a voucher — the evidence is not
+        good enough for any of those, and it never will be.
+        """
+        self.set_policy("kick", TETHERING_MIN_OBSERVATIONS=2)
+        self.sweep(times=2)
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.status, "active")
+        with tenant_context(self.t1):
+            self.assertFalse(
+                CustomerDevice.objects.filter(customer=self.customer,
+                                              blocked=True).exists())
+
+    # ---- what the evidence says --------------------------------------------
+
+    def test_traffic_at_both_values_is_recorded_as_the_stronger_signal(self):
+        """The phone browsing while something else browses through it."""
+        self.set_policy("log")
+        self.api.suspect("10.5.50.14", "tether-normal")
+        self.sweep()
+        self.assertTrue(self.case().mixed_ttl)
+
+    def test_one_address_in_two_lists_is_still_one_sighting(self):
+        """
+        A phone with a laptop and a second router behind it lands in both.
+        Counted twice, it reaches the threshold in half the time it should.
+        """
+        self.set_policy("log")
+        self.api.suspect("10.5.50.14", "tether-hop2")
+        self.sweep()
+        case = self.case()
+        self.assertEqual(case.observations, 1)
+        self.assertEqual(case.hops, 2, "the furthest hop is the one recorded")
+
+    def test_two_hops_is_recorded_as_two(self):
+        self.set_policy("log")
+        self.api.rows("ip", "firewall", "address-list").clear()
+        self.api.suspect("10.5.50.14", "tether-hop2")
+        self.sweep()
+        self.assertEqual(self.case().hops, 2)
+
+    def test_an_address_with_no_subscriber_behind_it_is_never_acted_on(self):
+        """
+        Worth showing an operator, since something is sharing. But there is
+        nobody to tell and nothing fair to do, so nothing is done.
+        """
+        self.set_policy("kick", TETHERING_MIN_OBSERVATIONS=2)
+        self.api.rows("ip", "hotspot", "active").clear()
+        self.sweep(times=4)
+        with tenant_context(self.t1):
+            case = TetheringCase.objects.get(customer__isnull=True)
+        self.assertEqual(case.status, TetheringCase.WATCHING)
+        self.assertFalse(self.sent.called)
+
+    # ---- the half that is easy to leave out --------------------------------
+
+    def test_a_throttle_is_lifted_when_the_sharing_stops(self):
+        """
+        Left on, it is a customer paying for 10 Mbps and getting 512 kbps for
+        the rest of the month, with the reason in a table nobody reads.
+        """
+        from billing.services import tethering
+
+        self.set_policy("throttle", TETHERING_MIN_OBSERVATIONS=2,
+                        TETHERING_STALE_MINUTES=30)
+        self.sweep(times=2)
+        self.assertEqual(len(self.api.queues()), 1)
+
+        with tenant_context(self.t1):
+            case = self.case()
+            case.last_seen = timezone.now() - timezone.timedelta(hours=2)
+            case.save(update_fields=["last_seen"])
+            with patch("billing.router_service.safe_connect_router",
+                       return_value=self.api):
+                self.assertEqual(tethering.close_stale_cases(self.t1.id), 1)
+
+        self.assertEqual(self.api.queues(), [])
+        self.assertEqual(self.case().status, TetheringCase.CLEARED)
+
+    def test_an_unreachable_router_leaves_the_case_open(self):
+        """
+        Closing it would record the throttle as lifted while the queue is still
+        on the router, and nothing would ever come back to it.
+        """
+        from billing.services import tethering
+
+        self.set_policy("throttle", TETHERING_MIN_OBSERVATIONS=2)
+        self.sweep(times=2)
+
+        with tenant_context(self.t1):
+            case = self.case()
+            case.last_seen = timezone.now() - timezone.timedelta(hours=2)
+            case.save(update_fields=["last_seen"])
+            with patch("billing.router_service.safe_connect_router",
+                       return_value=None):
+                self.assertEqual(tethering.close_stale_cases(self.t1.id), 0)
+
+        self.assertEqual(self.case().status, TetheringCase.THROTTLED)
+
+    def test_a_router_that_cannot_be_read_concludes_nothing(self):
+        """
+        An unreadable table is not an empty one. Treating the two the same
+        would clear every open case on the estate the first time a link
+        wobbled.
+        """
+        from billing.services import tethering
+
+        self.set_policy("log")
+        with patch("billing.router_service.safe_connect_router",
+                   return_value=self.api), \
+             patch("billing.services.tethering.read_lists", return_value=None):
+            with tenant_context(self.t1):
+                self.assertIsNone(tethering.sweep_router(self.router))
+        self.assertIsNone(self.case())
+
+
+class TetheringTaskTests(TwoOperatorMixin, TestCase):
+    """The clock around the sweep."""
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+
+    def test_an_estate_with_nobody_switched_on_dials_nothing(self):
+        """
+        Off by default means a default install must not open a single
+        connection — otherwise "off" still costs every operator a sweep.
+        """
+        from billing.tasks.tethering_tasks import detect_tethering
+
+        with patch("billing.router_service.safe_connect_router") as connect:
+            result = detect_tethering()
+
+        self.assertFalse(connect.called)
+        self.assertEqual(result["routers"], 0)
+
+    def test_one_connection_per_router_per_sweep(self):
+        """
+        Same reason as the usage collectors: a sweep that asks per subscriber
+        stops fitting between runs, and Celery drops a late task rather than
+        finishing it.
+        """
+        from billing.tasks.tethering_tasks import detect_tethering
+
+        for tenant in (self.t1, self.t2):
+            with tenant_context(tenant):
+                SystemSetting.objects.create(
+                    tenant=tenant, key="TETHERING_POLICY", value="log")
+        cache.clear()
+
+        api = FakeMikrotik()
+        with patch("billing.router_service.safe_connect_router",
+                   return_value=api) as connect:
+            detect_tethering()
+
+        # One router each, two operators.
+        self.assertEqual(connect.call_count, 2)
+
+    def test_pruning_keeps_open_cases(self):
+        from billing.tasks.tethering_tasks import prune_tethering_cases
+
+        old = timezone.now() - timezone.timedelta(days=200)
+        with tenant_context(self.t1):
+            closed = TetheringCase.objects.create(
+                tenant=self.t1, ip_address="10.0.0.9",
+                status=TetheringCase.CLEARED, cleared_at=old)
+            open_case = TetheringCase.objects.create(
+                tenant=self.t1, ip_address="10.0.0.10",
+                status=TetheringCase.WATCHING)
+
+        prune_tethering_cases()
+
+        with tenant_context(self.t1):
+            self.assertFalse(
+                TetheringCase.objects.filter(pk=closed.pk).exists())
+            self.assertTrue(
+                TetheringCase.objects.filter(pk=open_case.pk).exists())
+
+
+# =====================================================
+# 56. The ways the wrong person gets punished
+# =====================================================
+
+class TetheringAttributionTests(TwoOperatorMixin, TestCase):
+    """
+    Everything this feature applies lands on an IP address, and an address is a
+    lease. It is 10.5.50.14 on every router the operator owns and on every
+    other operator's too, it belonged to somebody else this morning, and it
+    will belong to somebody else tomorrow.
+
+    So every one of these is the same bug wearing a different hat: evidence
+    about one person being spent on another. They are separated out from the
+    behaviour tests because none of them is about tethering at all — they are
+    about identity, and getting identity wrong here means throttling a customer
+    who did nothing and never finding out.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        self.api = FakeMikrotik()
+        self.router = self.data["t1"]["router"]
+        with tenant_context(self.t1):
+            SystemSetting.objects.create(
+                tenant=self.t1, key="TETHERING_POLICY", value="throttle")
+            SystemSetting.objects.create(
+                tenant=self.t1, key="TETHERING_MIN_OBSERVATIONS", value="2")
+            self.sharer = Customer.objects.create(
+                tenant=self.t1, full_name="Sharer", phone="254711000111",
+                connection_type="hotspot", hotspot_username="AA:BB:CC:DD:EE:01",
+                router=self.router, status="active")
+            self.innocent = Customer.objects.create(
+                tenant=self.t1, full_name="Innocent", phone="254711000222",
+                connection_type="hotspot", hotspot_username="AA:BB:CC:DD:EE:02",
+                router=self.router, status="active")
+        cache.clear()
+
+    def sweep(self, times=1, router=None):
+        from billing.services import tethering
+
+        with patch("billing.router_service.safe_connect_router",
+                   return_value=self.api), \
+             patch("billing.tasks.notification_tasks."
+                   "notify_customer_task.delay"):
+            for i in range(times):
+                with tenant_context(self.t1):
+                    tethering.sweep_router(
+                        router or self.router,
+                        now=timezone.now() + timezone.timedelta(minutes=5 * i))
+
+    def case_for(self, customer):
+        with tenant_context(self.t1):
+            return TetheringCase.objects.filter(customer=customer).first()
+
+    # ---- a lease that moved ------------------------------------------------
+
+    def test_the_lease_moving_does_not_hand_the_evidence_to_its_next_holder(self):
+        """
+        The address-list entry outlives the session that filled it. If the
+        subscriber disconnects and somebody else picks up that lease, the next
+        sweep sees the same address with a different person on it.
+        """
+        self.api.session("10.5.50.14", "AA:BB:CC:DD:EE:01")
+        self.api.suspect("10.5.50.14")
+        self.sweep()
+        self.assertEqual(self.case_for(self.sharer).observations, 1)
+
+        # The sharer leaves. Their traffic stops, so nothing refreshes the
+        # entry and it decays — but it is still there when the innocent
+        # customer is handed that address a minute later.
+        self.api.rows("ip", "hotspot", "active").clear()
+        self.api.rows("ip", "firewall", "address-list")[0]["timeout"] = "2m"
+        self.api.session("10.5.50.14", "AA:BB:CC:DD:EE:02", uptime="1m")
+        self.sweep(times=3)
+
+        self.assertIsNone(self.case_for(self.innocent),
+                          "somebody else's sighting opened a case against them")
+        self.assertEqual(self.case_for(self.sharer).observations, 1,
+                         "the sharer was credited with traffic that was not theirs")
+
+    def test_nothing_is_applied_to_an_address_the_customer_no_longer_holds(self):
+        """
+        The final guard: whoever is logged in on that address right now must be
+        the person the case is about, or nothing happens to it.
+        """
+        self.api.session("10.5.50.14", "AA:BB:CC:DD:EE:01")
+        self.api.suspect("10.5.50.14")
+        self.sweep()
+
+        # Enough evidence has accrued; then the lease changes hands.
+        with tenant_context(self.t1):
+            case = self.case_for(self.sharer)
+            case.observations = 10
+            case.save(update_fields=["observations"])
+        self.api.rows("ip", "hotspot", "active").clear()
+        self.api.session("10.5.50.14", "AA:BB:CC:DD:EE:02")
+
+        self.sweep()
+        self.assertEqual(self.api.queues(), [],
+                         "the innocent customer was throttled")
+
+    def test_an_entry_that_predates_the_session_on_it_is_not_theirs(self):
+        """
+        The mechanism behind the test above, on its own. An entry older than
+        the session sitting on that address cannot have been made by it.
+        """
+        from billing.services import tethering
+
+        stale = tethering.caused_by_this_session(
+            {"timeout": "2m"}, {"uptime": "1m"}, 600)
+        self.assertFalse(stale, "an 8-minute-old entry on a 1-minute session")
+
+        live = tethering.caused_by_this_session(
+            {"timeout": "9m50s"}, {"uptime": "1m"}, 600)
+        self.assertTrue(live, "an entry written moments ago")
+
+    def test_an_address_still_being_shared_never_looks_stale(self):
+        """
+        Every new connection rewrites the entry, so a case that is genuinely
+        live keeps a full timeout and this check never gets in the way of
+        catching anybody — which is the only reason it is safe to have.
+        """
+        from billing.services import tethering
+
+        self.assertTrue(tethering.caused_by_this_session(
+            {"timeout": "10m"}, {"uptime": "6h"}, 600))
+
+    def test_a_router_that_will_not_say_does_not_get_the_benefit(self):
+        """
+        Unknown is not yes. Counting an entry we cannot place is how somebody
+        else's traffic gets charged to whoever is standing there.
+        """
+        from billing.services import tethering
+
+        self.assertIsNone(tethering.caused_by_this_session(
+            {}, {"uptime": "1m"}, 600))
+        self.assertIsNone(tethering.caused_by_this_session(
+            {"timeout": "5m"}, {}, 600))
+
+    def test_an_unattributable_sighting_is_kept_but_never_counted(self):
+        """
+        Worth keeping the case alive — a live address is behaving oddly. Not
+        worth counting, because nobody can be shown to be behind it.
+        """
+        self.api.suspect("10.5.50.99")
+        self.sweep(times=5)
+        with tenant_context(self.t1):
+            case = TetheringCase.objects.get(ip_address="10.5.50.99")
+        self.assertEqual(case.observations, 0)
+        self.assertEqual(case.status, TetheringCase.WATCHING)
+
+    # ---- the same address on two routers -----------------------------------
+
+    def test_the_same_address_on_two_routers_is_two_different_people(self):
+        """
+        10.5.50.14 exists on every router an operator owns. Matched on the
+        address alone, one site's case collects the other site's sightings —
+        and the action lands on whichever router was written down last.
+        """
+        with tenant_context(self.t1):
+            second = RouterDevice.objects.create(
+                tenant=self.t1, name="t1-router-2", ip_address="10.0.0.2",
+                username="a", password="p", is_active=True)
+
+        self.api.suspect("10.5.50.14")
+        self.sweep()
+        self.sweep(router=second)
+
+        with tenant_context(self.t1):
+            cases = TetheringCase.objects.filter(ip_address="10.5.50.14")
+            self.assertEqual(cases.count(), 2)
+            self.assertEqual(
+                {c.router_id for c in cases}, {self.router.id, second.id})
+
+    def test_a_case_never_reaches_across_operators(self):
+        from billing.services import tethering
+
+        with tenant_context(self.t2):
+            theirs = Customer.objects.create(
+                tenant=self.t2, full_name="Theirs", phone="254722000111",
+                connection_type="hotspot", hotspot_username="AA:BB:CC:DD:EE:01",
+                status="active")
+
+        found = tethering.customer_for(
+            self.t1.id, {"user": "AA:BB:CC:DD:EE:01", "mac": ""})
+        self.assertEqual(found, self.sharer)
+        self.assertNotEqual(found, theirs,
+                            "one operator's MAC resolved to another's customer")
+
+    # ---- a throttle that outlives its reason --------------------------------
+
+    def test_a_throttle_follows_the_customer_to_their_new_address(self):
+        """
+        Otherwise it stops throttling the person it was meant for and starts
+        throttling whoever inherited the lease.
+        """
+        self.api.session("10.5.50.14", "AA:BB:CC:DD:EE:01")
+        self.api.suspect("10.5.50.14")
+        self.sweep(times=2)
+        self.assertEqual(self.api.queues()[0]["target"], "10.5.50.14/32")
+
+        # Same subscriber, new lease.
+        self.api.rows("ip", "hotspot", "active").clear()
+        self.api.rows("ip", "firewall", "address-list").clear()
+        self.api.session("10.5.50.77", "AA:BB:CC:DD:EE:01")
+        self.sweep()
+
+        targets = [q["target"] for q in self.api.queues()]
+        self.assertEqual(targets, ["10.5.50.77/32"],
+                         "the old address was left throttled")
+        self.assertEqual(self.case_for(self.sharer).throttled_ip, "10.5.50.77")
+
+    def test_a_stranger_on_the_address_cannot_keep_a_throttle_alive(self):
+        """
+        The throttle stays on while the case does, and the case stays open
+        while it is being seen. If the person who inherited the address could
+        refresh it, the subscriber it was applied to could walk away and the
+        throttle would sit on a stranger for good, renewed every five minutes
+        by that stranger's own traffic.
+        """
+        self.api.session("10.5.50.14", "AA:BB:CC:DD:EE:01")
+        self.api.suspect("10.5.50.14")
+        self.sweep(times=2)
+        applied_at = self.case_for(self.sharer).last_seen
+
+        # The sharer disconnects. Their entry decays; the innocent customer
+        # picks up the lease and goes on using it.
+        self.api.rows("ip", "hotspot", "active").clear()
+        self.api.rows("ip", "firewall", "address-list")[0]["timeout"] = "2m"
+        self.api.session("10.5.50.14", "AA:BB:CC:DD:EE:02", uptime="1m")
+        self.sweep(times=4)
+
+        self.assertEqual(self.case_for(self.sharer).last_seen, applied_at,
+                         "somebody else's traffic renewed the case")
+
+    def test_switching_the_feature_off_lifts_what_it_applied(self):
+        """
+        Nothing sweeps for that operator again, so a throttle still on at that
+        moment is permanent — switched off, out of the logs, and impossible to
+        explain from the router alone.
+        """
+        from billing.tasks.tethering_tasks import detect_tethering
+
+        self.api.session("10.5.50.14", "AA:BB:CC:DD:EE:01")
+        self.api.suspect("10.5.50.14")
+        self.sweep(times=2)
+        self.assertEqual(len(self.api.queues()), 1)
+
+        with tenant_context(self.t1):
+            SystemSetting.objects.filter(
+                tenant=self.t1, key="TETHERING_POLICY").update(value="off")
+        cache.clear()
+
+        with patch("billing.router_service.safe_connect_router",
+                   return_value=self.api):
+            detect_tethering()
+
+        self.assertEqual(self.api.queues(), [], "a throttle outlived the feature")
+        self.assertEqual(self.case_for(self.sharer).status,
+                         TetheringCase.CLEARED)
+
+    def test_the_throttle_that_is_lifted_is_the_one_that_was_applied(self):
+        """
+        Lifting `ip_address` rather than what was actually throttled leaves a
+        queue on the router slowing down a stranger, with nothing anywhere that
+        says why.
+        """
+        from billing.services import tethering
+
+        self.api.session("10.5.50.14", "AA:BB:CC:DD:EE:01")
+        self.api.suspect("10.5.50.14")
+        self.sweep(times=2)
+
+        with tenant_context(self.t1):
+            case = self.case_for(self.sharer)
+            # The record has moved on; the queue on the router has not.
+            case.ip_address = "10.5.50.90"
+            case.last_seen = timezone.now() - timezone.timedelta(hours=2)
+            case.save(update_fields=["ip_address", "last_seen"])
+            with patch("billing.router_service.safe_connect_router",
+                       return_value=self.api):
+                tethering.close_stale_cases(self.t1.id)
+
+        self.assertEqual(self.api.queues(), [], "a queue was left behind")
+
+
+class TetheringBlindSpotTests(TwoOperatorMixin, TestCase):
+    """
+    The ways this stops seeing anything while looking entirely healthy.
+
+    Every one of these produces the same output as a quiet network: no cases,
+    no errors, no log lines. That is what makes them worth a test each — the
+    failure mode of a detector is not a crash, it is silence.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        self.api = FakeMikrotik()
+        self.router = self.data["t1"]["router"]
+        with tenant_context(self.t1):
+            SystemSetting.objects.create(
+                tenant=self.t1, key="TETHERING_POLICY", value="log")
+        cache.clear()
+
+    def set(self, key, value):
+        with tenant_context(self.t1):
+            SystemSetting.objects.update_or_create(
+                tenant=self.t1, key=key, defaults={"value": str(value)})
+        cache.clear()
+
+    # ---- misconfiguration that silences it ---------------------------------
+
+    def test_a_timeout_shorter_than_the_sweep_is_refused(self):
+        """
+        Set to a minute, every entry expires before anything reads it. The
+        rules match, the lists fill, the sweep finds them empty, and nobody
+        anywhere sees an error.
+        """
+        from billing.services import tethering
+
+        self.set("TETHERING_LIST_TIMEOUT", "1m")
+        with tenant_context(self.t1):
+            self.assertEqual(tethering.list_timeout(self.t1.id), "10m")
+
+    def test_a_longer_timeout_is_the_operator_s_business(self):
+        from billing.services import tethering
+
+        self.set("TETHERING_LIST_TIMEOUT", "30m")
+        with tenant_context(self.t1):
+            self.assertEqual(tethering.list_timeout(self.t1.id), "30m")
+
+    def test_nonsense_in_the_timeout_falls_back_rather_than_breaking(self):
+        from billing.services import tethering
+
+        self.set("TETHERING_LIST_TIMEOUT", "soon")
+        with tenant_context(self.t1):
+            self.assertEqual(tethering.list_timeout(self.t1.id), "10m")
+
+    # ---- a table that could not be read ------------------------------------
+
+    def test_an_unreadable_session_table_stops_the_sweep(self):
+        """
+        Returning {} instead would make every address on the hotspot look like
+        it belonged to nobody — a whole router of anonymous cases that read,
+        afterwards, exactly like a real night of anonymous sharing.
+        """
+        from billing.services import tethering
+
+        self.api.suspect("10.5.50.14")
+
+        def explode(*parts):
+            if parts == ("ip", "hotspot", "active"):
+                raise Exception("timeout")
+            return FakeMikrotik.path(self.api, *parts)
+
+        with patch("billing.router_service.safe_connect_router",
+                   return_value=self.api), \
+             patch.object(self.api, "path", explode):
+            with tenant_context(self.t1):
+                self.assertIsNone(tethering.sweep_router(self.router))
+
+        with tenant_context(self.t1):
+            self.assertEqual(TetheringCase.objects.count(), 0)
+
+    # ---- the hole the rules cannot see into --------------------------------
+
+    def test_a_router_forwarding_ipv6_is_reported(self):
+        """
+        The hotspot is IPv4 only: it does not intercept IPv6, does not
+        authenticate it, and none of these rules match it. An operator staring
+        at an empty table deserves to know that is why.
+        """
+        from billing.services import tethering
+
+        self.api.rows("ipv6", "address").append(
+            {".id": "*1", "address": "2c0f:fe38::1/64", "disabled": "false"})
+        self.assertIs(tethering.ipv6_is_open(self.api), True)
+
+    def test_link_local_addresses_are_not_ipv6_being_forwarded(self):
+        """Present on every interface whether IPv6 is in use or not."""
+        from billing.services import tethering
+
+        self.api.rows("ipv6", "address").append(
+            {".id": "*1", "address": "fe80::1/64", "disabled": "false"})
+        self.assertIs(tethering.ipv6_is_open(self.api), False)
+
+    def test_a_router_without_the_ipv6_package_is_not_a_warning(self):
+        from billing.services import tethering
+
+        api = MagicMock()
+        api.path.side_effect = Exception("no such command prefix")
+        self.assertIsNone(tethering.ipv6_is_open(api))
+
+    # ---- the signal that survives evasion ----------------------------------
+
+    def test_the_connection_count_rule_does_not_depend_on_the_hop_counter(self):
+        """
+        Pinning the TTL back to 64 is one line on a rooted Android, and it
+        defeats every other rule here. This is the one it does not defeat.
+        """
+        from billing.services import tethering
+
+        busy = [r for r in tethering.mangle_rules()
+                if r["address-list"] == tethering.BUSY_LIST]
+        self.assertEqual(len(busy), 1)
+        self.assertNotIn("ttl", busy[0])
+        self.assertEqual(busy[0]["connection-limit"], "100,32")
+
+    def test_the_limit_is_per_address_not_per_subnet(self):
+        """Without the /32 one busy subscriber lists the whole hotspot range."""
+        from billing.services import tethering
+
+        self.set("TETHERING_CONNECTION_LIMIT", 250)
+        with tenant_context(self.t1):
+            limit = tethering.connection_limit(self.t1.id)
+        busy = [r for r in tethering.mangle_rules(connection_limit=limit)
+                if r["address-list"] == tethering.BUSY_LIST]
+        self.assertEqual(busy[0]["connection-limit"], "250,32")
+
+    def test_being_busy_alone_never_does_anything(self):
+        """
+        One torrent client passes this on its own. It is corroboration, and it
+        is recorded as such — an address in that list and nowhere else is not
+        even a sighting.
+        """
+        from billing.services import tethering
+
+        self.set("TETHERING_POLICY", "kick")
+        self.set("TETHERING_MIN_OBSERVATIONS", 2)
+        with tenant_context(self.t1):
+            Customer.objects.create(
+                tenant=self.t1, full_name="Busy", phone="254711000333",
+                connection_type="hotspot", hotspot_username="AA:BB:CC:DD:EE:03",
+                router=self.router, status="active")
+        self.api.session("10.5.50.30", "AA:BB:CC:DD:EE:03")
+        self.api.suspect("10.5.50.30", tethering.BUSY_LIST)
+
+        with patch("billing.router_service.safe_connect_router",
+                   return_value=self.api):
+            for i in range(4):
+                with tenant_context(self.t1):
+                    tethering.sweep_router(
+                        self.router,
+                        now=timezone.now() + timezone.timedelta(minutes=5 * i))
+
+        with tenant_context(self.t1):
+            self.assertEqual(TetheringCase.objects.count(), 0)
+        self.assertEqual(len(self.api.rows("ip", "hotspot", "active")), 1)
+
+    def test_being_busy_is_recorded_against_a_case_that_exists(self):
+        """Where it earns its keep: the same address doing both."""
+        from billing.services import tethering
+
+        with tenant_context(self.t1):
+            Customer.objects.create(
+                tenant=self.t1, full_name="Both", phone="254711000444",
+                connection_type="hotspot", hotspot_username="AA:BB:CC:DD:EE:04",
+                router=self.router, status="active")
+        self.api.session("10.5.50.40", "AA:BB:CC:DD:EE:04")
+        self.api.suspect("10.5.50.40")
+        self.api.suspect("10.5.50.40", tethering.BUSY_LIST)
+
+        with patch("billing.router_service.safe_connect_router",
+                   return_value=self.api):
+            with tenant_context(self.t1):
+                tethering.sweep_router(self.router)
+
+        with tenant_context(self.t1):
+            case = TetheringCase.objects.get()
+        self.assertTrue(case.high_connections)
+        self.assertEqual(case.observations, 1)

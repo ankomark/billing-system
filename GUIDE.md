@@ -389,6 +389,84 @@ From a phone, on that WiFi:
 If step 5 works but step 6 does not, the device binding did not save — check
 the customer exists in the dashboard with a MAC against them.
 
+### 3.7 Hotspot sharing (optional, off by default)
+
+One subscriber buys a package, turns on their phone's own hotspot, and three
+friends browse for free. Nothing else in the system can see it — the router
+talks only to the phone, so it is one MAC and one session, and the device limit
+you sold has nothing to say about what is behind that one phone.
+
+What gives it away is the hop counter on the packets. A phone talking to your
+router directly arrives with the round number its operating system set (64 on
+Android and iOS, 128 on Windows); a laptop behind that phone has crossed one
+more router, so it arrives one lower. The backend installs nine mangle rules
+that write the odd ones into address lists, reads those lists every five
+minutes, and builds a case per subscriber.
+
+**It is evidence, not proof.** A subscriber who plugs your WiFi into their own
+travel router looks identical, and anyone who has bothered to pin their TTL
+back to 64 will never appear at all. So nothing happens on one sighting, and
+nothing happens without you asking.
+
+Switch it on per operator, in **SystemSetting**:
+
+| Key | Values | Default |
+|---|---|---|
+| `TETHERING_POLICY` | `off`, `log`, `warn`, `throttle`, `kick` | `off` |
+| `TETHERING_MIN_OBSERVATIONS` | sweeps before acting | `3` (≈15 min) |
+| `TETHERING_THROTTLE_KBPS` | speed under `throttle` | `512` |
+| `TETHERING_CONNECTION_LIMIT` | connections that mark an address busy | `100` |
+| `TETHERING_STALE_MINUTES` | silence that closes a case | `30` |
+| `TETHERING_MESSAGE` | what the subscriber is told | see below |
+
+**Start on `log`, for a week.** It installs the rules and records what it finds
+and does nothing else. Look at the cases in the admin before you let it act —
+on some networks it turns up nothing, and on others it turns up a third of the
+customer base, which usually means something about that estate, not about the
+customers.
+
+Then:
+
+- `warn` texts them and leaves their access alone.
+- `throttle` puts them on `TETHERING_THROTTLE_KBPS` until the sharing stops,
+  and lifts it automatically when it does.
+- `kick` ends the hotspot session, which is what puts them back at the login
+  page — a firewall rule cannot do that, because an authenticated client's
+  traffic is already being passed, so dropping packets gives them a broken
+  connection rather than a login form.
+
+None of them touches the subscription, blocks a device or burns a voucher. The
+strongest setting interrupts a session; the customer can log straight back in.
+
+**Two things it cannot see, both worth knowing before you trust it.**
+
+*A pinned TTL.* Setting the outgoing hop counter back to 64 is one line on a
+rooted Android, and there are apps that do it. Nobody who has bothered will
+ever appear in the hop lists. What they cannot hide is how many connections a
+roomful of devices holds open at once, so a tenth rule marks addresses above
+`TETHERING_CONNECTION_LIMIT` as busy. That flag is corroboration only — one
+enthusiastic torrent client trips it alone — so it is recorded on the case and
+shown in the admin, and nothing is ever done on the strength of it.
+
+*IPv6.* MikroTik's hotspot is IPv4 only: it does not intercept IPv6, does not
+authenticate it, and these rules do not match it. On a router handing out
+global IPv6, sharing over IPv6 is invisible here — and a device that never
+logged in may not need to. Check with `/ipv6 address print`; anything not
+starting `fe80` on a client-facing interface is the hole. The sweep logs a
+warning when it sees one, and `tethering_rules status` prints it. If you are
+not deliberately running IPv6, turn it off on the client bridge.
+
+To take it all off a router again:
+
+```bash
+docker compose exec backend python manage.py tethering_rules remove --tenant <slug>
+docker compose exec backend python manage.py tethering_rules status --tenant <slug>
+```
+
+The rules are also written out in `mikrotik-hotspot/tethering-detection.rsc` if
+an operator would rather paste them in and watch the address lists themselves
+before letting the backend act on anything.
+
 ---
 
 ## When a router cannot be reached

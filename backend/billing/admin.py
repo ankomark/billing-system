@@ -12,6 +12,7 @@ from .models import (
     ExpiryReminderLog,  # <-- ADD THIS
     MpesaTransaction,
     SystemSetting,
+    TetheringCase,
     PlatformPlan, PlatformSetting,
     TenantSubscription, TenantInvoice, TenantPayment,
 )
@@ -205,6 +206,27 @@ class MpesaTransactionAdmin(admin.ModelAdmin):
 class SystemSettingAdmin(admin.ModelAdmin):
     list_display = ("key", "value")
     search_fields = ("key",)
+
+
+@admin.register(TetheringCase)
+class TetheringCaseAdmin(admin.ModelAdmin):
+    """
+    Suspected hotspot sharing. Read-only on purpose: these rows are what the
+    sweep observed, and editing an observation to say something else it did not
+    observe helps nobody. Ending a case is done by the subscriber stopping.
+    """
+
+    list_display = ("customer", "ip_address", "hops", "mixed_ttl",
+                    "high_connections", "observations", "status", "last_seen")
+    list_filter = ("status", "mixed_ttl", "high_connections", "hops")
+    search_fields = ("customer__full_name", "customer__phone", "ip_address",
+                     "mac_address")
+    readonly_fields = tuple(
+        f.name for f in TetheringCase._meta.fields if f.name != "id"
+    )
+
+    def has_add_permission(self, request):
+        return False
 
 # =====================================================
 # PLATFORM BILLING

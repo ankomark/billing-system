@@ -26,6 +26,16 @@ ALL_SETTING_KEYS = [
     "WHATSAPP_TOKEN",
     "WHATSAPP_PHONE_ID",
     "WHATSAPP_API_VERSION",
+    # Hotspot sharing. TETHERING_POLICY is the switch — off, log, warn,
+    # throttle or kick — and everything else only matters once it is not off.
+    # See billing/services/tethering.py.
+    "TETHERING_POLICY",
+    "TETHERING_MIN_OBSERVATIONS",
+    "TETHERING_THROTTLE_KBPS",
+    "TETHERING_CONNECTION_LIMIT",
+    "TETHERING_LIST_TIMEOUT",
+    "TETHERING_STALE_MINUTES",
+    "TETHERING_MESSAGE",
 ]
 
 

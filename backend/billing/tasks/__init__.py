@@ -37,6 +37,7 @@ from .router_tasks import (
     enable_customer_task,
 )
 from .subscription_tasks import enforce_subscription_expiry
+from .tethering_tasks import detect_tethering, prune_tethering_cases
 from .usage_tasks import (
     collect_hotspot_usage_snapshots,
     collect_pppoe_usage_snapshots,
@@ -62,6 +63,8 @@ __all__ = [
     "disconnect_pppoe_task",
     "enable_customer_task",
     "enforce_subscription_expiry",
+    "detect_tethering",
+    "prune_tethering_cases",
     "collect_hotspot_usage_snapshots",
     "collect_pppoe_usage_snapshots",
     "enforce_usage_caps",

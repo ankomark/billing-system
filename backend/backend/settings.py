@@ -491,6 +491,23 @@ CELERY_BEAT_SCHEDULE = {
         "schedule": crontab(minute="*/3"),
         "options": {"expires": 150},
     },
+    # Hotspot sharing. Off for every operator until they set TETHERING_POLICY,
+    # so on a default install this wakes up, finds nobody has asked for it, and
+    # goes back to sleep without dialling a single router.
+    #
+    # Minute 4 of each five, so it does not open connections to the same
+    # hardware as the two usage collectors on minutes 0 and 2. The five-minute
+    # spacing is also what the router-side address-list timeout is set against
+    # — see TETHERING_LIST_TIMEOUT.
+    "detect-tethering": {
+        "task": "billing.tasks.tethering_tasks.detect_tethering",
+        "schedule": crontab(minute="4-59/5"),
+        "options": {"expires": 240},
+    },
+    "prune-tethering-cases": {
+        "task": "billing.tasks.tethering_tasks.prune_tethering_cases",
+        "schedule": crontab(hour=5, minute=20),
+    },
 }
 
 # =====================================================

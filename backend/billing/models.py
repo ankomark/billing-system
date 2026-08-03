@@ -1280,6 +1280,136 @@ class ConnectionAttempt(TenantScopedModel):
         return f"{self.mac_address} — {self.outcome}"
 
 
+class TetheringCase(TenantScopedModel):
+    """
+    One paid connection appears to be feeding a second network.
+
+    A subscriber buys access for their phone, turns on the phone's own hotspot,
+    and three friends browse for free. Nothing else in this system can see it:
+    the router only ever talks to the phone, so it is one MAC, one session, one
+    device against the package's limit. The device count and shared-users stop
+    a code being typed into four phones; they say nothing about what is behind
+    the one phone that used it.
+
+    What gives it away is the hop counter on the packets — see
+    services/tethering.py for how, and for why it is evidence rather than
+    proof. The consequence of it being evidence is this table. A single odd
+    packet does nothing; a case accumulates observations across sweeps minutes
+    apart, and only a sustained one is ever acted on.
+
+    Kept after the fact ends so an operator can see who it was, what was done,
+    and whether it was the same person again last week — which is the
+    difference between a stranger's laptop and a customer running a business
+    off one voucher. Pruned with the rest of the diagnostics.
+    """
+
+    WATCHING = "watching"      # seen, not yet enough to act on
+    WARNED = "warned"          # texted, access untouched
+    THROTTLED = "throttled"    # slowed at the router
+    KICKED = "kicked"          # session ended, login page returns
+    CLEARED = "cleared"        # stopped, and anything applied has been undone
+
+    STATUS_CHOICES = (
+        (WATCHING, "Watching"),
+        (WARNED, "Warned"),
+        (THROTTLED, "Throttled"),
+        (KICKED, "Session ended"),
+        (CLEARED, "Cleared"),
+    )
+
+    # Nullable: a suspect address on a router we cannot tie back to a
+    # subscriber is still worth showing an operator. It just cannot be texted
+    # or throttled by name, so nothing is ever done to it automatically.
+    customer = models.ForeignKey(
+        Customer, on_delete=models.CASCADE, null=True, blank=True,
+        related_name="tethering_cases",
+    )
+    router = models.ForeignKey(
+        RouterDevice, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="tethering_cases",
+    )
+
+    ip_address = models.CharField(max_length=45, blank=True)
+    mac_address = models.CharField(max_length=50, blank=True)
+
+    # How many routers the traffic crossed before reaching ours: 1 is a device
+    # behind the subscriber's phone, 2 is a device behind a router behind it.
+    hops = models.PositiveSmallIntegerField(default=1)
+
+    # Traffic at both the full hop count and one short of it, from the same
+    # address, in the same window. That is the phone itself browsing while
+    # something else browses through it — much harder to explain innocently
+    # than a mismatch on its own.
+    mixed_ttl = models.BooleanField(default=False)
+
+    # More connections open at once than one handset plausibly holds.
+    #
+    # Corroboration, never a trigger. The hop counter is defeatable — pinning
+    # the outgoing value back to 64 is one line on a rooted Android — and an
+    # evaded case looks exactly like an honest one. This is the signal that
+    # survives that, because a household's worth of devices behind one address
+    # cannot hide how many connections it opens. It is also the signal one
+    # enthusiastic torrent client sets off on its own, which is precisely why
+    # nothing is ever done on the strength of it.
+    high_connections = models.BooleanField(default=False)
+
+    # The address a throttle was actually applied to, which is not necessarily
+    # the address the subscriber has now. Leases move. Without recording what
+    # was done, lifting the throttle later means guessing — and guessing wrong
+    # leaves a queue on the router slowing down whoever inherited the lease,
+    # with nothing left anywhere that says why.
+    throttled_ip = models.CharField(max_length=45, blank=True)
+
+    # Sweeps that saw it, not packets. The threshold is in sweeps because the
+    # question is whether this persisted, and one burst is not persistence.
+    observations = models.PositiveIntegerField(default=0)
+
+    # What `observations` stood at when something was last done. The threshold
+    # is applied to the difference, which is what lets a session be ended more
+    # than once: a kick lasts a moment, so a subscriber who logs back in and
+    # carries on must be able to earn another one. Without this the deterrent
+    # fires once per case and then never again, however long they keep going.
+    acted_observations = models.PositiveIntegerField(default=0)
+
+    status = models.CharField(max_length=12, choices=STATUS_CHOICES,
+                              default=WATCHING)
+
+    first_seen = models.DateTimeField(auto_now_add=True)
+    last_seen = models.DateTimeField(default=timezone.now)
+    acted_at = models.DateTimeField(null=True, blank=True)
+    notified_at = models.DateTimeField(null=True, blank=True)
+    cleared_at = models.DateTimeField(null=True, blank=True)
+    note = models.CharField(max_length=255, blank=True)
+
+    OPEN_STATUSES = (WATCHING, WARNED, THROTTLED, KICKED)
+
+    class Meta:
+        ordering = ["-last_seen"]
+        indexes = [
+            models.Index(fields=["tenant", "status"],
+                         name="tether_tenant_status_idx"),
+            models.Index(fields=["tenant", "-last_seen"],
+                         name="tether_tenant_seen_idx"),
+        ]
+        constraints = [
+            # One open case per subscriber. Without it every sweep that could
+            # not find the previous case would open another, and an operator
+            # would be looking at twenty rows for one evening.
+            # Spelled out rather than referring to OPEN_STATUSES above: a
+            # nested Meta cannot see the enclosing class's attributes.
+            models.UniqueConstraint(
+                fields=["tenant", "customer"],
+                condition=models.Q(
+                    status__in=("watching", "warned", "throttled", "kicked")),
+                name="tethering_one_open_case_per_customer",
+            ),
+        ]
+
+    def __str__(self):
+        who = self.customer.full_name if self.customer_id else self.ip_address
+        return f"{who} — {self.status} ({self.observations} sightings)"
+
+
 # =====================================================
 # PAYMENT
 # =====================================================
