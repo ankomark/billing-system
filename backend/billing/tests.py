@@ -8635,8 +8635,10 @@ class UsageCollectionScaleTests(TwoOperatorMixin, TestCase):
         cache.clear()
         self.build_operators()
         with tenant_context(self.t1):
+            # A different address from the mixin's router: one operator may not
+            # register the same address twice.
             self.router = RouterDevice.objects.create(
-                tenant=self.t1, name="r1", ip_address="10.0.0.1",
+                tenant=self.t1, name="r1", ip_address="10.0.1.1",
                 username="admin", password="pw", is_active=True)
             self.customers = []
             for i in range(12):
@@ -8725,8 +8727,9 @@ class SessionTableTests(TwoOperatorMixin, TestCase):
         cache.clear()
         self.build_operators()
         with tenant_context(self.t1):
+            # Not the mixin's address: one operator, one row per address.
             self.router = RouterDevice.objects.create(
-                tenant=self.t1, name="r1", ip_address="10.0.0.1",
+                tenant=self.t1, name="r1", ip_address="10.0.1.1",
                 username="admin", password="pw", is_active=True)
 
     def test_an_unreadable_router_is_not_an_empty_one(self):
@@ -8794,8 +8797,9 @@ class RouterFlapTests(TwoOperatorMixin, TestCase):
         RouterDevice.objects.all_tenants().update(is_online=True)
 
         with tenant_context(self.t1):
+            # Not the mixin's address: one operator, one row per address.
             self.router = RouterDevice.objects.create(
-                tenant=self.t1, name="starlink-1", ip_address="10.0.0.1",
+                tenant=self.t1, name="starlink-1", ip_address="10.0.1.1",
                 username="admin", password="pw", is_active=True, is_online=True)
 
     def fail(self, times=1):
@@ -10514,3 +10518,322 @@ class TetheringBlindSpotTests(TwoOperatorMixin, TestCase):
             case = TetheringCase.objects.get()
         self.assertTrue(case.high_connections)
         self.assertEqual(case.observations, 1)
+
+
+# =====================================================
+# 57. Operators registering their own hardware
+# =====================================================
+
+class RouterRegistrationTests(TwoOperatorMixin, TestCase):
+    """
+    The path that replaces the Django admin.
+
+    It could not be used before: RouterSerializer named `password` only in
+    `extra_kwargs`, which does nothing unless the field is also in `fields`, so
+    every router created through the API was saved with an empty password and
+    could never log in to anything.
+    """
+
+    URL = "/api/admin/routers/"
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+
+    def _payload(self, **over):
+        return {
+            "name": "New Router", "ip_address": "10.9.9.9",
+            "username": "apiuser", "password": "s3cret",
+            "api_port": 8728, "priority": 2, **over,
+        }
+
+    def test_password_is_saved(self):
+        client = self.auth(self.admin1)
+        resp = client.post(self.URL, self._payload(), format="json")
+        self.assertEqual(resp.status_code, 201, resp.data)
+
+        with tenant_context(self.t1):
+            router = RouterDevice.objects.get(name="New Router")
+        self.assertEqual(router.password, "s3cret")
+
+    def test_password_is_never_returned(self):
+        client = self.auth(self.admin1)
+        resp = client.post(self.URL, self._payload(), format="json")
+        self.assertNotIn("password", resp.data)
+        self.assertTrue(resp.data["has_password"])
+
+    def test_password_required_on_create(self):
+        client = self.auth(self.admin1)
+        resp = client.post(self.URL, self._payload(password=""), format="json")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("password", resp.data)
+
+    def test_new_router_belongs_to_the_caller(self):
+        """The tenant comes from the token, never from the body."""
+        client = self.auth(self.admin1)
+        resp = client.post(
+            self.URL, self._payload(tenant=self.t2.id), format="json")
+        self.assertEqual(resp.status_code, 201)
+
+        with tenant_context(self.t1):
+            router = RouterDevice.objects.get(name="New Router")
+        self.assertEqual(router.tenant_id, self.t1.id)
+
+    def test_staff_may_read_but_not_create(self):
+        staff = User.objects.create_user(
+            username="staff_one", password="pw", role=User.TENANT_STAFF,
+            tenant=self.t1)
+        client = self.auth(staff)
+        self.assertEqual(client.get(self.URL).status_code, 200)
+        self.assertEqual(
+            client.post(self.URL, self._payload(), format="json").status_code, 403)
+
+    def test_same_address_twice_is_refused(self):
+        client = self.auth(self.admin1)
+        client.post(self.URL, self._payload(), format="json")
+        resp = client.post(
+            self.URL, self._payload(name="Duplicate"), format="json")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("ip_address", resp.data)
+
+    def test_two_operators_may_use_the_same_private_address(self):
+        """192.168.88.1 is what a MikroTik ships with. Everyone has one."""
+        for admin in (self.admin1, self.admin2):
+            resp = self.auth(admin).post(
+                self.URL, self._payload(ip_address="192.168.88.1"), format="json")
+            self.assertEqual(resp.status_code, 201, resp.data)
+
+    def test_two_operators_may_not_claim_one_public_address(self):
+        first = self.auth(self.admin1).post(
+            self.URL, self._payload(ip_address="41.90.64.10"), format="json")
+        self.assertEqual(first.status_code, 201, first.data)
+
+        second = self.auth(self.admin2).post(
+            self.URL, self._payload(ip_address="41.90.64.10"), format="json")
+        self.assertEqual(second.status_code, 400)
+        # Without naming who holds it.
+        self.assertNotIn("Skylink", str(second.data))
+
+    def test_loopback_is_refused(self):
+        """The address that points at the platform's own server."""
+        resp = self.auth(self.admin1).post(
+            self.URL, self._payload(ip_address="127.0.0.1"), format="json")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("ip_address", resp.data)
+
+    def test_cloud_metadata_address_is_refused(self):
+        resp = self.auth(self.admin1).post(
+            self.URL, self._payload(ip_address="169.254.169.254"), format="json")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_plan_router_limit_still_applies(self):
+        plan = PlatformPlan.objects.create(
+            name="Small", slug="small-routers", price=Decimal("1000.00"),
+            max_customers=0, max_routers=1)
+        TenantSubscription.objects.create(
+            tenant=self.t1, plan=plan, status="active",
+            current_period_end=timezone.now() + timezone.timedelta(days=30))
+
+        resp = self.auth(self.admin1).post(self.URL, self._payload(), format="json")
+        self.assertEqual(resp.status_code, 402)
+
+    def test_list_reports_online_state_under_the_name_the_page_reads(self):
+        """
+        The list built its own dict and called the field `online`, while every
+        page reading it asks for `is_online` â€” so a healthy router displayed as
+        offline, and the station column was always blank.
+        """
+        client = self.auth(self.admin1)
+        row = client.get(self.URL).data[0]
+        self.assertIn("is_online", row)
+        self.assertIn("station_name", row)
+
+
+class RouterEditTests(TwoOperatorMixin, TestCase):
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        self.router = self.data["t1"]["router"]
+
+    def _url(self, router=None):
+        return f"/api/admin/routers/{(router or self.router).id}/"
+
+    def test_blank_password_on_edit_keeps_the_stored_one(self):
+        """
+        An operator changing a priority must not silently lock the platform out
+        of the router.
+        """
+        client = self.auth(self.admin1)
+        resp = client.patch(
+            self._url(), {"priority": 5, "password": ""}, format="json")
+        self.assertEqual(resp.status_code, 200, resp.data)
+
+        with tenant_context(self.t1):
+            router = RouterDevice.objects.get(pk=self.router.pk)
+        self.assertEqual(router.password, "p")
+        self.assertEqual(router.priority, 5)
+
+    def test_password_can_be_changed(self):
+        client = self.auth(self.admin1)
+        client.patch(self._url(), {"password": "newpass"}, format="json")
+
+        with tenant_context(self.t1):
+            router = RouterDevice.objects.get(pk=self.router.pk)
+        self.assertEqual(router.password, "newpass")
+
+    def test_another_operators_router_is_not_found(self):
+        resp = self.auth(self.admin2).patch(
+            self._url(), {"priority": 9}, format="json")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_delete_refused_while_subscribers_are_on_it(self):
+        """
+        Customer.router is SET_NULL, so deleting would detach them silently â€”
+        they keep a subscription and stop being provisioned anywhere.
+        """
+        resp = self.auth(self.admin1).delete(self._url())
+        self.assertEqual(resp.status_code, 409)
+
+        with tenant_context(self.t1):
+            self.assertTrue(RouterDevice.objects.filter(pk=self.router.pk).exists())
+
+    def test_delete_allowed_once_it_is_empty(self):
+        with tenant_context(self.t1):
+            Customer.objects.filter(router=self.router).update(router=None)
+
+        resp = self.auth(self.admin1).delete(self._url())
+        self.assertEqual(resp.status_code, 204)
+
+
+class RouterCredentialTestTests(TwoOperatorMixin, TestCase):
+    """
+    The button that answers "did I type this right?" while it can still be
+    fixed, instead of leaving it to a subscriber who cannot get online.
+    """
+
+    URL = "/api/admin/routers/test/"
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        self.router = self.data["t1"]["router"]
+
+    def test_successful_probe_records_identity_and_health(self):
+        with tenant_context(self.t1):
+            RouterDevice.objects.filter(pk=self.router.pk).update(is_online=False)
+
+        probe = {"reachable": True, "authenticated": True, "error": "",
+                 "identity": "kilifi-core", "serial": "HGF8123ABCD"}
+        with patch("billing.router_service.probe_credentials", return_value=probe):
+            resp = self.auth(self.admin1).post(
+                self.URL, {"router_id": self.router.id}, format="json")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.data["ok"])
+
+        with tenant_context(self.t1):
+            router = RouterDevice.objects.get(pk=self.router.pk)
+        self.assertTrue(router.is_online)
+        self.assertEqual(router.identity, "kilifi-core")
+        self.assertEqual(router.serial_number, "HGF8123ABCD")
+
+    def test_refused_login_is_reported_as_a_credential_problem(self):
+        probe = {"reachable": True, "authenticated": False,
+                 "error": "The router refused these credentials.",
+                 "identity": "", "serial": ""}
+        with patch("billing.router_service.probe_credentials", return_value=probe):
+            resp = self.auth(self.admin1).post(
+                self.URL, {"router_id": self.router.id}, format="json")
+
+        self.assertFalse(resp.data["ok"])
+        self.assertTrue(resp.data["reachable"])
+        self.assertFalse(resp.data["authenticated"])
+
+    def test_stored_password_is_used_when_none_is_typed(self):
+        """A saved password never reaches the browser, so it cannot be re-sent."""
+        seen = {}
+
+        def fake(host, username, password, port=8728, timeout=4):
+            seen.update(host=host, username=username, password=password, port=port)
+            return {"reachable": True, "authenticated": True, "error": "",
+                    "identity": "", "serial": ""}
+
+        with patch("billing.router_service.probe_credentials", side_effect=fake):
+            self.auth(self.admin1).post(
+                self.URL, {"router_id": self.router.id}, format="json")
+
+        self.assertEqual(seen["password"], "p")
+        self.assertEqual(seen["host"], "10.0.0.1")
+
+    def test_testing_a_new_address_does_not_condemn_the_saved_router(self):
+        """
+        An operator moving a router tests the new address from the edit form
+        while the old row is still saved and still serving people. A failure
+        there says nothing about the box currently in service — recording it
+        would mark a working router offline and hand its subscribers to
+        failover.
+        """
+        with tenant_context(self.t1):
+            RouterDevice.objects.filter(pk=self.router.pk).update(is_online=True)
+
+        probe = {"reachable": False, "authenticated": False,
+                 "error": "Could not reach 10.0.0.99.", "identity": "", "serial": ""}
+        with patch("billing.router_service.probe_credentials", return_value=probe):
+            resp = self.auth(self.admin1).post(
+                self.URL,
+                {"router_id": self.router.id, "ip_address": "10.0.0.99",
+                 "username": "a"},
+                format="json")
+
+        self.assertFalse(resp.data["ok"])
+        with tenant_context(self.t1):
+            router = RouterDevice.objects.get(pk=self.router.pk)
+        self.assertTrue(router.is_online)
+        self.assertEqual(router.consecutive_failures, 0)
+
+    def test_another_operators_router_is_not_found(self):
+        resp = self.auth(self.admin2).post(
+            self.URL, {"router_id": self.router.id}, format="json")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_staff_may_not_probe(self):
+        staff = User.objects.create_user(
+            username="staff_probe", password="pw", role=User.TENANT_STAFF,
+            tenant=self.t1)
+        resp = self.auth(staff).post(
+            self.URL, {"router_id": self.router.id}, format="json")
+        self.assertEqual(resp.status_code, 403)
+
+
+class RouterProbePolicyTests(SimpleTestCase):
+    """
+    Which addresses the platform will dial on an operator's say-so.
+
+    The test endpoint is the only place a caller chooses what the server
+    connects to, so the answer cannot be "anything".
+    """
+
+    def test_private_addresses_are_allowed(self):
+        from billing.router_service import unreachable_by_policy
+
+        for ip in ("192.168.88.1", "10.0.0.1", "172.16.4.9"):
+            self.assertEqual(unreachable_by_policy(ip), "", ip)
+
+    def test_public_addresses_are_allowed(self):
+        from billing.router_service import unreachable_by_policy
+
+        self.assertEqual(unreachable_by_policy("41.90.64.10"), "")
+
+    def test_loopback_link_local_and_nonsense_are_refused(self):
+        from billing.router_service import unreachable_by_policy
+
+        for ip in ("127.0.0.1", "169.254.169.254", "224.0.0.1", "0.0.0.0",
+                   "not-an-address"):
+            self.assertNotEqual(unreachable_by_policy(ip), "", ip)
+
+    def test_probe_never_raises_on_an_unreachable_host(self):
+        from billing.router_service import probe_credentials
+
+        result = probe_credentials("127.0.0.1", "admin", "pw")
+        self.assertFalse(result["authenticated"])
+        self.assertTrue(result["error"])

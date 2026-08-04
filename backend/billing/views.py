@@ -12,7 +12,7 @@ from .permissions import (
 )
 from .throttles import (
     LoginRateThrottle, HotspotPollThrottle, HotspotPublicThrottle,
-    MpesaCallbackThrottle, STKPushThrottle,
+    MpesaCallbackThrottle, RouterTestThrottle, STKPushThrottle,
 )
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -2506,29 +2506,25 @@ from billing.router_service import is_router_reachable
 
 
 class AdminRouterListView(APIView):
+    """
+    An operator's routers, and where they register new ones.
+
+    Registering hardware used to be the platform owner's job in the Django
+    admin, because that was the only place the API password was actually
+    written — see RouterSerializer. An operator who bought a second router had
+    to ask someone else to type it in for them.
+    """
+
     permission_classes = [IsTenantAdminOrReadOnlyMember]
 
     def get(self, request):
         # Use cached is_online from the background health task — do NOT make
         # live socket probes here. Probing N routers synchronously during an
         # HTTP request blocks a Gunicorn worker for N × timeout seconds.
-        routers = RouterDevice.objects.all().order_by("priority")
-        data = [
-            {
-                "id": r.id,
-                "name": r.name,
-                "ip_address": r.ip_address,
-                "api_port": r.api_port,
-                "priority": r.priority,
-                "is_active": r.is_active,
-                "max_pppoe_sessions": r.max_pppoe_sessions,
-                "online": r.is_online,
-                "last_seen": r.last_seen,
-                "last_error": r.last_error,
-            }
-            for r in routers
-        ]
-        return Response(data)
+        from .serializers import RouterSerializer
+
+        routers = RouterDevice.objects.all().select_related("station").order_by("priority")
+        return Response(RouterSerializer(routers, many=True).data)
 
     def post(self, request):
         tenant = getattr(request.user, "tenant", None)
@@ -2542,6 +2538,95 @@ class AdminRouterListView(APIView):
         serializer.is_valid(raise_exception=True)
         router = serializer.save()
         return Response(RouterSerializer(router).data, status=status.HTTP_201_CREATED)
+
+
+class AdminRouterTestView(APIView):
+    """
+    Dial a router and say whether these credentials work.
+
+    The point of a form an operator fills in themselves is that they find out
+    now. Without this, a mistyped password is discovered by a subscriber who
+    cannot get online, hours later, with nothing in the interface suggesting
+    where to look — the router shows as offline exactly as it would if the
+    power were out.
+
+    Takes either an unsaved set of details, so it can be tried before anything
+    is written, or `router_id` to re-test one already stored. Only an admin may
+    call it: it makes the platform open a connection to an address the caller
+    chose, and it distinguishes a closed port from a refused login, which is
+    more than an operator's staff account needs.
+    """
+
+    permission_classes = [IsTenantAdmin]
+    throttle_classes = [RouterTestThrottle]
+
+    def post(self, request):
+        from billing.router_service import probe_credentials
+
+        router = None
+        router_id = request.data.get("router_id")
+        if router_id:
+            # Scoped manager: an id from another operator is simply not found.
+            router = RouterDevice.objects.filter(pk=router_id).first()
+            if router is None:
+                return Response({"detail": "Router not found"}, status=404)
+
+        host = request.data.get("ip_address") or getattr(router, "ip_address", "")
+        username = request.data.get("username") or getattr(router, "username", "")
+        # A saved router's password is not sent back to the browser, so an
+        # operator re-testing an existing one has nothing to type. Falling back
+        # to the stored value is what makes the button work at all.
+        password = request.data.get("password") or getattr(router, "password", "")
+        port = request.data.get("api_port") or getattr(router, "api_port", 8728)
+
+        if not host or not username:
+            return Response(
+                {"detail": "An address and a username are needed to test a router."},
+                status=400,
+            )
+
+        try:
+            port = int(port)
+        except (TypeError, ValueError):
+            return Response({"detail": "api_port must be a number."}, status=400)
+
+        result = probe_credentials(host, username, password, port=port)
+
+        # A test against a saved router is as good a health observation as the
+        # sweep's, so record it rather than letting the interface show offline
+        # next to a test that just succeeded.
+        #
+        # Only when what was dialled is what is stored. An operator moving a
+        # router to a new address tests the new one first, from the edit form,
+        # with the old row still saved — and a failure there says nothing about
+        # the box currently serving their subscribers. Recording it would mark
+        # a working router offline and hand every subscriber on it to failover.
+        describes_saved_router = (
+            router is not None
+            and str(host) == router.ip_address
+            and str(username) == router.username
+            and port == router.api_port
+        )
+        if describes_saved_router:
+            if result["authenticated"]:
+                router.record_health(True)
+                router.record_identity(
+                    identity=result["identity"], serial=result["serial"])
+            else:
+                cause = (RouterEvent.CAUSE_AUTH_FAILED if result["reachable"]
+                         else RouterEvent.CAUSE_UNREACHABLE)
+                router.record_health(False, error=result["error"], cause=cause)
+            result["identity"] = router.identity
+            result["serial"] = router.serial_number
+
+        return Response({
+            "ok": result["authenticated"],
+            "reachable": result["reachable"],
+            "authenticated": result["authenticated"],
+            "identity": result["identity"],
+            "serial_number": result["serial"],
+            "detail": result["error"] or "Connected. These credentials work.",
+        })
 
 
 class AdminRouterDetailView(APIView):
@@ -2570,10 +2655,38 @@ class AdminRouterDetailView(APIView):
         serializer.save()
         return Response(RouterSerializer(router).data)
 
+    # Same handler: the body has always been treated as partial, so the two
+    # verbs already meant the same thing here. Naming it stops a client that
+    # sends the conventional one from getting a 405.
+    patch = put
+
     def delete(self, request, pk):
+        """
+        Remove a router, unless subscribers are still on it.
+
+        Customer.router is SET_NULL, so deleting a router in use does not fail
+        — it quietly detaches everyone attached to it. They keep their
+        subscription and their credentials and stop being provisioned anywhere,
+        which looks like nothing happened until they next need reconnecting.
+
+        Harmless while only a platform owner could delete one. Now that the
+        button is in the operator's own interface, next to hardware they are
+        replacing, it needs to say no.
+        """
         router = self._get(pk)
         if not router:
             return Response({"detail": "Not found"}, status=404)
+
+        attached = Customer.objects.filter(router=router).count()
+        if attached:
+            return Response(
+                {"detail": f"{attached} subscriber{'s are' if attached > 1 else ' is'} "
+                           f"still on this router. Move them to another router first, "
+                           f"or deactivate this one to take it out of service without "
+                           f"deleting it."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
         router.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 from billing.router_service import safe_connect_router, provision_customer_on_router,migrate_customer_router  

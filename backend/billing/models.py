@@ -609,8 +609,51 @@ class RouterDevice(TenantScopedModel):
         related_name="routers",
     )
 
+    # What the box says it is, read from it the first time its credentials are
+    # proven to work. Until operators registered their own hardware this was
+    # not worth storing: a platform owner typing rows into the Django admin
+    # knew which box they meant. Now anyone can add an address and a password,
+    # and the only thing that can confirm the row describes the machine the
+    # operator thinks it does is the machine.
+    #
+    # The serial is also the one field that is the same on two rows only when
+    # they are the same physical router — which is how a box registered under
+    # two operators becomes visible instead of quietly being polled by both.
+    identity = models.CharField(max_length=100, blank=True, default="")
+    serial_number = models.CharField(max_length=60, blank=True, default="")
+
+    class Meta:
+        constraints = [
+            # One row per address per operator. Adding the same router twice is
+            # an easy mistake to make from a form, and the result is two rows
+            # racing to configure one box: failover counts it as two places to
+            # put subscribers, and usage collection reads the same sessions
+            # twice.
+            models.UniqueConstraint(
+                fields=["tenant", "ip_address"],
+                name="routerdevice_unique_ip_per_tenant",
+            ),
+        ]
+
     def __str__(self):
         return self.name
+
+    def record_identity(self, *, identity="", serial=""):
+        """
+        Remember what the router said it was. Only ever called with values that
+        came from a successful login, so a failed probe never overwrites a
+        known-good identity with nothing.
+        """
+        fields = []
+        if identity and identity != self.identity:
+            self.identity = identity[:100]
+            fields.append("identity")
+        if serial and serial != self.serial_number:
+            self.serial_number = serial[:60]
+            fields.append("serial_number")
+        if fields:
+            self.save(update_fields=fields)
+        return bool(fields)
 
     def record_health(self, online, *, error="", cause=""):
         """

@@ -2,6 +2,7 @@ from django.contrib.auth.password_validation import validate_password
 from django.utils.text import slugify
 from rest_framework import serializers
 from .tenancy import get_current_tenant_id
+from .router_service import unreachable_by_policy
 from .models import (
     Customer, Package, Subscription, Invoice, Payment,
     MpesaTransaction, User, SystemSetting, Voucher, RouterDevice,
@@ -602,20 +603,122 @@ class StationSerializer(serializers.ModelSerializer):
 
 
 class RouterSerializer(serializers.ModelSerializer):
+    """
+    A router as an operator registers and edits it.
+
+    The password is declared explicitly rather than left to `extra_kwargs`.
+    Naming a field only in `extra_kwargs` does nothing — it has to be in
+    `fields` to exist at all — so for as long as it was written that way the
+    API accepted a password and silently discarded it, and every router added
+    through it was saved with an empty one and could never log in. Routers had
+    to be created in the Django admin, which was the only path that wrote the
+    field.
+    """
+
     station_name = serializers.CharField(
         source="station.name", read_only=True, default=None)
+    password = serializers.CharField(
+        write_only=True, required=False, allow_blank=True,
+        style={"input_type": "password"},
+        help_text="The RouterOS API password. Leave blank when editing to keep the current one.",
+    )
+    # Whether credentials are stored at all, without returning them. An
+    # operator editing a router needs to know the difference between "leave
+    # this alone" and "this was never set".
+    has_password = serializers.SerializerMethodField()
 
     class Meta:
         model = RouterDevice
         fields = [
-            "id", "name", "ip_address", "username",
+            "id", "name", "ip_address", "username", "password", "has_password",
             "api_port", "priority", "is_active",
             "is_online", "last_seen", "last_error",
             "max_pppoe_sessions", "station", "station_name",
+            "identity", "serial_number",
         ]
-        extra_kwargs = {
-            "password": {"write_only": True},
-        }
+        read_only_fields = [
+            # Written by the health sweep and the credential test, from what the
+            # router itself said. An operator cannot type their way to a router
+            # being online.
+            "is_online", "last_seen", "last_error", "identity", "serial_number",
+        ]
+
+    def get_has_password(self, obj):
+        return bool(obj.password)
+
+    def validate_ip_address(self, value):
+        refusal = unreachable_by_policy(value)
+        if refusal:
+            raise serializers.ValidationError(refusal)
+        return value
+
+    def validate(self, attrs):
+        creating = self.instance is None
+
+        if creating and not attrs.get("password"):
+            raise serializers.ValidationError({
+                "password": "The router's API password is required.",
+            })
+
+        ip = attrs.get("ip_address") or getattr(self.instance, "ip_address", None)
+        if ip:
+            self._check_address_is_free(ip)
+
+        return attrs
+
+    def _check_address_is_free(self, ip):
+        """
+        Two rows for one box is the mistake a form makes and the Django admin
+        did not: failover treats it as two places to put subscribers, usage
+        collection reads the same sessions twice, and the health sweep dials it
+        twice a minute.
+
+        Within an operator this mirrors the database constraint, so the caller
+        gets a sentence instead of an IntegrityError.
+
+        Across operators it only applies to publicly routable addresses. A
+        public address is one machine, so two operators claiming it means one of
+        them is wrong and both would be configuring the same router. Private
+        addresses genuinely repeat — 192.168.88.1 is what a MikroTik ships with,
+        and every operator's is a different box.
+        """
+        import ipaddress
+
+        mine = RouterDevice.objects.filter(ip_address=ip)
+        if self.instance is not None:
+            mine = mine.exclude(pk=self.instance.pk)
+        if mine.exists():
+            raise serializers.ValidationError({
+                "ip_address": "You have already registered a router at this address.",
+            })
+
+        try:
+            private = ipaddress.ip_address(str(ip)).is_private
+        except ValueError:
+            private = True
+        if private:
+            return
+
+        tenant_id = get_current_tenant_id()
+        others = RouterDevice.objects.all_tenants().filter(ip_address=ip)
+        if tenant_id is not None:
+            others = others.exclude(tenant_id=tenant_id)
+        if others.exists():
+            # Deliberately does not say who. The caller has no business
+            # learning which other operator is at an address by trying
+            # addresses until one is refused.
+            raise serializers.ValidationError({
+                "ip_address": "This public address is already registered on the "
+                              "platform. If the router is yours, contact support.",
+            })
+
+    def update(self, instance, validated_data):
+        # A blank password on edit means "unchanged", not "erase it". Erasing
+        # it would leave a router that looks configured and cannot be logged
+        # in to, which is exactly the state this serializer used to create.
+        if not validated_data.get("password"):
+            validated_data.pop("password", None)
+        return super().update(instance, validated_data)
 
 
 # =====================================================

@@ -710,6 +710,129 @@ def get_hotspot_live_usage_any_router(customer):
             return r, data
 
     return None, {"connected": False}
+def unreachable_by_policy(host):
+    """
+    Why the platform must not dial this address, or "" if it may.
+
+    Every other connection in this file goes to a router an administrator
+    entered. The credential test does not: it dials whatever an operator typed,
+    before anything is saved, which turns it into a way to ask the platform's
+    own server to open connections on the caller's behalf. Most of what that
+    could reach is uninteresting, but not all of it — 169.254.169.254 is the
+    cloud metadata service, and loopback is every internal service the platform
+    runs without authentication because it believed nothing outside could reach
+    it.
+
+    Private ranges stay allowed. Operators reach their hardware over a VPN or a
+    management VLAN, and 192.168.88.1 is the address a MikroTik ships with —
+    refusing those would refuse the normal case to prevent the odd one.
+    """
+    import ipaddress
+
+    try:
+        addr = ipaddress.ip_address(str(host).strip())
+    except ValueError:
+        return "That does not look like an IP address."
+
+    if addr.is_loopback:
+        return "Loopback addresses point at the platform's own server, not your router."
+    if addr.is_link_local:
+        return "Link-local addresses are not reachable from the platform."
+    if addr.is_multicast or addr.is_reserved or addr.is_unspecified:
+        return "That address cannot belong to a router."
+    return ""
+
+
+def probe_credentials(host, username, password, port=8728, timeout=4):
+    """
+    Ask a MikroTik whether these credentials work, and who it is.
+
+    For the form where an operator registers their own hardware. It answers the
+    question they actually have — "did I type this right?" — at the moment they
+    can still fix it, rather than leaving them to find out when a subscriber
+    fails to be provisioned hours later.
+
+    Never raises: every outcome is a dict the caller can show. The distinction
+    that matters is `reachable` versus `authenticated`. A box that refuses the
+    login is a password problem; one that never answers is a firewall, a wrong
+    address, or an API service that was never enabled — and telling an operator
+    to check their password when the real problem is a closed port sends them
+    looking in the wrong place.
+
+    Bounded deliberately: one host, two short timeouts. This runs inside a
+    request, and the reason the router list does not probe is that N routers
+    times a timeout each holds a worker for as long as that multiplies out.
+    """
+    refusal = unreachable_by_policy(host)
+    if refusal:
+        return {"reachable": False, "authenticated": False, "error": refusal,
+                "identity": "", "serial": ""}
+
+    result = {"reachable": False, "authenticated": False, "error": "",
+              "identity": "", "serial": ""}
+
+    try:
+        sock = socket.create_connection((str(host), int(port)), timeout=timeout)
+        sock.close()
+        result["reachable"] = True
+    except OSError as e:
+        result["error"] = (
+            f"Could not reach {host} on port {port}. Check the address, that the "
+            f"router's API service is enabled, and that its firewall allows this "
+            f"platform. ({e})"
+        )
+        return result
+
+    try:
+        api = connect(host=str(host), username=username, password=password,
+                      port=int(port), timeout=timeout + 1)
+    except (LibRouterosError, TrapError, MultiTrapError, FatalError, ProtocolError) as e:
+        # It answered and said no. Almost always the username or password, or
+        # an API user without the permissions this platform needs.
+        result["error"] = f"The router refused these credentials. ({e})"
+        return result
+    except Exception as e:
+        result["error"] = f"Could not log in to the router. ({e})"
+        return result
+
+    result["authenticated"] = True
+    result["identity"] = _read_identity(api)
+    result["serial"] = _read_serial(api)
+
+    try:
+        api.close()
+    except Exception:
+        # Nothing depends on a clean close, and failing here would turn a
+        # successful test into a reported failure.
+        pass
+
+    return result
+
+
+def _read_identity(api):
+    """The name the operator gave the box in RouterOS. Absent is not an error."""
+    try:
+        for row in api.path("system", "identity"):
+            return str(row.get("name", ""))
+    except Exception:
+        logger.debug("[router-probe] could not read identity", exc_info=True)
+    return ""
+
+
+def _read_serial(api):
+    """
+    The board serial — the only value that is the same on two rows only when
+    they are the same physical machine. A CHR or an x86 install has none, which
+    is normal and not worth surfacing as a problem.
+    """
+    try:
+        for row in api.path("system", "routerboard"):
+            return str(row.get("serial-number", ""))
+    except Exception:
+        logger.debug("[router-probe] could not read routerboard", exc_info=True)
+    return ""
+
+
 def safe_disconnect_pppoe(customer):
     if not customer.router or not customer.pppoe_username:
         return False

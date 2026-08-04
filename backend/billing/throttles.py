@@ -56,3 +56,17 @@ class MpesaCallbackThrottle(AnonRateThrottle):
 
 class STKPushThrottle(UserRateThrottle):
     scope = "stk_push"
+
+
+class RouterTestThrottle(UserRateThrottle):
+    """
+    Testing router credentials from the registration form.
+
+    The one endpoint where an authenticated operator chooses an address the
+    platform's own server then connects to. Nothing about that is unreasonable
+    — it is their hardware — but a request that dials an arbitrary host should
+    not be available thousands of times a minute, or the form becomes a way to
+    survey the network the platform sits in. Keyed per account, and set well
+    above what filling in a form takes.
+    """
+    scope = "router_test"

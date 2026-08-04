@@ -357,6 +357,11 @@ REST_FRAMEWORK = {
         "hotspot_poll": "40/min",
         "mpesa_callback": "60/min",
         "stk_push": "10/min",
+        # Testing router credentials. Generous for the operator filling in a
+        # form — they will press it two or three times while getting a password
+        # right — and low enough that the endpoint is no use for looking around
+        # the network the platform sits in. See RouterTestThrottle.
+        "router_test": "20/min",
     },
 }
 

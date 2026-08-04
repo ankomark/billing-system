@@ -14,6 +14,34 @@ export async function fetchRouters() {
   return res.data;
 }
 
+export const createRouter = async (payload) => {
+  const res = await api.post("admin/routers/", payload);
+  return res.data;
+};
+
+/** Send `password` only when changing it — blank means "keep the current one". */
+export const updateRouter = async (id, payload) => {
+  const res = await api.patch(`admin/routers/${id}/`, payload);
+  return res.data;
+};
+
+/** Refused by the backend while subscribers are still assigned to it. */
+export const deleteRouter = async (id) => {
+  await api.delete(`admin/routers/${id}/`);
+};
+
+/**
+ * Dial the router and report back before anything is saved.
+ *
+ * Takes either typed-in details or `{ router_id }` for one already stored —
+ * a saved password never comes back to the browser, so re-testing an existing
+ * router sends the id and lets the backend use what it has.
+ */
+export const testRouter = async (payload) => {
+  const res = await api.post("admin/routers/test/", payload);
+  return res.data;
+};
+
 /**
  * Per-router event history and availability over a window.
  *

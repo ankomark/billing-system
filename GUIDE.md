@@ -355,8 +355,12 @@ own account, not the operator's:
 /ip service set api disabled=no port=8728
 ```
 
-Then in the dashboard, **Routers → Add**, with the router's address, that
-username and password, and port 8728.
+Then in the dashboard, **Routers → Add router**, with the router's address,
+that username and password, and port 8728. Press **Test connection** before
+saving: it dials the box and tells you which of the three things is wrong —
+the address, the firewall or API service, or the password — while you are
+still standing in front of it. A router saved without testing looks exactly
+like one whose power is off.
 
 > **Restrict who may use that account.** On the router:
 > ```
