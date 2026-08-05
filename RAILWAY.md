@@ -13,6 +13,41 @@ behave differently here than they will on a VPS.
 
 ---
 
+## 0. How four services share one repository
+
+Every app service points at the same GitHub repo and is told which part of it to
+look at. Three settings do that, and **they do not agree on what a path is
+relative to** — which is the one thing here that will waste an afternoon if you
+assume it.
+
+| Setting | Relative to | web / worker / beat | frontend |
+|---|---|---|---|
+| Root Directory | repo root | `backend` | `frontend/wifi-billing-frontend` |
+| Config-as-code path | **repo root, always** | `/backend/railway.web.json` etc. | — |
+| Watch Paths | **repo root, always** | `/backend/**` | `/frontend/**` |
+
+**Root Directory** is the answer to your question: Railway pulls down only that
+directory when it builds. So for the backend services the build context *is*
+`backend/`, `Dockerfile` sits at the top of it and is auto-detected, `COPY . .`
+copies the Django project and nothing else, and `backend/.dockerignore` applies.
+This is byte-for-byte the context compose builds from (`build: .`, in that same
+directory), so the image you test locally is the image Railway runs. The
+frontend service pulls down only the CRA app and never sees the Python.
+
+**Config-as-code does not follow Root Directory.** Railway's own docs are
+explicit about this, and it is the one asymmetry in the table: the path must be
+written from the repo root, leading slash and all. Give it `railway.web.json`
+and Railway looks for that file at the top of the repository, does not find it,
+silently falls back to auto-detection, and starts the container on the
+Dockerfile's default `CMD` — which is gunicorn. Your *worker* then runs a web
+server instead of Celery, comes up green, and processes no tasks.
+
+**Watch Paths** are worth the two minutes. Without them every push redeploys all
+four services, so a CSS tweak rebuilds and restarts Celery. Set them under
+Settings → Source.
+
+---
+
 ## 1. Postgres and Redis first
 
 New Project → **Deploy PostgreSQL**, then **+ New** → **Deploy Redis**. Nothing
@@ -51,11 +86,16 @@ Settings:
 | Field | Value |
 |---|---|
 | Root Directory | `backend` |
-| Config-as-code path | `railway.web.json` |
+| Config-as-code path | `/backend/railway.web.json` |
+| Watch Paths | `/backend/**` |
+
+Mind the leading slash on the config path — see [section 0](#0-how-four-services-share-one-repository).
 
 That file carries the builder, the start command, `/health/` as the healthcheck
 and `migrate --noinput` as the pre-deploy step, so there is nothing to type into
-the start-command box.
+the start-command box. Confirm it was actually read: the build log says
+`Using detected Dockerfile!` and the deploy log's first line is gunicorn
+binding. If instead you see a Nixpacks plan, the path is wrong.
 
 ### Variables
 
@@ -108,15 +148,20 @@ rather than a loop.
 
 ## 3. worker and beat
 
-Two more services from the same repo, same root directory, same variables. Only
-the config path differs:
+Two more services from the same repo, same Root Directory (`backend`), same
+watch path (`/backend/**`), same variables. Only the config path differs:
 
 | Service | Config-as-code path | Replicas |
 |---|---|---|
-| worker | `railway.worker.json` | 1 |
-| beat | `railway.beat.json` | **1, never more** |
+| worker | `/backend/railway.worker.json` | 1 |
+| beat | `/backend/railway.beat.json` | **1, never more** |
 
 Neither needs a domain — do not generate one.
+
+Check the deploy log of each says `celery@…ready` or `beat: Starting…`. A worker
+that logs `Listening at: http://0.0.0.0:8080` did not read its config file and
+is running the Dockerfile's default gunicorn instead. It will look healthy
+indefinitely.
 
 **Beat must stay at one replica.** Two schedulers means every periodic task
 fires twice: two expiry sweeps, two invoice runs, two reminder SMS to the same
@@ -134,8 +179,13 @@ they settle on their own.
 
 | Field | Value |
 |---|---|
+| Root Directory | `frontend/wifi-billing-frontend` |
+| Watch Paths | `/frontend/**` |
 | Start command | `npm run serve` |
 | `REACT_APP_API_URL` | `https://<web>.up.railway.app/api/` — with the trailing slash |
+
+No config file for this one — Nixpacks sees `package.json` at the top of its
+root directory, installs and runs `npm run build` on its own.
 
 Create-React-App bakes environment variables into the bundle at build time, so
 changing that variable requires a **redeploy**, not a restart. If the dashboard
