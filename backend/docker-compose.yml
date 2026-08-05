@@ -119,7 +119,20 @@ services:
       - -c
       - "python manage.py collectstatic --noinput && exec gunicorn backend.wsgi:application --bind 0.0.0.0:8000 --workers ${GUNICORN_WORKERS:-4} --timeout 60 --access-logfile - --error-logfile -"
     ports:
-      - "8000:8000"
+      # Loopback only — the same reason postgres and redis are, and this was the
+      # one service that missed it. Published as "8000:8000" this listens on
+      # every interface, and Docker writes its own iptables rules ahead of ufw,
+      # so a VPS with a correct-looking firewall still answers the world on
+      # 8000. Verified on a real deploy: the port was reachable from another
+      # continent while `ufw status` listed only 22, 80 and 443.
+      #
+      # Nothing was fully open — ALLOWED_HOSTS rejects a request to the bare IP
+      # — but a caller sending the right Host header reached Django in plain
+      # HTTP, past the TLS the reverse proxy exists to terminate.
+      #
+      # The proxy connects over loopback, so it is unaffected. Anything else
+      # that needs this port should tunnel: ssh -L 8000:localhost:8000 you@server
+      - "127.0.0.1:8000:8000"
     restart: unless-stopped
     depends_on:
       postgres:
