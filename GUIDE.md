@@ -129,16 +129,28 @@ FIELD_ENCRYPTION_KEY=<the second one>
 
 ALLOWED_HOSTS=api.yourdomain.com
 CORS_ALLOWED_ORIGINS=https://app.yourdomain.com
-PLATFORM_BASE_URL=https://app.yourdomain.com
+# The API host, not the dashboard host. See below — this one is silent.
+PLATFORM_BASE_URL=https://api.yourdomain.com
 
-POSTGRES_DB=billing
-POSTGRES_USER=billing
+# wifi_billing is fixed: compose passes it to the postgres image, so it is the
+# database that actually gets created. Naming a different one here only means
+# Django connects to something that does not exist.
+POSTGRES_DB=wifi_billing
+POSTGRES_USER=wifi_app
 POSTGRES_PASSWORD=<a long random string>
 POSTGRES_HOST=postgres
 POSTGRES_PORT=5432
 
-REDIS_URL=redis://redis:6379/0
-CELERY_RESULT_BACKEND=redis://redis:6379/1
+# The bootstrap superuser, for administration. Never what Django connects as —
+# a superuser bypasses every RLS policy. Different password to the one above.
+POSTGRES_ADMIN_PASSWORD=<a different long random string>
+
+# No database number on the end. See below.
+REDIS_URL=redis://redis:6379
+
+# Required, or compose refuses to start rather than exposing Flower with no
+# password. Flower shows raw task arguments — phone numbers, M-Pesa references.
+FLOWER_BASIC_AUTH=admin:<a long random string>
 
 MPESA_ENV=production
 MPESA_SHORTCODE=<yours>
@@ -150,7 +162,8 @@ AT_API_KEY=
 AT_USERNAME=
 ```
 
-Two things about this file:
+`backend/.env.example` is the authoritative list; the block above is the subset
+you must change. Four things about it:
 
 **`SECRET_KEY` is mandatory.** With `DEBUG=False` the app refuses to start
 without it, on purpose. The old fallback value is published in this repository,
@@ -162,6 +175,24 @@ test passing.
 Leave it unset and they are stored in plain text. Nothing warns you. Every
 operator's router admin password would then sit readable in a database you are
 about to copy offsite every night.
+
+**`PLATFORM_BASE_URL` must be the API host.** It is not a display name — it is
+what the M-Pesa callback URL is built from, as
+`{PLATFORM_BASE_URL}/api/mpesa/callback/<operator token>/`, and that is the
+address Safaricom is told to POST the result of every payment to. Point it at
+`app.yourdomain.com` and each STK push registers a callback aimed at a static
+site with no such route. The customer's phone still prompts, they still pay,
+Safaricom POSTs into a 404, and the payment is never confirmed: no voucher, no
+session, money gone. Nothing on your server logs an error, because nothing on
+your server was ever contacted.
+
+**`REDIS_URL` takes no database number.** The app appends its own — `/0` for the
+Celery broker, `/1` for the cache, `/2` for results — so a trailing `/0` here
+produces `redis://redis:6379/0/0` and kombu rejects it: *"Database is int
+between 0 and limit - 1, not 0/0"*. Only Celery dies. The web container starts,
+the dashboard works, and the worker and beat crash-loop, which means no expiry
+sweeps, no reminders, no router health checks, no failover and no usage
+collection — the exact set of failures nothing else in this system reports.
 
 Lock the file: `chmod 600 .env`.
 
@@ -196,6 +227,15 @@ own.
 
 Point `api.yourdomain.com` at the server's IP first, or the certificate request
 will fail.
+
+Between 1.5 and here, the app redirects every request to an `https://` URL
+nothing is listening on yet — that is `SECURE_SSL_REDIRECT`, on by default with
+`DEBUG=False`, waiting for the proxy you are adding now. It is not a fault and
+it needs no setting. `docker compose up --wait` succeeded regardless because
+`/health/` is exempt from that redirect for exactly this reason. Once Caddy is
+reloaded, it passes `X-Forwarded-Proto` and the redirect starts doing what it
+says. If instead you get `ERR_TOO_MANY_REDIRECTS`, the proxy is not sending
+that header — fix it there rather than turning the redirect off.
 
 **Cloudflare in front is worth it**, and not only for DDoS. Cloudflare has a
 Nairobi presence, so the TLS handshake finishes locally rather than in Germany
