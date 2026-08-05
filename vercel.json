@@ -1,0 +1,17 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "installCommand": "cd frontend/wifi-billing-frontend && npm install",
+  "buildCommand": "cd frontend/wifi-billing-frontend && npm run build",
+  "outputDirectory": "frontend/wifi-billing-frontend/build",
+  "build": {
+    "env": {
+      "REACT_APP_API_URL": "https://api.smartbillsolution.com/api/"
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}
