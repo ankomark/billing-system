@@ -63,6 +63,29 @@ for _loopback in ("localhost", "127.0.0.1"):
     if _loopback not in ALLOWED_HOSTS:
         ALLOWED_HOSTS.append(_loopback)
 
+# A hostname the platform only tells you after the first deploy.
+#
+# Railway assigns *.up.railway.app at deploy time, so it cannot be in
+# ALLOWED_HOSTS before there is something deployed to read it from. Without
+# this the first boot answers 400 DisallowedHost on its own URL, and the only
+# way out is to deploy, read the hostname off the dashboard, set the variable
+# and redeploy. The variable does not exist on a VPS, so a Hetzner install is
+# unchanged.
+_platform_host = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip()
+if _platform_host and _platform_host not in ALLOWED_HOSTS:
+    ALLOWED_HOSTS.append(_platform_host)
+
+# Django rejects any POST whose Origin is not a host it believes it serves.
+# Same-origin admin logins need nothing here, but a second name in front of the
+# same app — a custom domain, a preview URL — fails at the login form with
+# "CSRF verification failed" and no log line naming the host it wanted. Must be
+# scheme-qualified; bare hostnames are silently useless.
+CSRF_TRUSTED_ORIGINS = [
+    o.strip() for o in os.getenv("CSRF_TRUSTED_ORIGINS", "").split(",") if o.strip()
+]
+if _platform_host:
+    CSRF_TRUSTED_ORIGINS.append(f"https://{_platform_host}")
+
 # =====================================================
 # HTTPS / SECURITY HEADERS  (production only)
 # =====================================================
@@ -74,6 +97,27 @@ if not DEBUG:
     # Note SESSION_COOKIE_SECURE below still applies, so Django admin login
     # requires HTTPS regardless — the JWT API is unaffected.
     SECURE_SSL_REDIRECT = os.getenv("SECURE_SSL_REDIRECT", "True") == "True"
+
+    # TLS is terminated in front of this process — by Railway's edge, or by a
+    # reverse proxy on a VPS — so what reaches gunicorn is plain HTTP and
+    # request.is_secure() is False. SECURE_SSL_REDIRECT then 301s a request that
+    # already arrived over HTTPS, the browser follows it back to the same place,
+    # and every URL including the login page dies with ERR_TOO_MANY_REDIRECTS.
+    #
+    # Trusting a header a client could forge is only safe because nothing but
+    # the proxy can reach this process. Do not set it on a gunicorn exposed
+    # directly to the internet — there, anyone can claim their request was
+    # secure and collect cookies marked HTTPS-only.
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+
+    # The platform's health probe is not a browser and does not come through
+    # the edge, so it arrives without that header and would be answered with a
+    # 301. Railway counts any non-2xx as a failed check and rolls the deploy
+    # back, so the app is marked unhealthy for the one reason that has nothing
+    # to do with its health. Exempting one unauthenticated read-only endpoint
+    # from the HTTPS redirect gives away nothing.
+    SECURE_REDIRECT_EXEMPT = [r"^health/$"]
+
     SECURE_HSTS_SECONDS = 31536000          # 1 year — tells browsers to always use HTTPS
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True

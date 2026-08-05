@@ -34,8 +34,13 @@ USER appuser
 EXPOSE 8000
 
 # /health/ checks the DB and cache (see billing.views.health_check).
+#
+# ${PORT} because a PaaS picks the port and passes it in — Railway defaults to
+# 8080. Hardcoded, this check curls a port nothing listens on and the container
+# reports unhealthy forever while serving traffic perfectly well. Falls back to
+# 8000 for compose, which sets no PORT.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD curl -fsS http://localhost:8000/health/ || exit 1
+    CMD curl -fsS http://localhost:${PORT:-8000}/health/ || exit 1
 
 # Default only — compose overrides this per service. The compose `web` command
 # runs collectstatic first so WhiteNoise has files to serve.
