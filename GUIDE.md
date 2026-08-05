@@ -54,7 +54,40 @@ before you buy a server, because it changes what you build.
 
 ### 1.1 The server
 
-A CPX21 (3 vCPU, 4 GB) comfortably runs all six containers. Take Ubuntu LTS.
+**A CAX21** — 4 Arm vCPU, 8 GB, 80 GB SSD, €10.49/month. Take Ubuntu LTS.
+
+This used to say CPX21, and if you are reading an older copy, do not order one.
+Hetzner repriced on 15 June 2026 and the AMD shared line took the worst of it:
+CPX21 is now **€31.99** for 4 GB, while the Arm line rose far less. You would be
+paying triple for half the memory.
+
+| | RAM | Disk | €/month |
+|---|---|---|---|
+| CAX11 | 4 GB | 40 GB | 5.99 |
+| **CAX21** | **8 GB** | **80 GB** | **10.49** |
+| CX22 (Intel) | 4 GB | 40 GB | 5.49 |
+| CPX21 (AMD) | 4 GB | 80 GB | 31.99 |
+
+Arm is safe for this stack, and that is checked rather than assumed: the only
+two dependencies with compiled code, `cryptography` and `psycopg[binary]`, both
+publish `aarch64` wheels, everything else in `requirements.txt` is pure Python,
+and `python:3.12-slim`, `postgres:16` and `redis:7` all publish arm64 images.
+The compose file builds on the server, so the architecture is decided by the
+machine and needs no flag.
+
+CAX11 at €5.99 will run this, and the €4.50 is still worth paying. Six
+containers on 4 GB leaves nothing spare once gunicorn has its workers up, and
+the two usage collectors write snapshots for every subscriber every five
+minutes — 40 GB is a lot less runway than it sounds against a table that grows
+on a timer. Rescaling CPU and RAM later is easy; a disk, once grown, can never
+be shrunk again.
+
+**Add the IPv4 address** (+€0.50/month). IPv6-only is offered and would break
+you: `MPESA_TRUSTED_IPS` in settings.py is five IPv4 addresses, because that is
+what Safaricom sends callbacks from, and Kenyan mobile clients reaching the
+portal are overwhelmingly IPv4 too.
+
+Kenya is outside the EU, so no German VAT is charged.
 
 Hetzner verifies identity at signup and it is not always quick for customers
 outside Europe — **open the account before you plan around it.**
