@@ -7,6 +7,11 @@ Read the whole of a section before starting it. The three parts depend on each
 other — the frontend needs the backend's hostname, and the routers need both —
 so the order below is the order to do them in.
 
+For a throwaway environment to try the stack out first, `RAILWAY.md` puts the
+same thing on Railway in about twenty minutes. It is a trial, not a
+destination — read its last section for what a shared-egress host cannot prove
+about reaching an operator's router.
+
 ---
 
 ## Before anything
