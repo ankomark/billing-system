@@ -199,10 +199,23 @@ def _resolve_code(
     # ---------------------------------------------------------
     # 1) Try Voucher.code
     # ---------------------------------------------------------
+    # Case-insensitive, because the people typing these are on phones.
+    #
+    # Codes are minted uppercase (WIFI-QWIALE) and matched exactly, so anything
+    # a keyboard does to them is a rejection. Android auto-capitalises the
+    # first letter of a text field and lowercases the rest, which turns that
+    # code into "Wifi-qwiale" without the customer touching anything — and the
+    # answer they get is "Invalid or expired voucher", about a voucher they
+    # paid for thirty seconds ago.
+    #
+    # Confirmed against a live redemption: the same voucher validated as
+    # WIFI-QWIALE and was refused as Wifi-qwiale. There is nothing to lose by
+    # folding case here; the codes are generated from a fixed uppercase
+    # alphabet, so two that differ only in case cannot exist.
     voucher = (
         Voucher.objects.all_tenants()
         .select_related("subscription", "subscription__customer")
-        .filter(code=code)
+        .filter(code__iexact=code)
     )
     if tenant is not None:
         voucher = voucher.filter(tenant=tenant)
@@ -238,7 +251,11 @@ def _resolve_code(
     payments = (
         Payment.objects.all_tenants()
         .select_related("subscription", "subscription__customer")
-        .filter(reference=code)
+        # Same reasoning as the voucher lookup above. Safaricom receipts are
+        # uppercase alphanumerics, so folding case cannot merge two distinct
+        # references — and a customer who types theirs rather than pasting the
+        # message hits exactly the same keyboard behaviour.
+        .filter(reference__iexact=code)
         .order_by("-paid_at", "-id")
     )
     if tenant is not None:
