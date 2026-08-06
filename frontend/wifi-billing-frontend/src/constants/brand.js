@@ -4,5 +4,5 @@
 // their own business_name, shown in the operator console; this name belongs to
 // the platform and must never appear in an operator's subscriber-facing
 // messages. One constant so renaming the platform is one edit.
-export const PLATFORM_NAME = "SmartBill Solutions";
+export const PLATFORM_NAME = "SmartBill Solution";
 export const PLATFORM_TAGLINE = "Operator management";

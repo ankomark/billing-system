@@ -6,6 +6,7 @@ import {
   reconnectHotspotDevice,
   validateHotspotVoucher,
 } from "../../services/hotspot";
+import { PLATFORM_NAME } from "../../constants/brand";
 
 /**
  * The captive portal's landing page.
@@ -371,7 +372,7 @@ function HowItWorks({ provider, support, mac }) {
         )}
         <p className="mt-1 font-mono text-[10px] text-slate-400">{mac}</p>
         <p className="mt-2 text-[10px] text-slate-400">
-          {provider ? `${provider} · ` : ""}Billing by SmartBill Solutions
+          {provider ? `${provider} · ` : ""}Billing by {PLATFORM_NAME}
         </p>
       </footer>
     </section>
