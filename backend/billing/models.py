@@ -1195,12 +1195,26 @@ class Invoice(TenantScopedModel):
 # =====================================================
 
 def generate_voucher_code():
-    prefix = "WIFI"
-    random_part = "".join(
+    """
+    Six characters, and nothing else.
+
+    These used to carry a WIFI- prefix. It read as part of the code, so a
+    customer at a counter would be told "WIFI dash Q W I A L E" and type the
+    whole thing, or half of it, or ask what the WIFI part meant. Eleven
+    characters to dictate over a phone when six carry all the information.
+
+    Six from a 36-symbol alphabet is about 2.2 billion combinations, chosen
+    with secrets rather than random. Guessing is bounded by the hotspot_public
+    throttle at 30/min, which makes the search space a rounding error while
+    leaving room for somebody who mistypes.
+
+    Codes already issued with the prefix keep working: nothing looks the shape
+    up, it is matched as a string.
+    """
+    return "".join(
         secrets.choice(string.ascii_uppercase + string.digits)
         for _ in range(6)
     )
-    return f"{prefix}-{random_part}"
 
 
 # =====================================================

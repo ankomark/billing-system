@@ -22,8 +22,29 @@ MAX_INPUT = 400
 # would turn a single throttled request into fifty attempts.
 MAX_CANDIDATES = 3
 
-# Our own voucher codes, e.g. WIFI-NITGYQ.
+# Voucher codes issued before the prefix was dropped, e.g. WIFI-NITGYQ. Still
+# matched because those vouchers are still out there on customers' phones.
 _VOUCHER_RE = re.compile(r"\b[A-Z]{2,10}-[A-Z0-9]{4,12}\b")
+
+# The code as it appears in our own SMS: "Voucher Code: QWIALE".
+#
+# Anchored on the label for the same reason _CONFIRMED_RE is anchored on
+# "Confirmed": without it there is nothing to distinguish a six-character code
+# from six-character English. Uppercasing the message turns half of it into
+# things that look like codes — the welcome SMS alone yields AUTO-LOGIN,
+# UNLIMITED and CONNECTED, which is MAX_CANDIDATES exhausted before the real
+# code is even considered. Tried first, so the one token we can be certain
+# about takes the first slot.
+_VOUCHER_LABEL_RE = re.compile(
+    r"VOUCHER\s*CODE\s*[:\-]?\s*([A-Z0-9][A-Z0-9-]{3,19})", re.IGNORECASE
+)
+
+# Voucher codes as issued now: six characters, no prefix.
+#
+# Tried last, because it is the loosest — six uppercase alphanumerics also
+# describe plenty of ordinary words. It is the fallback for a customer who
+# pastes something other than our SMS; the label above is what handles ours.
+_BARE_CODE_RE = re.compile(r"\b[A-Z0-9]{6}\b")
 
 # Safaricom receipts are 10 uppercase alphanumerics and always lead the
 # message: "TGX11AA001 Confirmed. Ksh50.00 sent to ...".
@@ -77,6 +98,11 @@ def extract_codes(text: str) -> List[str]:
         if value and value not in candidates and value.upper() not in _NOT_A_CODE:
             candidates.append(value)
 
+    # Our own SMS names the code, so that reading beats every guess below it.
+    labelled = _VOUCHER_LABEL_RE.search(text)
+    if labelled:
+        add(labelled.group(1).upper())
+
     confirmed = _CONFIRMED_RE.search(text)
     if confirmed:
         add(confirmed.group(1).upper())
@@ -85,6 +111,12 @@ def extract_codes(text: str) -> List[str]:
         add(match.group(0))
 
     for match in _RECEIPT_RE.finditer(upper):
+        add(match.group(0))
+
+    # Last, and only if there is room left. The welcome SMS reads "Voucher
+    # Code: QWIALE" inside a paragraph of text, and people paste the whole
+    # message rather than picking the code out of it.
+    for match in _BARE_CODE_RE.finditer(upper):
         add(match.group(0))
 
     return candidates[:MAX_CANDIDATES]
