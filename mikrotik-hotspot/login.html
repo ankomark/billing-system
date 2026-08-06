@@ -319,15 +319,35 @@
     <input type="hidden" name="popup"    value="false">
   </form>
 
-  <!-- Values RouterOS substitutes, read as data rather than pasted into a
-       script. Nothing here has ever contained a quote, but a page that builds
-       JavaScript out of server-side substitution is one surprising value away
-       from being broken by it, and this costs nothing. -->
-  <div id="rt"
-       data-mac="$(mac)"
-       data-chap-id="$(chap-id)"
-       data-chap-challenge="$(chap-challenge)"
-       hidden></div>
+  <!-- $(mac) is plain text and safe to read as data rather than pasted into a
+       script, which is where a page that builds JavaScript out of server-side
+       substitution usually goes wrong. -->
+  <div id="rt" data-mac="$(mac)" hidden></div>
+
+  <!-- The CHAP values cannot be read the same way, and this is not a style
+       choice.
+
+       RouterOS substitutes $(chap-id) and $(chap-challenge) as *JavaScript
+       string escapes* — the raw challenge bytes written as \NNN sequences,
+       because its own stock login page uses them inside a quoted JS string.
+       Nothing decodes escapes in an HTML attribute, so read from there they
+       arrive as the literal characters backslash-N-N-N. The MD5 is then
+       computed over the wrong input, and the router answers "invalid username
+       or password" for a customer whose voucher was perfectly good.
+
+       That is what happened: the account was created on the router, the
+       username matched, /log showed "trying to log in by http-chap" followed
+       immediately by a refusal, and the only wrong thing in the whole chain
+       was where these two values were read from.
+
+       Kept in its own script block deliberately. If a substitution ever does
+       produce something that will not parse, the failure is contained here —
+       the block below still runs, CHAP_ID stays undefined, and the guard in it
+       falls back rather than taking the whole page down. -->
+  <script>
+    var RT_CHAP_ID        = '$(chap-id)';
+    var RT_CHAP_CHALLENGE = '$(chap-challenge)';
+  </script>
 
   <p class="terms" id="terms" hidden>
     <span data-i18n="terms.before">By connecting you agree to the </span><a
@@ -345,8 +365,12 @@
 (function () {
   var RT  = document.getElementById('rt');
   var MAC = RT.getAttribute('data-mac') || '';
-  var CHAP_ID        = RT.getAttribute('data-chap-id') || '';
-  var CHAP_CHALLENGE = RT.getAttribute('data-chap-challenge') || '';
+
+  // From the block above, not from an attribute. typeof, because that block
+  // is the one thing on this page that a bad substitution could stop from
+  // running — and an undefined here must mean "no CHAP", not a crash.
+  var CHAP_ID        = (typeof RT_CHAP_ID === 'string')        ? RT_CHAP_ID        : '';
+  var CHAP_CHALLENGE = (typeof RT_CHAP_CHALLENGE === 'string') ? RT_CHAP_CHALLENGE : '';
 
   // A value RouterOS did not substitute arrives literally, e.g. "$(mac)".
   function substituted(v) { return v && v.charAt(0) !== '$'; }

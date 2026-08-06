@@ -19,8 +19,22 @@ function hex_hmac_md5(k, d) { return rstr2hex(rstr_hmac_md5(str2rstr_utf8(k), st
 function b64_hmac_md5(k, d) { return rstr2b64(rstr_hmac_md5(str2rstr_utf8(k), str2rstr_utf8(d))); }
 function any_hmac_md5(k, d, e) { return rstr2any(rstr_hmac_md5(str2rstr_utf8(k), str2rstr_utf8(d)), e); }
 
-/* Expose a simple MD5() shortcut */
-function MD5(s) { return hex_md5(s); }
+/* The CHAP entry point, and the reason it is not hex_md5().
+ *
+ * hex_md5 runs its input through str2rstr_utf8 first. That is right for text
+ * and wrong for this: a CHAP challenge is sixteen raw bytes, and UTF-8 turns
+ * every byte above 0x7F into two. Roughly half of all challenges contain at
+ * least one, so the hash is computed over the wrong input more often than not
+ * — and the customer is told their password is invalid.
+ *
+ * Intermittent by nature, which is the worst part. A challenge that happens to
+ * be all-ASCII works, so the same voucher on the same phone can succeed and
+ * then fail a minute later with nothing changed.
+ *
+ * rstr_md5 takes the string as bytes; rstr2binl masks each character with
+ * 0xFF. That is what RouterOS's own login page does, and what it expects back.
+ */
+function MD5(s) { return rstr2hex(rstr_md5(s)); }
 
 function rstr_md5(s) {
   return binl2rstr(binl_md5(rstr2binl(s), s.length * 8));
