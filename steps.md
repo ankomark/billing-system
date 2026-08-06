@@ -479,15 +479,32 @@ Your own machine is now behind the portal. Bypass it while you work:
 
 ```
 /ip/hotspot/walled-garden/add dst-host=api.example.com comment="Billing API"
+/ip/hotspot/walled-garden/ip/add dst-address=SERVER_IP action=accept comment="Billing API direct"
 ```
 
 The portal must reach your API **before** the customer has logged in — that is
 the entire point. Miss it and the page loads, shows no packages, and nothing on
-the router explains why. Use the hostname, never an IP: behind Cloudflare the
-addresses change.
+the router explains why.
 
-The `HITS` counter on that rule is a free diagnostic — still `0` after a phone
-has loaded the portal means the page never even tried.
+**Add both rules.** The hostname rule works by watching DNS: the router sees a
+client look `api.example.com` up, notes the answer, and permits that address.
+Reboot the router and those dynamic permissions are gone — and if the phone
+answers from its own cache, or uses private DNS (Android's *Private DNS*
+defaults to Automatic, which attempts DNS-over-TLS), the router never sees a
+lookup and never permits anything. The portal then loads and every API call
+fails with a bare network error. Observed on a live router: after a reboot the
+rule sat at `hits: 0` while the config was unchanged and correct.
+
+The address rule does not depend on observing DNS, so it survives that.
+
+> **The address rule is only valid while `api` is grey-clouded.** Flip it to
+> orange and requests go to Cloudflare's addresses instead, and this entry stops
+> matching. Use Cloudflare's IP ranges, or rely on the hostname rule, if you
+> proxy the API.
+
+The `HITS` counter is a free diagnostic — still `0` after a phone has loaded the
+portal means nothing matched, which is a different problem from a request that
+matched and was refused.
 
 ### 9.4 API access, over the tunnel
 
@@ -689,10 +706,13 @@ the old schema. Vercel redeploys the frontend on push by itself.
 
 ## Open items
 
-- **CHAP login on the portal.** Running on `http-pap`. `login.html` reads the
-  challenge from HTML attributes, where RouterOS's JavaScript escapes do not
-  decode. The values need to be substituted into a JS string literal, which is
-  the context RouterOS escapes them for.
+- **CHAP login — fixed, not yet proven.** Both faults are corrected and the
+  files are on the router: the challenge is now substituted into a JS string
+  literal, and `MD5()` no longer UTF-8 encodes its input. Not yet confirmed
+  with `login-by=http-chap,http-pap` on real hardware. **Test it three or four
+  times, not once** — the UTF-8 fault only corrupted challenges containing a
+  byte above `0x7F`, so roughly half of attempts succeeded by luck even before
+  the fix, and a single success proves nothing.
 - **Off-site backups.** Local only until `rclone` has a remote — the dumps
   currently share a disk with the database.
 - **`PermitRootLogin no`** once no further root work is expected.
@@ -701,6 +721,368 @@ the old schema. Vercel redeploys the frontend on push by itself.
 - **Package hygiene.** Check every package's `duration_value`/`duration_unit`
   against its name, and that `is_hotspot` is set correctly — a PPPoE package on
   a hotspot portal sells something the router cannot deliver.
+
+---
+
+## Debug
+
+### The method
+
+Almost every failure here presents as a different layer than the one that is
+broken. A CORS refusal reads as "invalid username or password". A crash in the
+router code reads as "check you pasted the whole message". A router with no
+internet reads as a hotspot fault. **Find the layer before changing anything**,
+or you will spend an hour fixing something that was never wrong.
+
+Six commands, in this order, place almost any fault:
+
+```bash
+# 1. Is the platform alive?
+curl -s https://api.example.com/health/
+
+# 2. Is the router reachable at all?
+ssh deploy@SERVER_IP 'ping -c 3 10.10.0.N'
+
+# 3. Did the request even arrive?
+ssh deploy@SERVER_IP 'cd billing/backend && docker compose logs web --since 10m | grep hotspot'
+
+# 4. What did it answer, and why?
+ssh deploy@SERVER_IP 'cd billing/backend && docker compose logs web --since 10m | grep -A 30 Traceback'
+```
+
+```
+# 5. What does the router think happened?
+/log print where topics~"hotspot"
+
+# 6. Is the portal's traffic being permitted?
+/ip/hotspot/walled-garden/print
+```
+
+Steps 3 and 5 are the ones people skip, and they are the two that answer
+"whose fault is it".
+
+**Read the server, not the symptom.** Nothing today was diagnosed from what the
+phone said.
+
+---
+
+### The portal never appears
+
+Phone connects, no login page, no "sign in to network".
+
+| Check | Command | Meaning |
+|---|---|---|
+| Hotspot server valid | `/ip/hotspot/print` | An `I` flag means *inactivated, not allowed by device-mode* — see §9.1. Everything downstream silently does nothing |
+| Files present | `/file/print where name~"hotspot/"` | Files at the root instead of inside `hotspot/` are never served |
+| Profile points at them | `/ip/hotspot/profile/print` | Wants `html-directory=hotspot` |
+| Device bypassed | `/ip/hotspot/ip-binding/print` | A `bypassed` binding never sees the portal — easy to forget you added one for your own laptop |
+
+Also: **try an `http://` address, not `https://`.** A captive portal cannot
+intercept HTTPS without a certificate error, so typing `google.com` usually
+just fails instead of redirecting. Phones probe over plain HTTP for exactly
+this reason.
+
+---
+
+### Portal appears, no packages / "No connection to the payment service"
+
+The page is served from the router, so it loading proves nothing about your API.
+
+```
+/ip/hotspot/walled-garden/print
+```
+
+- **`hits: 0`** — nothing matched. The request never got out. Add the address
+  rule from §9.3; the hostname rule alone breaks after a reboot or against a
+  phone using private DNS.
+- **`hits` climbing** — traffic is getting through, so the fault is beyond the
+  router. Go to the server logs.
+
+Then confirm the request actually arrived:
+
+```bash
+docker compose logs web --since 10m | grep hotspot/packages
+```
+
+- **Nothing** — still the walled garden, or `API_BASE` in `config.js` is wrong
+- **`200`** — the API answered; the problem is in the page, not the network
+- **`400`** — usually the tenant token
+
+Check `config.js` on the router really has the right values. It is the one file
+edited per operator and the easiest to upload from the wrong folder.
+
+---
+
+### "Invalid or expired voucher"
+
+Look at the voucher before believing the message:
+
+```sql
+select v.code, v.is_active, v.expires_at, s.status, s.expiry_date, now()
+from billing_voucher v join billing_subscription s on s.id = v.subscription_id
+order by v.id desc limit 5;
+```
+
+| Finding | Cause |
+|---|---|
+| `expires_at` in the past | Genuinely expired. Check the package's `duration_value`/`duration_unit` — a package named "1hr" configured as 5 minutes is a real thing |
+| `is_active = f` | Already used or deactivated |
+| Row looks fine | The code string did not match. Case is handled now; check for a typo, and that the operator's token in `config.js` matches the operator who issued it |
+
+A voucher issued by one operator will never validate on another's portal. That
+is deliberate — the lookup is scoped by tenant, and without it one operator's
+code would grant access through another's hotspot.
+
+---
+
+### Router says "invalid username or password" after a valid code
+
+The API succeeded and the router refused the login. Two different things.
+
+```
+/log print where topics~"hotspot"
+```
+
+Look for `trying to log in by http-chap` followed by a refusal.
+
+| Check | Where |
+|---|---|
+| Was the user created? | `/ip/hotspot/user/print` — should show the device MAC with an `AUTO \| WIFI BILLING SYSTEM` comment |
+| Does the profile exist? | `/ip/hotspot/user/profile/print` — `HOTSPOT_PKG_<id>_D<devices>` |
+| Is CHAP the method? | `/ip/hotspot/profile/print` — `login-by` |
+| Are the portal files current? | `/file/print where name~"hotspot/"` — `login.html` ≈33 KB and `md5.js` ≈8.8 KB are the fixed versions; ~4 KB and 7 KB are MikroTik's |
+
+**`reset-html` overwrites your pages with MikroTik's.** After running it, always
+re-upload the seven — otherwise the router is serving a portal that knows
+nothing about your API.
+
+To isolate the CHAP maths from everything else, temporarily:
+
+```
+/ip/hotspot/profile/set hsprof1 login-by=http-pap
+```
+
+If it logs in under PAP, the fault is in the hashing. Put it back afterwards.
+
+---
+
+### Customer still online after expiry
+
+First, separate two things. **"Connected" on the phone is the WiFi association
+and never goes away** — no captive portal drops it. What should stop is traffic.
+
+```
+/ip/hotspot/active/print
+/ip/hotspot/host/print
+```
+
+- **No active session, host `authorized: False`** — working correctly. The
+  customer keeps a WiFi icon and no internet, and gets the portal on their next
+  HTTP request.
+- **Session still present** — the disable never ran, or never reached the
+  router.
+
+```bash
+docker compose logs worker --since 30m | grep -iE "expiry|disable"
+```
+
+You want `[expiry] Subscription N expired` followed by `[disable_customer_task]
+Access disabled`. If the first appears and the second does not, the router was
+unreachable — the database and the hardware have diverged, and the customer is
+online while the dashboard says expired.
+
+The sweep runs every 5 minutes, so up to five minutes of overrun is normal.
+`limit-uptime` on the hotspot user is what makes it prompt; the sweep is the
+backstop.
+
+---
+
+### Router shows offline in the dashboard
+
+```bash
+docker compose logs worker --since 15m | grep router-health
+ssh deploy@SERVER_IP 'ping -c 3 10.10.0.N'
+```
+
+If the platform cannot ping it, the dashboard is right and the fault is at the
+site. On the router:
+
+```
+/ip/address/print
+/ping 8.8.8.8 count=3
+/ping vpn.example.com count=2
+/ping 10.10.0.1 count=3
+```
+
+Read them in that order — each rules out a layer:
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| No address on ether1 | No WAN. Cable, or upstream device down | `/interface/print where name=ether1` for the `R` flag; then `/ip/dhcp-client/renew` |
+| `8.8.8.8` fails | Router has an address but no route | Check the upstream device |
+| `vpn.example.com` fails | DNS | `/ip/dns/print` |
+| Server pings, `10.10.0.1` does not | **Tunnel needs re-resolving** | See below |
+
+**A router that boots while its internet is down does not rejoin the tunnel by
+itself.** WireGuard resolves the endpoint at startup, fails, and does not retry
+aggressively. This is the common one after a power cut, because the MikroTik
+boots faster than the modem in front of it:
+
+```
+/interface/wireguard/disable wg-smartbill
+/interface/wireguard/enable wg-smartbill
+/ping 10.10.0.1 count=3
+```
+
+Worth automating on every router — see [Self-healing the
+tunnel](#self-healing-the-tunnel).
+
+---
+
+### "Test connection" fails on a router you believe is fine
+
+Work outwards:
+
+```bash
+ssh deploy@SERVER_IP 'ping -c 3 10.10.0.N'                                    # tunnel
+ssh deploy@SERVER_IP 'timeout 5 bash -c "</dev/tcp/10.10.0.N/8728"'            # port
+```
+
+- **Ping works, port does not** — the firewall rule is missing or below a drop.
+  ICMP has its own accept rule in the default config, which is why ping can
+  succeed while 8728 is silently dropped. This reads exactly like a wrong
+  password.
+- **Both work** — it is the credentials.
+
+```
+/ip/service/print where name=api
+/user/print detail where name=billing
+/ip/firewall/filter/print where comment~"Billing"
+```
+
+All three should be restricted to `10.10.0.1/32`.
+
+---
+
+### Whole LAN says "connected, no internet"
+
+Check the router's own WAN before anything else:
+
+```
+/ip/address/print
+/ping 8.8.8.8 count=3
+```
+
+If the router has no internet, every device behind it is correct to say so, and
+the hotspot is irrelevant. This is worth ruling out first every single time — it
+costs ten seconds and it is a common cause.
+
+If the router is online and only *one* segment is not, and you have split the
+LAN (§9.6), the usual culprit is the new bridge missing from the `LAN`
+interface list — its DHCP and DNS are then dropped by the router's own
+firewall.
+
+```
+/interface/list/member/print
+```
+
+---
+
+### Dashboard login fails / data does not load
+
+Open the browser console first. `GUIDE.md` is right about this: CORS failures
+look like nothing, and the server logs a healthy `200`.
+
+```bash
+curl -s -o /dev/null -D - -X OPTIONS https://api.example.com/api/auth/login/ \
+  -H "Origin: https://app.example.com" \
+  -H "Access-Control-Request-Method: POST" | grep -i "access-control-allow-origin"
+```
+
+- **Header present** — CORS is fine, look elsewhere
+- **Header absent** — that origin is not permitted. Browsing from a
+  `*.vercel.app` preview URL rather than your real domain does this, and the
+  frontend reports it as *invalid username or password*
+
+---
+
+### 500 on any endpoint
+
+The traceback is logged now:
+
+```bash
+docker compose logs web --since 10m | grep -A 30 "Traceback"
+```
+
+If you get nothing, the `LOGGING` block in `settings.py` is missing or the
+container is running older code. Check `docker compose ps` for uptime and pull.
+
+---
+
+### Tasks not running
+
+```bash
+docker compose logs beat --since 20m | grep Scheduler
+docker compose logs worker --since 20m | tail -20
+docker compose ps
+```
+
+**Beat dying is the silent failure in this stack** — no expiry sweeps, no
+reminders, no router health, no failover, and nothing anywhere reports an
+error. If beat is scheduling but the worker never receives, the broker is the
+problem: check `REDIS_URL` has no database number on the end.
+
+---
+
+### Useful RouterOS commands
+
+```
+/log print where topics~"hotspot"      # portal and login attempts
+/log print where topics~"wireguard"    # tunnel
+/log print where topics~"dhcp"         # address problems
+/ip/hotspot/active/print               # who is online now
+/ip/hotspot/host/print                 # who is connected, authorised or not
+/ip/hotspot/user/print                 # accounts the platform created
+/interface/print                       # R flag = link up
+/system/resource/print                 # uptime, memory, version
+/export file=backup-name               # full config, downloadable from Files
+```
+
+`/export` is the one to run **before** touching anything on a live router. It
+writes every command needed to rebuild the configuration, so a mistake becomes
+an import rather than a site visit.
+
+---
+
+### Self-healing the tunnel
+
+Every operator's router will lose power, and many come back before the modem in
+front of them. Add this to each router so you are not driving out to run two
+commands:
+
+```
+/system/scheduler/add name=wg-watchdog interval=2m on-event={
+  :if ([/ping 10.10.0.1 count=2] = 0) do={
+    /interface/wireguard/disable wg-smartbill;
+    :delay 2s;
+    /interface/wireguard/enable wg-smartbill;
+    :log warning "wg-watchdog: tunnel down, re-resolved endpoint";
+  }
+}
+```
+
+Two failed pings, then re-resolve the endpoint. It logs when it acts, so
+`/log print where topics~"script"` tells you whether a site is flapping.
+
+**`scheduler` is disabled by `device-mode` on a `home` router**, the same as
+hotspot was:
+
+```
+/system/device-mode/update scheduler=yes
+```
+
+then power-cycle to confirm. Do it at the same time as the hotspot change so
+one trip covers both.
 
 ---
 
