@@ -1358,6 +1358,15 @@ class IssueVoucherView(APIView):
                         phone=phone,
                         connection_type="hotspot",
                     )
+                elif customer.status != "active":
+                    # A returning customer was left marked expired by the last
+                    # sweep, and buying again never cleared it. The row then
+                    # said "expired" while holding a subscription with hours
+                    # left — an operator looking at their customer list would
+                    # see somebody cut off who had just paid, and no amount of
+                    # reconnecting would change it.
+                    customer.status = "active"
+                    customer.save(update_fields=["status"])
 
                 subscription = Subscription.objects.create(
                     tenant=tenant, customer=customer, package=package,

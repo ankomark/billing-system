@@ -43,12 +43,41 @@ def enforce_subscription_expiry(self):
             sub.status = "expired"
             sub.save(update_fields=["status"])
 
-            if customer.status != "expired":
+            # Is anything else still keeping this customer online?
+            #
+            # Expiry was per-subscription and the disable was per-customer, so
+            # one running out cut off everything that customer had. A top-up —
+            # buying two hours with twenty minutes still on the clock — was
+            # therefore self-defeating: the old package expired, the customer
+            # was disabled, and the time they had just paid for went with it.
+            # Their dashboard showed an active subscription and no internet.
+            #
+            # Evaluated after the row above is marked expired, so it cannot
+            # count itself.
+            still_covered = (
+                Subscription.objects.all_tenants()
+                .filter(
+                    customer=customer,
+                    status="active",
+                    expiry_date__gt=timezone.now(),
+                )
+                .exists()
+            )
+
+            if not still_covered and customer.status != "expired":
                 customer.status = "expired"
                 customer.save(update_fields=["status"])
 
-        disable_customer_task.delay(customer.id)
         processed += 1
+
+        if still_covered:
+            logger.info(
+                f"[expiry] Subscription {sub.id} expired — customer "
+                f"{customer.id} left connected, another subscription is live"
+            )
+            continue
+
+        disable_customer_task.delay(customer.id)
         logger.info(
             f"[expiry] Subscription {sub.id} expired — customer {customer.id} queued for disable"
         )
