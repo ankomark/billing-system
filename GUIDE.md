@@ -300,7 +300,26 @@ STAMP=$(date +%Y%m%d-%H%M)
 OUT=/tmp/billing-$STAMP.sql.gz
 
 cd /home/deploy/billing/backend
-docker compose exec -T postgres pg_dump -U billing billing | gzip > "$OUT"
+
+# wifi_admin, the superuser — not wifi_app, the role the app connects as.
+#
+# wifi_app is NOBYPASSRLS, which is the whole point of it, and Row-Level
+# Security applies to the SELECTs pg_dump issues just as it does to Django's.
+# Dumped as the app role you get a file containing the schema and almost none
+# of the rows: no customers, no subscriptions, no payments. It succeeds, exits
+# 0, and is a plausible size. You find out when you restore it.
+docker compose exec -T postgres pg_dump -U wifi_admin -d wifi_billing | gzip > "$OUT"
+
+# The silently-empty dump this section warns about, actually checked for.
+# gzip of nothing is still valid gzip, so nothing upstream fails — and without
+# this the good backups age out of the 30-day window behind a month of
+# worthless ones.
+SIZE=$(stat -c%s "$OUT")
+if [ "$SIZE" -lt 10000 ]; then
+    echo "ABORT: dump is only ${SIZE} bytes — refusing to ship it" >&2
+    rm -f "$OUT"
+    exit 1
+fi
 
 # Encrypt before it leaves the machine — it holds customer names, phone
 # numbers and payment records.
@@ -313,6 +332,11 @@ rm -f "$OUT" "$OUT.gpg"
 # Keep 30 days
 rclone delete --min-age 30d remote:billing-backups/
 ```
+
+The passphrase in `.backup-pass` goes in your password manager too, alongside
+`FIELD_ENCRYPTION_KEY` and for the same reason: it is the only thing that opens
+these files, and if you are restoring them it is because the machine holding
+that file is gone.
 
 `chmod 700 backup.sh`, then `crontab -e`:
 
