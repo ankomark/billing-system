@@ -120,6 +120,36 @@ export default function SystemSettings() {
           </p>
         </div>
 
+        {/* Read-only identity. The backend has always returned these, with a
+            comment saying to surface them here rather than making an operator
+            ask — and nothing rendered them, so the token an operator needs for
+            their own captive portal could only be read out of the database.
+            Absent for platform staff, who have no tenant of their own. */}
+        {settings?.TENANT_TOKEN && (
+          <Section title="Captive portal setup">
+            <Readonly
+              label="Business name"
+              value={settings.BUSINESS_NAME}
+              hint="Shown at the top of the portal your subscribers see."
+            />
+            <Readonly
+              label="Tenant token"
+              value={settings.TENANT_TOKEN}
+              mono
+              hint="Goes in TENANT_TOKEN in config.js on your MikroTik. It identifies whose portal this is — a device MAC is only unique within one operator."
+            />
+            <Readonly
+              label="M-Pesa callback URL"
+              value={settings.MPESA_CALLBACK_URL_EFFECTIVE}
+              mono
+              hint={
+                settings.MPESA_CALLBACK_HINT ||
+                "Register exactly this with Safaricom. It carries your token, so the callback loads the right operator's credentials."
+              }
+            />
+          </Section>
+        )}
+
         <form onSubmit={handleSubmit} className="space-y-6">
 
           {/* M-Pesa */}
@@ -260,6 +290,54 @@ function Section({ title, children }) {
     <div className="rounded-xl border border-white/10 bg-slate-900/80 shadow-lg shadow-black/20 p-6 space-y-4">
       <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-[0.14em]">{title}</p>
       {children}
+    </div>
+  );
+}
+
+/**
+ * A value the operator needs to copy elsewhere, not edit.
+ *
+ * With a copy button because both of these end up pasted into something
+ * unforgiving — a JavaScript file on a router, and Safaricom's callback
+ * registration — where one transposed character fails silently rather than
+ * loudly. Selecting 32 random characters by hand is where that mistake gets
+ * made.
+ */
+function Readonly({ label, value, hint = "", mono = false }) {
+  const [copied, setCopied] = useState(false);
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(value || "");
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard needs a secure context and permission. The value is on
+      // screen and selectable either way, so a failure here is not worth
+      // interrupting anyone over.
+    }
+  };
+
+  return (
+    <div>
+      <label className="block text-sm font-medium text-slate-300 mb-1.5">{label}</label>
+      <div className="flex gap-2">
+        <input
+          readOnly
+          value={value || ""}
+          onFocus={(e) => e.target.select()}
+          className={`w-full border border-white/15 bg-slate-950/60 text-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${mono ? "font-mono text-xs" : ""}`}
+        />
+        <button
+          type="button"
+          onClick={copy}
+          disabled={!value}
+          className="shrink-0 border border-white/15 hover:bg-white/5 text-slate-300 px-3 py-2 rounded-lg text-sm disabled:opacity-40 transition-colors"
+        >
+          {copied ? "Copied" : "Copy"}
+        </button>
+      </div>
+      {hint && <p className="mt-1.5 text-xs text-slate-500">{hint}</p>}
     </div>
   );
 }
