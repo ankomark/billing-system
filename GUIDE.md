@@ -324,6 +324,48 @@ rclone delete --min-age 30d remote:billing-backups/
 customers. An untested backup is a belief, not a backup — and the failure you
 are testing for is the one where the dump has been silently empty for a month.
 
+### 1.8 Shipping a change
+
+The server pulls from GitHub over HTTPS. Nothing needs a deploy key while the
+repository is public; if you make it private, add one.
+
+`/home/deploy/deploy.sh`:
+
+```bash
+#!/bin/bash
+set -euo pipefail
+cd /home/deploy/billing
+
+/home/deploy/backup.sh            # 1. before anything can go wrong
+git pull --ff-only origin main    # 2. stops if nothing changed
+cd backend
+docker compose build              # 3.
+docker compose run --rm migrate   # 4. schema first
+docker compose up -d --wait       # 5. then the code
+```
+
+Then `ssh deploy@your-server /home/deploy/deploy.sh`.
+
+Three things about that order.
+
+**The backup is step one, not step five.** A migration rewrites the shape of the
+database and has no undo. A dump taken afterwards records the damage; the one
+that helps is the one taken before.
+
+**`migrate` is its own step.** Leaving it to `docker compose up` looks
+equivalent and is not: `up` may leave an already-exited one-shot container
+alone, so the migration silently does not run and the new code starts against
+the old schema. Half the app works. The half that touches the new column
+raises, in production, on a deploy that reported success.
+
+**The script lives outside the repository, deliberately.** Bash reads a script
+as it executes rather than all at once, so a script that `git pull`s a change
+to *itself* can run half of the old file and half of the new one. Keeping it in
+`/home/deploy` means the file being executed is never the file being updated.
+
+Postgres and Redis are not recreated by any of this, so data survives a deploy.
+Expect a few seconds where `web` is restarting.
+
 ---
 
 ## Part 2 — The frontend, on Vercel
