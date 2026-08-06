@@ -623,6 +623,60 @@ if not DEBUG and not FIELD_ENCRYPTION_KEY:
     )
 
 # =====================================================
+# LOGGING
+# =====================================================
+# Without this block, a 500 in production leaves no trace anywhere.
+#
+# Django's default configuration routes django.request errors to the
+# mail_admins handler, and attaches a console handler only when DEBUG is on.
+# Run with DEBUG=False and no ADMINS — which is what any real deployment looks
+# like — and the traceback for every unhandled exception is silently dropped.
+# The access log records a 500 and nothing else: no exception type, no file, no
+# line. Verified on the running stack while debugging a voucher redemption that
+# threw after binding a device, where there was simply nothing to read.
+#
+# stderr, because these processes run in containers and that is what
+# `docker compose logs` captures. Sentry, when a DSN is set, is added on top of
+# this by its own integration rather than replacing it — a service that can
+# have an outage should not be the only place errors go.
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "verbose": {
+            "format": "[{levelname}] {asctime} {name}: {message}",
+            "style": "{",
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "verbose",
+        },
+    },
+    "loggers": {
+        # The one that matters: unhandled exceptions in views land here, with
+        # the traceback attached.
+        "django.request": {
+            "handlers": ["console"],
+            "level": "ERROR",
+            "propagate": False,
+        },
+        # This project's own logger.* calls — router failures, M-Pesa
+        # callbacks, tenant warnings.
+        "billing": {
+            "handlers": ["console"],
+            "level": os.getenv("BILLING_LOG_LEVEL", "INFO"),
+            "propagate": False,
+        },
+    },
+    "root": {
+        "handlers": ["console"],
+        "level": "WARNING",
+    },
+}
+
+# =====================================================
 # ERROR MONITORING (SENTRY)
 # =====================================================
 
