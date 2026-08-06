@@ -62,7 +62,18 @@ def enable_hotspot(api, router, mac_address, package, expiry_date):
 
     for u in users:
         if u.get("name") == mac_address:
-            users.remove(**{".id": u[".id"]})
+            # Positional. librouteros' Path.remove takes ids as *args, so a
+            # `.id` keyword raises TypeError — a Python error, not a router
+            # error, so nothing that guards against a router being unreachable
+            # catches it.
+            #
+            # Every removal in this codebase was written the other way, and the
+            # damage was not limited to re-issuing a voucher. disable_hotspot
+            # removes the user and ends the session through the same call, so
+            # nobody was ever disconnected when their time ran out: expiry
+            # updated the database, reported success, and left the customer
+            # online indefinitely.
+            users.remove(u[".id"])
     users.add(**{
         "name": mac_address,
         "password": "",
@@ -94,7 +105,7 @@ def disable_hotspot(api, mac_address):
         actives = api.path("ip", "hotspot", "active")
         for session in list(actives):
             if session.get("user") == mac_address or session.get("mac-address") == mac_address:
-                actives.remove(**{".id": session[".id"]})
+                actives.remove(session[".id"])
     except Exception:
         # An unreachable router is handled by the caller; losing the session
         # kick must not stop the account being removed.
@@ -103,7 +114,7 @@ def disable_hotspot(api, mac_address):
     users = api.path("ip", "hotspot", "user")
     for u in users:
         if u.get("name") == mac_address:
-            users.remove(**{".id": u[".id"]})
+            users.remove(u[".id"])
             return
 def enable_customer_access(customer):
     """
@@ -222,7 +233,7 @@ def disconnect_pppoe_session(api, username):
     active = api.path("ppp", "active")
     for s in active:
         if s.get("name") == username:
-            active.remove(**{".id": s[".id"]})
+            active.remove(s[".id"])
             return
 
 def get_pppoe_usage(router, username):

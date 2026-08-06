@@ -241,7 +241,7 @@ def ensure_rules(api, *, timeout="10m", connections=DEFAULT_CONNECTION_LIMIT):
 
     for comment, row in existing.items():
         try:
-            path.remove(**{".id": row[".id"]})
+            path.remove(row[".id"])
             removed += 1
         except Exception as e:
             logger.warning("[tether] could not remove stale rule %s: %s",
@@ -265,14 +265,14 @@ def remove_rules(api):
     mangle = api.path("ip", "firewall", "mangle")
     for row in list(mangle):
         if (row.get("comment") or "").startswith(RULE_COMMENT):
-            mangle.remove(**{".id": row[".id"]})
+            mangle.remove(row[".id"])
             removed += 1
 
     entries = api.path("ip", "firewall", "address-list")
     for row in list(entries):
         if row.get("list") in ALL_LISTS:
             try:
-                entries.remove(**{".id": row[".id"]})
+                entries.remove(row[".id"])
             except Exception:
                 # Dynamic entries expire on their own; a failure to delete one
                 # is not worth abandoning the rest of the cleanup for.
@@ -281,7 +281,7 @@ def remove_rules(api):
     queues = api.path("queue", "simple")
     for row in list(queues):
         if (row.get("comment") or "").startswith(RULE_COMMENT):
-            queues.remove(**{".id": row[".id"]})
+            queues.remove(row[".id"])
             removed += 1
 
     return removed
@@ -585,7 +585,7 @@ def unthrottle_address(api, ip):
     name = _queue_name(ip)
     for row in list(queues):
         if row.get("name") == name:
-            queues.remove(**{".id": row[".id"]})
+            queues.remove(row[".id"])
             return True
     return False
 
@@ -607,7 +607,7 @@ def end_session(api, ip):
     actives = api.path("ip", "hotspot", "active")
     for row in list(actives):
         if row.get("address") == ip:
-            actives.remove(**{".id": row[".id"]})
+            actives.remove(row[".id"])
             return True
     return False
 
