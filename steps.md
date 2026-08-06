@@ -521,6 +521,77 @@ still standing in front of the machine.
 `HOTSPOT_PKG_<id>_D<devices>` and `PPPOE_PKG_<id>` from the package definition,
 so a manual edit is overwritten the next time somebody buys.
 
+### 9.6 Optional — free ports alongside the paid hotspot
+
+For an operator who wants their own desks, a till or an office PC online
+without paying: give those ports a separate bridge. The hotspot captures
+whatever interface it runs on, so the fix is to take ports *out* of `bridge`
+rather than to configure the hotspot.
+
+This example frees **ether3** and **ether4** and leaves ether2, ether5 and the
+WiFi behind the portal.
+
+**Do not run this from a machine plugged into ether3 or ether4** — you lose the
+lease mid-change. Use WiFi, another port, or connect WinBox by MAC address.
+
+```
+/interface/bridge/port/remove [find interface=ether3]
+/interface/bridge/port/remove [find interface=ether4]
+
+/interface/bridge/add name=bridge-free comment="Free / unmetered ports"
+/interface/bridge/port/add bridge=bridge-free interface=ether3
+/interface/bridge/port/add bridge=bridge-free interface=ether4
+
+/ip/address/add address=192.168.99.1/24 interface=bridge-free
+/ip/pool/add name=free-pool ranges=192.168.99.10-192.168.99.254
+/ip/dhcp-server/add name=free-dhcp interface=bridge-free address-pool=free-pool disabled=no
+/ip/dhcp-server/network/add address=192.168.99.0/24 gateway=192.168.99.1 dns-server=8.8.8.8,1.1.1.1
+
+/interface/list/member/add list=LAN interface=bridge-free
+```
+
+**That last line is the one people forget.** RouterOS's default firewall
+accepts input from the `LAN` interface list and drops the rest, so without it
+the ports get addresses and then have their DNS and DHCP dropped by the router
+itself. The symptom is "connected, no internet" — identical to a hotspot fault,
+and it sends you looking in the wrong place.
+
+No NAT rule is needed: the `defconf: masquerade` rule matches
+`out-interface-list=WAN` and covers any new subnet.
+
+Nothing about the hotspot changes. It stays bound to `bridge`, which now holds
+only the interfaces you charge for.
+
+Two additions worth making at the same time:
+
+```
+# The free side should not reach paying customers' devices
+/ip/firewall/filter/add chain=forward action=drop in-interface=bridge-free \
+  out-interface=bridge comment="free ports cannot reach hotspot LAN"
+
+# Nothing else limits these ports
+/queue/simple/add name=free-cap target=192.168.99.0/24 max-limit=5M/5M comment="free ports"
+```
+
+The cap matters more than it looks. These ports bypass the hotspot entirely —
+no session, no accounting, no package limit, no expiry — so one person on a
+free port can saturate the uplink every paying customer is sharing.
+
+**Verify:**
+
+```
+/interface/bridge/port/print
+/ip/dhcp-server/print
+```
+
+A laptop on ether3 should get a `192.168.99.x` address and browse with **no
+portal**. On ether2 or the WiFi, the portal appears as before.
+
+**Devices on free ports are invisible to the platform** — no customer record,
+no usage figures, no tethering detection. That is the point, but it also means
+an operator cannot see who is consuming that bandwidth. Tell them which ports
+are which before they wonder where their capacity went.
+
 ---
 
 ## Part 10 — The portal files
