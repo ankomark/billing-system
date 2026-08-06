@@ -95,12 +95,24 @@ def ensure_hotspot_profile(router, package):
         if p.get("name") == profile_name:
             return profile_name
 
+    # No comment. RouterOS has no comment property on
+    # /ip/hotspot/user/profile, and rejects the whole request rather than
+    # ignoring the extra field: "unknown parameter comment". So the profile is
+    # never created, enable_hotspot raises, and the customer who has just paid
+    # gets a 500 and no internet — every hotspot activation, on every router.
+    #
+    # /ppp/profile does accept it, which is why the PPPoE path above keeps
+    # its comment and this one cannot. Verified against RouterOS 7.19.6 by
+    # adding a profile to each: one succeeded, the other trapped.
+    #
+    # Nothing is lost. The name already carries what the comment said and
+    # more — HOTSPOT_PKG_<package>_D<devices> identifies the package and the
+    # device allowance, which is what makes these rebuildable.
     profiles.add(**{
         "name": profile_name,
         "rate-limit": _rate_limit(package),
         # How many devices one voucher may be used from at once.
         "shared-users": str(max(1, getattr(package, "max_devices", 1) or 1)),
-        "comment": f"Auto: {package.name}",
     })
 
     return profile_name
