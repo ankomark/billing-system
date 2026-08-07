@@ -24,6 +24,12 @@ from billing.tenancy import tenant_context
 class ShortcodeConfigTests(TestCase):
 
     def setUp(self):
+        # get_setting caches, and the cache is not rolled back with the rows.
+        # Without this, a till and a store number set by one test are still
+        # being read by the next, and the test asserting that PayBill is the
+        # default fails against a value it never set.
+        from billing.config import clear_settings_cache
+        clear_settings_cache()
         self.tenant = Tenant.objects.get(slug="skylink")
 
     def _set(self, **pairs):
@@ -93,8 +99,15 @@ class StkPayloadTests(TestCase):
     """What actually goes on the wire."""
 
     def setUp(self):
+        from billing.config import clear_settings_cache
+        clear_settings_cache()
         self.tenant = Tenant.objects.get(slug="skylink")
         with tenant_context(self.tenant):
+            # Explicitly blank, not merely unset: a store number left over in
+            # the cache from another test would otherwise sign this push.
+            SystemSetting.objects.update_or_create(
+                tenant=self.tenant, key="MPESA_STORE_NUMBER",
+                defaults={"value": ""})
             for key, value in {
                 "MPESA_ENV": "production",
                 "MPESA_CONSUMER_KEY": "k",
