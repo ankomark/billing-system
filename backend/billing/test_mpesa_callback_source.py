@@ -22,6 +22,7 @@ from billing.models import (
     Customer, Invoice, Package, RouterDevice, Subscription, Tenant,
 )
 from billing.tenancy import tenant_context
+from billing.utils import generate_invoice_number
 
 SAFARICOM = "196.201.214.200"
 UNLISTED = "196.201.212.127"      # real Safaricom range, absent from our list
@@ -64,8 +65,12 @@ class MpesaCallbackSourceTests(TestCase):
             subscription = Subscription.objects.create(
                 tenant=self.tenant, customer=customer, package=package,
                 status="active", expiry_date=timezone.now() + timedelta(hours=1))
+            # invoice_number is unique and not auto-filled — Subscription.save
+            # generates one for the invoice it raises itself, and anything
+            # built by hand has to do the same.
             self.invoice = Invoice.objects.create(
                 tenant=self.tenant, customer=customer, subscription=subscription,
+                invoice_number=generate_invoice_number(),
                 total_amount=Decimal("50.00"), payment_status="pending")
         self.url = f"/api/mpesa/callback/{self.tenant.public_token}/"
 
