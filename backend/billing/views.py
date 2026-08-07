@@ -2118,6 +2118,8 @@ class SystemSettingsView(APIView):
         "MPESA_CONSUMER_KEY",
         "MPESA_CONSUMER_SECRET",
         "MPESA_SHORTCODE",
+        "MPESA_SHORTCODE_TYPE",
+        "MPESA_STORE_NUMBER",
         "MPESA_PASSKEY",
         "MPESA_CALLBACK_URL",
         "BLESSEDTEXTS_API_KEY",
@@ -4210,6 +4212,11 @@ class PlatformOperatorListView(APIView):
                 "MPESA_CONSUMER_KEY": data.get("mpesa_consumer_key"),
                 "MPESA_CONSUMER_SECRET": data.get("mpesa_consumer_secret"),
                 "MPESA_SHORTCODE": data.get("mpesa_shortcode"),
+                # Asked at creation, because it cannot be inferred from the
+                # number and getting it wrong is not visible until a customer
+                # tries to pay and no prompt arrives.
+                "MPESA_SHORTCODE_TYPE": data.get("mpesa_shortcode_type"),
+                "MPESA_STORE_NUMBER": data.get("mpesa_store_number"),
                 "MPESA_PASSKEY": data.get("mpesa_passkey"),
             }
             supplied = {k: v for k, v in mpesa.items() if v}

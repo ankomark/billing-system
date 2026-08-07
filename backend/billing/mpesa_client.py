@@ -108,12 +108,60 @@ def get_mpesa_access_token(tenant=None):
 # PASSWORD GENERATION
 # =====================================================
 
+def shortcode_config(tenant=None):
+    """
+    How this operator takes money, and the two numbers that follow from it.
+
+    A PayBill and a Buy Goods till are different products on Daraja, and an
+    STK push has to say which. This assumed PayBill for everyone:
+
+        "TransactionType": "CustomerPayBillOnline"
+
+    Pushed against a till, Safaricom accepts the request — ResponseCode 0,
+    "Request accepted for processing" — and then fails it a second later with
+    ResultCode 2029, "Failed due to an unresolved reason type", delivering no
+    prompt to the customer's phone. Nothing in that says which field was
+    wrong. Diagnosed the slow way on a real till.
+
+    The two numbers differ as well. A PayBill uses one number for both the
+    account being billed and the party being paid. Buy Goods separates them:
+    the **store number** identifies the merchant and signs the password, and
+    the **till number** is what the money goes to. They are often the same
+    value, which is why defaulting the store to the till is safe — and why
+    getting it wrong is invisible until an operator has genuinely distinct
+    numbers.
+    """
+    kind = (get_setting("MPESA_SHORTCODE_TYPE", "paybill", tenant=tenant) or
+            "paybill").strip().lower()
+    till = (get_setting("MPESA_SHORTCODE", "174379", tenant=tenant) or "").strip()
+
+    if kind == "till":
+        store = (get_setting("MPESA_STORE_NUMBER", "", tenant=tenant) or "").strip()
+        return {
+            "transaction_type": "CustomerBuyGoodsOnline",
+            # Signs the password and identifies the merchant. Most tills are
+            # issued with the store number equal to the till number.
+            "business_shortcode": store or till,
+            # Where the money actually lands.
+            "party_b": till,
+        }
+
+    return {
+        "transaction_type": "CustomerPayBillOnline",
+        "business_shortcode": till,
+        "party_b": till,
+    }
+
+
 def generate_password(tenant=None):
     """
-    Generate Base64 encoded password for STK Push, from this operator's
-    shortcode and passkey.
+    Base64 password for STK Push, from this operator's shortcode and passkey.
+
+    Signed with the *business* shortcode, which for a Buy Goods till is the
+    store number rather than the till. Signing with the till instead produces
+    a password Safaricom rejects without saying why.
     """
-    shortcode = get_setting("MPESA_SHORTCODE", "174379", tenant=tenant)
+    shortcode = shortcode_config(tenant=tenant)["business_shortcode"]
     passkey = get_setting("MPESA_PASSKEY", tenant=tenant)
 
     if not passkey:
@@ -149,7 +197,7 @@ def initiate_stk_push(
     password, timestamp = generate_password(tenant=tenant)
 
     env = get_setting("MPESA_ENV", "sandbox", tenant=tenant)
-    shortcode = get_setting("MPESA_SHORTCODE", "174379", tenant=tenant)
+    shortcode = shortcode_config(tenant=tenant)
     callback_url = callback_url_for(tenant=tenant)
 
     url = (
@@ -164,18 +212,24 @@ def initiate_stk_push(
     }
 
     payload = {
-        "BusinessShortCode": shortcode,
+        "BusinessShortCode": shortcode["business_shortcode"],
         "Password": password,
         "Timestamp": timestamp,
-        "TransactionType": "CustomerPayBillOnline",
+        "TransactionType": shortcode["transaction_type"],
         "Amount": int(amount),
         "PartyA": phone_number,
-        "PartyB": shortcode,
+        "PartyB": shortcode["party_b"],
         "PhoneNumber": phone_number,
         "CallBackURL": callback_url,
         "AccountReference": account_reference,
         "TransactionDesc": description,
     }
+
+    logger.info(
+        "[mpesa] STK push %s to %s via %s (shortcode %s, party_b %s)",
+        account_reference, phone_number, shortcode["transaction_type"],
+        shortcode["business_shortcode"], shortcode["party_b"],
+    )
 
     response = requests.post(url, json=payload, headers=headers, timeout=20)
     response.raise_for_status()

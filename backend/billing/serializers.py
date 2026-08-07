@@ -510,6 +510,15 @@ class SystemSettingSerializer(serializers.Serializer):
     MPESA_CONSUMER_KEY    = serializers.CharField(required=False, allow_blank=True)
     MPESA_CONSUMER_SECRET = serializers.CharField(required=False, allow_blank=True)
     MPESA_SHORTCODE       = serializers.CharField(required=False, allow_blank=True)
+    # PayBill and Buy Goods are different Daraja products and the STK push has
+    # to name which. Assuming PayBill for everyone made a till fail with
+    # ResultCode 2029 and no prompt on the customer's phone.
+    MPESA_SHORTCODE_TYPE  = serializers.ChoiceField(
+        choices=["paybill", "till"], required=False
+    )
+    # Buy Goods only, and usually the same as the till. Left blank it falls
+    # back to the till number, which is how most are issued.
+    MPESA_STORE_NUMBER    = serializers.CharField(required=False, allow_blank=True)
     # Per operator: one may be live on production while another is still
     # testing on sandbox. Previously only a platform-wide env var.
     MPESA_ENV             = serializers.ChoiceField(
@@ -820,6 +829,15 @@ class OperatorCreateSerializer(serializers.Serializer):
     mpesa_consumer_secret = serializers.CharField(
         required=False, allow_blank=True, write_only=True)
     mpesa_shortcode = serializers.CharField(required=False, allow_blank=True)
+    # Asked at creation because a number does not say which it is, and the
+    # answer changes the STK payload. A till pushed as a PayBill is accepted by
+    # Safaricom and then fails with ResultCode 2029 and no prompt on the
+    # customer's phone — nothing in that names the field that was wrong.
+    mpesa_shortcode_type = serializers.ChoiceField(
+        choices=("paybill", "till"), required=False)
+    # Buy Goods only. Blank falls back to the till, which is how most are
+    # issued; supply it when Safaricom gave you a distinct store number.
+    mpesa_store_number = serializers.CharField(required=False, allow_blank=True)
     mpesa_passkey = serializers.CharField(
         required=False, allow_blank=True, write_only=True)
 
