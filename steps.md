@@ -941,6 +941,48 @@ the old schema. Vercel redeploys the frontend on push by itself.
 
 ---
 
+## Running the tests on the server
+
+```bash
+docker compose run --rm -T -e SECURE_SSL_REDIRECT=False \
+  web python manage.py test billing --noinput
+```
+
+**That flag is not optional, and leaving it off is why the suite looks
+catastrophically broken.** `settings.py` turns `SECURE_SSL_REDIRECT` on
+whenever `DEBUG=False`, which is correct for serving traffic and wrong for the
+test client: every request is answered with a 301 to its https form before it
+reaches a view. Observed on this build — **308 failures and 222 errors, of
+which 264 were literally `301 != 200`.** With the flag, the same commit
+returned 9 and 5.
+
+Half an hour can go into reading tracebacks that all say the same thing about
+the environment and nothing about the code. Check the first failure for
+`301 != ` before believing any of it.
+
+Django builds its own `test_` database and drops it afterwards, so this does
+not touch the operator data next to it. It takes eight to fourteen minutes.
+
+**Run it detached.** `docker compose run` dies with the SSH session, so a
+connection that drops takes the run with it and leaves a half-written log:
+
+```bash
+setsid nohup docker compose run --rm -T -e SECURE_SSL_REDIRECT=False \
+  web python manage.py test billing --noinput > /tmp/testrun.log 2>&1 &
+```
+
+Then watch it with `tail -f /tmp/testrun.log`, and check whether it is still
+going with `docker ps --filter name=backend-web-run`.
+
+To narrow down to what you are working on, name the classes:
+
+```bash
+docker compose run --rm -T -e SECURE_SSL_REDIRECT=False \
+  web python manage.py test --noinput billing.tests.TetheringSweepTests
+```
+
+---
+
 ## Open items
 
 - **Off-site backups.** Local only until `rclone` has a remote — the dumps
