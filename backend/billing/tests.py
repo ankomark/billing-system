@@ -341,7 +341,11 @@ class PaymentProcessingTests(TestCase):
         voucher = Voucher.objects.filter(subscription=hs_sub).first()
         self.assertIsNotNone(voucher)
         self.assertTrue(voucher.is_active)
-        self.assertTrue(voucher.code.startswith("WIFI-"))
+        # Six characters, no prefix. The WIFI- prefix was dropped in 5ed6b5b
+        # because it read as part of the code — a customer told "WIFI dash
+        # Q W I A L E" typed the whole thing, or half of it. This asserted the
+        # prefix was still there, which stopped being true then.
+        self.assertRegex(voucher.code, r"^[A-Z0-9]{6}$")
         self.assertEqual(voucher.expires_at, hs_sub.expiry_date)
 
     @patch("billing.router_service.enable_customer_access")
@@ -3294,6 +3298,16 @@ class OperatorOnboardingTests(PlatformBillingMixin, TestCase):
         self.assertEqual(resp.data["count"], 0)
 
 
+@override_settings(
+    # Pinned, because the question here is whether the impersonation headers
+    # are in CORS_ALLOW_HEADERS — not which origins a particular deployment
+    # happens to allow. Run against a production .env, CORS_ALLOWED_ORIGINS is
+    # the real dashboard origin, localhost:3000 is not in it, and
+    # django-cors-headers then emits no Access-Control-* headers at all. The
+    # test failed with a KeyError that said nothing about the cause.
+    CORS_ALLOWED_ORIGINS=["http://localhost:3000"],
+    CORS_ALLOW_ALL_ORIGINS=False,
+)
 class ImpersonationCorsTests(TestCase):
     """
     A browser will not send the impersonation headers unless the preflight
@@ -7498,7 +7512,10 @@ class RouterAttributeNameTests(TestCase):
             self.added.append(kwargs)
             return "*1"
 
-        def remove(self, **kwargs):
+        # Positional ids, as librouteros takes them and as the code under test
+        # calls it. This accepted only keywords, so every caller raised
+        # TypeError and the paths below were not being exercised at all.
+        def remove(self, *ids, **kwargs):
             pass
 
     def setUp(self):
@@ -7592,15 +7609,15 @@ class RouterAttributeNameTests(TestCase):
             def __iter__(self):
                 return iter([{".id": "*9", "user": "AA:BB:CC:DD:EE:FF"}])
 
-            def remove(self, **kwargs):
-                removed.append(("active", kwargs))
+            def remove(self, *ids, **kwargs):
+                removed.append(("active", ids or kwargs))
 
         class Users:
             def __iter__(self):
                 return iter([{".id": "*1", "name": "AA:BB:CC:DD:EE:FF"}])
 
-            def remove(self, **kwargs):
-                removed.append(("user", kwargs))
+            def remove(self, *ids, **kwargs):
+                removed.append(("user", ids or kwargs))
 
         api = MagicMock()
         api.path.side_effect = lambda *p: Active() if "active" in p else Users()
@@ -9439,9 +9456,19 @@ class FakeMikrotik:
                     row.update(kwargs)
                     return
 
-        def remove(self, **kwargs):
-            target = kwargs.get(".id")
-            self.rows[:] = [r for r in self.rows if r[".id"] != target]
+        def remove(self, *ids, **kwargs):
+            """
+            Positional ids, as librouteros takes them.
+
+            This read `.id` out of kwargs only, so `remove(row[".id"])` — which
+            is how every caller in router_service and tethering writes it —
+            raised TypeError. The keyword form is kept for any test that still
+            uses it.
+            """
+            targets = set(ids)
+            if ".id" in kwargs:
+                targets.add(kwargs[".id"])
+            self.rows[:] = [r for r in self.rows if r[".id"] not in targets]
 
     def __init__(self):
         self.counter = 0

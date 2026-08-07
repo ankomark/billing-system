@@ -1,7 +1,8 @@
 from django.contrib.auth.password_validation import validate_password
+from django.db import transaction
 from django.utils.text import slugify
 from rest_framework import serializers
-from .tenancy import get_current_tenant_id
+from .tenancy import all_tenants, get_current_tenant_id
 from .router_service import unreachable_by_policy
 from .models import (
     Customer, Package, Subscription, Invoice, Payment,
@@ -700,10 +701,24 @@ class RouterSerializer(serializers.ModelSerializer):
             return
 
         tenant_id = get_current_tenant_id()
-        others = RouterDevice.objects.all_tenants().filter(ip_address=ip)
-        if tenant_id is not None:
-            others = others.exclude(tenant_id=tenant_id)
-        if others.exists():
+        # The context manager, not just the manager method. `.all_tenants()`
+        # lifts the ORM filter and nothing else — Postgres RLS goes on
+        # filtering to whichever operator is acting, so this query read as
+        # cross-operator and returned only the caller's own rows. It therefore
+        # found nothing, every time, and two operators could register the same
+        # public address: the platform would then dial one operator's hardware
+        # with the other's credentials.
+        # The transaction is not incidental. all_tenants() clears the RLS
+        # setting with set_config(..., local=true), and a LOCAL setting outside
+        # a transaction lasts only for the statement that sets it — so in a
+        # request running in autocommit, which is all of them here, the scope
+        # would be back in place by the time the query below ran.
+        with transaction.atomic(), all_tenants():
+            others = RouterDevice.objects.all_tenants().filter(ip_address=ip)
+            if tenant_id is not None:
+                others = others.exclude(tenant_id=tenant_id)
+            taken = others.exists()
+        if taken:
             # Deliberately does not say who. The caller has no business
             # learning which other operator is at an address by trying
             # addresses until one is refused.
