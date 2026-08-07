@@ -12,6 +12,158 @@ not here — this file is in a public repository.
 
 ---
 
+## Cheat sheet — a MikroTik from the box, in order
+
+Every command for one router, in the order you run them. Part 9 explains each
+and what it looks like when it goes wrong; this is for the second router and
+the twentieth, when you only need the sequence.
+
+Substitute throughout: **`bridgeLocal`** (read the real name off
+`/interface/bridge/print` — an RB951 does not call it `bridge`),
+**`YOUR-SSID`**, **`api.example.com`** and **`SERVER_IP`**, and
+**`AA:BB:CC:DD:EE:FF`** (your own laptop's MAC).
+
+### 1. Look before you touch
+
+| Command | What it tells you |
+|---|---|
+| `/system/resource/print` | version and board — device-mode needs 7.13+, WireGuard needs 7 |
+| `/system/device-mode/print` | whether `hotspot` and `proxy` are permitted |
+| `/interface/print` | what exists, and what is disabled (`X`) |
+| `/interface/bridge/print` | **the bridge's real name** |
+| `/interface/bridge/port/print` | which ports are bridged — `ether1` here means it is a switch, not a router |
+| `/ip/address/print` | what addresses it holds, and on which interface |
+| `/ip/dhcp-client/print` | where its WAN address comes from |
+| `/ip/route/print` | one default route, no `+` (ECMP) flags |
+| `/ip/firewall/nat/print` | empty = not doing NAT |
+| `/ip/firewall/filter/print` | empty = no input protection at all |
+| `/ping 8.8.8.8 count=3` | whether the router itself is online |
+
+### 2. Make it a router — only if `ether1` was in the bridge
+
+Destructive line last; it drops your session. See the Debug entry for why the
+order matters.
+
+```
+/ip/address/add address=192.168.88.1/24 interface=bridgeLocal
+/ip/pool/add name=dhcp-pool ranges=192.168.88.10-192.168.88.254
+/ip/dhcp-server/add name=dhcp-lan interface=bridgeLocal address-pool=dhcp-pool disabled=no
+/ip/dhcp-server/network/add address=192.168.88.0/24 gateway=192.168.88.1 dns-server=8.8.8.8,1.1.1.1
+/ip/dns/set allow-remote-requests=yes
+/interface/list/add name=WAN
+/interface/list/add name=LAN
+/interface/list/member/add list=WAN interface=ether1
+/interface/list/member/add list=LAN interface=bridgeLocal
+/ip/firewall/nat/add chain=srcnat action=masquerade out-interface-list=WAN
+/interface/bridge/port/remove [find interface=ether1]
+/ip/dhcp-client/add interface=ether1 use-peer-dns=yes add-default-route=yes disabled=no
+/ip/dhcp-client/remove [find interface=bridgeLocal]
+```
+
+### 3. Base firewall — only if the filter table was empty
+
+Check `/interface/list/member/print` shows the bridge in `LAN` first, or the
+fourth line locks you out. **No fasttrack rule** — it bypasses hotspot
+accounting and every customer then looks like they used nothing.
+
+```
+/ip/firewall/filter/add chain=input action=accept connection-state=established,related,untracked
+/ip/firewall/filter/add chain=input action=drop connection-state=invalid
+/ip/firewall/filter/add chain=input action=accept protocol=icmp
+/ip/firewall/filter/add chain=input action=drop in-interface-list=!LAN
+/ip/firewall/filter/add chain=forward action=accept connection-state=established,related,untracked
+/ip/firewall/filter/add chain=forward action=drop connection-state=invalid
+/ip/firewall/filter/add chain=forward action=drop connection-state=new connection-nat-state=!dstnat in-interface-list=WAN
+```
+
+### 4. Device mode and the clock
+
+`hotspot` is already `yes` on a `home` board; `proxy` is not, and the hostname
+walled-garden rules need it. **Power-cycle for ten seconds only if you changed
+something** — a software reboot does not count.
+
+```
+/system/device-mode/update hotspot=yes proxy=yes
+/system/ntp/client/set enabled=yes servers=time.cloudflare.com,pool.ntp.org
+/system/clock/set time-zone-name=Africa/Nairobi
+/system/ntp/client/print
+```
+
+### 5. The radio
+
+Open, no WPA — customers authenticate at the portal. Free it from CAPsMAN
+first or nothing sticks.
+
+```
+/interface/wireless/cap/print
+/interface/wireless/cap/set enabled=no
+/interface/wireless/security-profiles/set default mode=none
+/interface/wireless/set wlan1 mode=ap-bridge ssid="YOUR-SSID" band=2ghz-b/g/n channel-width=20mhz frequency=2437 security-profile=default default-forwarding=no country=kenya disabled=no
+/interface/bridge/port/add bridge=bridgeLocal interface=wlan1
+/interface/wireless/monitor wlan1 once
+```
+
+**Stop here and join it from a phone.** It should get a `192.168.88.x` lease
+and browse, with no portal.
+
+### 6. The hotspot
+
+```
+/ip/hotspot/setup
+```
+
+Answer `bridgeLocal`, certificate `none`, dns `8.8.8.8,1.1.1.1`, dns name
+**`login.hotspot`** (exactly — it is what the CORS pattern matches), user
+`admin` + a real password. Then check nothing was duplicated, and let yourself
+past the portal:
+
+```
+/ip/dhcp-server/print
+/ip/hotspot/print
+/ip/hotspot/ip-binding/add mac-address=AA:BB:CC:DD:EE:FF type=bypassed comment="admin laptop"
+```
+
+### 7. Walled garden — both rules
+
+```
+/ip/hotspot/walled-garden/add dst-host=api.example.com comment="Billing API"
+/ip/hotspot/walled-garden/ip/add dst-address=SERVER_IP action=accept comment="Billing API direct"
+/ip/hotspot/walled-garden/print
+```
+
+### 8. Portal files
+
+WinBox → **Files** → double-click **into** `hotspot` → drag the seven in.
+Dropped at the root they are never served.
+
+```
+/file/print where name~"hotspot/"
+/ip/hotspot/profile/print
+```
+
+`login.html` ≈33 KB and `md5.js` ≈8.8 KB are yours; ~4 KB and 7 KB are
+MikroTik's. Leave `login-by=cookie,http-chap`.
+
+### 9. Tunnel and API access
+
+**Nothing to type.** Operator dashboard → **Routers → Add router**, leave *Set
+up a management tunnel* ticked, and paste the block it gives you. It builds the
+tunnel, enables the API, creates the user and adds the firewall rule. Then
+press **Test connection**. See §9.6.
+
+### 10. Prove it
+
+```
+/ping 10.10.0.1 count=3
+/log/print follow where topics~"hotspot"
+```
+
+From a phone that is *not* bypassed: portal appears with the operator's name,
+packages listed, a voucher connects it, and WiFi off/on reconnects without
+re-entering the code.
+
+---
+
 ## Before anything
 
 Settle these first; each has lead time and two of them gate everything else.
