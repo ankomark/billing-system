@@ -141,6 +141,23 @@ def all_tenants():
     Clears the database setting too. Clearing only the ContextVar would leave
     RLS still filtering, so a block that reads as cross-operator would silently
     return one operator's rows.
+
+    **Use it inside a transaction.** The clearing is done with
+    ``set_config(..., local=true)``, and a LOCAL setting outside a transaction
+    applies only to the statement that set it. A web request runs in autocommit
+    — ATOMIC_REQUESTS is not on — so without one the scope is back in place
+    before the query underneath runs, and you are silently scoped again:
+
+        with transaction.atomic(), all_tenants():
+            ...
+
+    LOCAL rather than session-scoped is the right default: it reverts when the
+    transaction ends, so an unscoped block cannot leak past itself onto a
+    pooled connection that the next request will reuse.
+
+    Pair it with ``Model.objects.all_tenants()``, which lifts the ORM filter.
+    Each clears one of the two layers; neither is sufficient alone. See that
+    method for the two bugs this has caused.
     """
     token = set_current_tenant_id(None)
     touch_db = _postgres()
@@ -172,5 +189,51 @@ class TenantManager(models.Manager):
         return qs.filter(tenant_id=tenant_id)
 
     def all_tenants(self):
-        """Every row, regardless of context. Say it out loud."""
+        """
+        Lift *this* layer's filter. Almost never enough on its own.
+
+        There are two layers keeping one operator's rows away from another:
+        the ORM filter in get_queryset above, and row-level security in
+        Postgres. This method removes the first. **RLS is untouched**, so on a
+        connection scoped to an operator the database goes on filtering and the
+        queryset still returns only that operator's rows — while reading, at
+        the call site, exactly as though it returned everybody's.
+
+        Nothing fails. No exception, no empty result, no warning. You get a
+        smaller answer than you asked for and no indication that you did.
+
+        For a genuinely cross-operator read, pair it with the context manager
+        of the same name, which clears the database setting too:
+
+            with all_tenants():                       # clears RLS
+                rows = Thing.objects.all_tenants()    # clears the ORM filter
+
+        and do that inside a transaction. The context manager clears the scope
+        with ``set_config(..., local=true)``, and a LOCAL setting outside a
+        transaction lasts only for the statement that set it — which, in a
+        request running in autocommit, is over before your query runs:
+
+            with transaction.atomic(), all_tenants():
+                ...
+
+        This has been got wrong twice, and both times the code read correctly
+        and the failure was silent and remote from the cause:
+
+        * ``RouterSerializer._check_address_is_free`` asked whether any *other*
+          operator had already registered a public address. Scoped by RLS to
+          the caller, it could only ever find the caller's own routers, so the
+          answer was always no. Two operators could register one address, and
+          the platform would then dial one operator's hardware holding the
+          other's credentials.
+        * ``services.tunnel.allocate_tunnel_ip`` picked the next free address
+          on the management tunnel. A tunnel address belongs to one router on
+          the whole platform, but scoped it only saw one operator's — so the
+          second operator to add a router was handed an address the first
+          already held. Their tunnel would never come up, and both
+          configurations would look entirely correct.
+
+        Uniqueness that spans operators, and any question of the form "does
+        anyone else already have this", cannot be answered from inside a
+        tenant's scope. If that is the question, use the context manager.
+        """
         return super().get_queryset()
