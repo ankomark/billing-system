@@ -401,8 +401,18 @@ Open **UDP 51820** in the Hetzner Cloud Firewall too.
 /interface/wireguard/print
 ```
 
-Take the `public-key` from that last command — **use `print`, not `print
-detail`**, which also prints the private key.
+Take the router's public key with:
+
+```
+:put [/interface/wireguard/get [find name=wg-smartbill] public-key]
+```
+
+**Not `/interface/wireguard/print`.** On 7.19 that prints `private-key=` in
+plain sight alongside the public one, and a private key read aloud into a
+terminal you are pasting from is a private key you have to rotate. The `get`
+form returns one line and nothing else. If you do leak it, fix it before
+registering the peer — regenerating is three commands then, and an edit on both
+ends afterwards.
 
 `allowed-address=10.10.0.1/32`, not `0.0.0.0/0`. The tunnel carries management
 traffic only; routing a hotspot's browsing through a 600 MHz MIPS CPU doing
@@ -429,24 +439,136 @@ dialling out doesn't prove your server can reach back.
 
 ## Part 9 — The MikroTik
 
-### 9.1 Allow the hotspot feature
+### 9.1 The board itself — device mode, and the clock
 
-RouterOS 7.13+ disables hotspot until someone physically present says otherwise.
+**Check before you do anything.** On 7.13+ some features need someone
+physically present to enable them, but which ones depends on the shipped mode:
 
 ```
 /system/device-mode/print
-/system/device-mode/update hotspot=yes
 ```
 
+A board in `mode: home` — which is how an RB951 arrives — already reads
+`hotspot: yes`, and there is nothing to do. Sending an operator to pull the
+power on a router that was never blocked wastes a site visit.
+
+What that same output will read is `proxy: no`, and **you need `proxy` as
+well**. The `dst-host` walled-garden entries in §9.4 are served through the
+router's HTTP proxy; without it they are created, they appear in `print`, and
+they carry the comment `inactivated, not allowed by device-mode` while doing
+nothing. The IP entries in `/ip/hotspot/walled-garden/ip` are firewall-based
+and work regardless, which is why a portal can look fine until the day a phone
+with Private DNS needs the hostname rule.
+
+So if either flag is `no`:
+
+```
+/system/device-mode/update hotspot=yes proxy=yes
+```
+
+Name both. `update` sets what you pass it and leaves the rest.
+
 **Then pull the power and leave it off for ten seconds.** A software reboot does
-not count. You have about five minutes. `/ip/hotspot/print` will show the
-server flagged `I` — *inactivated, not allowed by device-mode* — until this is
-done, and everything downstream silently does nothing.
+not count. You have about five minutes. Verify afterwards — `/system/device-mode/print`
+should show both as `yes`, and the `inactivated` comments should be gone from
+`/ip/hotspot/walled-garden/print`. If the window lapsed, run the update again
+and be quicker.
 
-Enable only `hotspot`, not `mode=enterprise`, which turns on container,
-scheduler, socks, fetch and proxy as well.
+Enable only what you need, not `mode=enterprise`, which turns on container,
+scheduler, socks, fetch and proxy together.
 
-### 9.2 Create the hotspot
+**Then set the clock, before anything starts selling time.**
+
+```
+/system/ntp/client/set enabled=yes servers=time.cloudflare.com,pool.ntp.org
+/system/clock/set time-zone-name=Africa/Nairobi
+/system/ntp/client/print
+```
+
+You want `enabled: yes` and `status: synchronized`.
+
+These boards have no battery-backed clock. Every power cut puts the time back
+to whatever the firmware defaults to — observed on this build: a ten-second
+power cycle left the router two hours out, silently. The router's clock is what
+decides when a subscriber's hour is up, so a router that disagrees with your
+server holds sessions open past expiry or cuts them short, and produces billing
+disputes that cannot be reconstructed afterwards. In a market where the power
+blinks daily, this is not a nicety.
+
+NTP needs the WAN up, so a cold boot runs on a wrong clock for a few seconds
+before it syncs. That is fine — the point is that it converges rather than
+staying wrong indefinitely.
+
+### 9.2 The radio
+
+A hotspot captures the interface it runs on. If the WiFi is not on that
+interface, or is not broadcasting at all, the hotspot works perfectly and no
+customer can reach it. Check before you build anything on top:
+
+```
+/interface/print
+/interface/wireless/print
+/interface/bridge/port/print
+```
+
+Three faults are common on a board that has been deployed before, and they
+present identically — the SSID simply does not exist, with nothing in the log:
+
+- **`X` on `wlan1`.** The radio is disabled.
+- **`mode=station`.** It is configured as a *client*, hunting for someone
+  else's network rather than serving one.
+- **`;;; managed by CAPsMAN`.** A controller owns the interface. If it points
+  at a controller that isn't there — `/interface/wireless/cap/print` showing
+  `enabled: yes` with an empty `caps-man-addresses` — the radio stays down
+  forever, and any local setting you apply is discarded.
+
+Release it first, or nothing below sticks:
+
+```
+/interface/wireless/cap/print
+/caps-man/manager/print
+/interface/wireless/cap/set enabled=no
+```
+
+Re-print and confirm the `managed by CAPsMAN` comment is gone. For a single
+standalone router CAPsMAN buys nothing and costs you an afternoon.
+
+Then make it an access point:
+
+```
+/interface/wireless/security-profiles/set default mode=none
+
+/interface/wireless/set wlan1 mode=ap-bridge ssid="OPERATOR-SSID" band=2ghz-b/g/n \
+  channel-width=20mhz frequency=2437 security-profile=default \
+  default-forwarding=no country=kenya disabled=no
+
+/interface/bridge/port/add bridge=bridgeLocal interface=wlan1
+```
+
+**`mode=none` — open, no WPA.** Deliberate. Subscribers authenticate at the
+portal with a code; a WiFi password would mean two secrets for one purchase and
+make the voucher pointless.
+
+**`default-forwarding=no`** isolates wireless clients from each other. On an
+open network without it, every customer's device is directly reachable by every
+other customer on the same radio.
+
+**`channel-width=20mhz` and a fixed 1 / 6 / 11.** In a congested 2.4GHz band
+40MHz costs more in retransmits than it gains, and `frequency=auto` re-picks at
+boot — sometimes onto a neighbour.
+
+**Prove the radio carries plain traffic before you go on.** A phone should join
+the SSID, take a `192.168.88.x` lease and browse, with no portal:
+
+```
+/interface/wireless/registration-table/print
+/ip/dhcp-server/lease/print
+```
+
+Once the hotspot exists, a phone that cannot reach the internet is ambiguous
+between a radio fault and a portal fault, and you will look in the wrong place.
+
+### 9.3 Create the hotspot
 
 ```
 /ip/hotspot/setup
@@ -454,13 +576,32 @@ scheduler, socks, fetch and proxy as well.
 
 | Prompt | Answer |
 |---|---|
-| hotspot interface | `bridge` |
+| hotspot interface | the bridge — **check its name** |
 | local address / masquerade / pool | accept defaults |
 | select certificate | `none` |
 | smtp server | accept |
 | dns servers | `8.8.8.8,1.1.1.1` |
 | **dns name** | **`login.hotspot`** |
 | local hotspot user | `admin` + a real password |
+
+**The bridge is not always called `bridge`.** An RB951 ships it as
+`bridgeLocal`. Read the name off `/interface/bridge/print` and use that one,
+here and everywhere in §9.7 — a hotspot bound to an interface that doesn't
+exist is a prompt you cannot get past, and one bound to the *wrong* bridge
+captures nothing.
+
+If a DHCP server already exists on that interface, the setup detects it and
+skips the address and pool prompts. Fewer questions than this table is normal.
+Check afterwards that it reused them rather than adding its own:
+
+```
+/ip/dhcp-server/print
+/ip/pool/print
+```
+
+One server and one pool on that interface. Two DHCP servers on one segment hand
+out conflicting leases, and the intermittent failures that follow look nothing
+like a DHCP problem.
 
 **The DNS name is not cosmetic.** The portal's origin becomes that name, and
 `settings.py` allows portal origins by pattern — RFC1918 addresses and
@@ -475,7 +616,7 @@ Your own machine is now behind the portal. Bypass it while you work:
 /ip/hotspot/ip-binding/add mac-address=YOUR-MAC type=bypassed comment="admin laptop"
 ```
 
-### 9.3 Walled garden — the one that breaks portals
+### 9.4 Walled garden — the one that breaks portals
 
 ```
 /ip/hotspot/walled-garden/add dst-host=api.example.com comment="Billing API"
@@ -506,7 +647,7 @@ The `HITS` counter is a free diagnostic — still `0` after a phone has loaded t
 portal means nothing matched, which is a different problem from a request that
 matched and was refused.
 
-### 9.4 API access, over the tunnel
+### 9.5 API access, over the tunnel
 
 ```
 /ip/service/set api disabled=no port=8728 address=10.10.0.1/32
@@ -515,10 +656,50 @@ matched and was refused.
   src-address=10.10.0.1 in-interface=wg-smartbill comment="Billing API via tunnel" place-before=0
 ```
 
-The firewall rule is required: RouterOS accepts input from its LAN interface
-list and drops the rest, and `wg-smartbill` isn't in it. Ping works (ICMP has
-its own rule) while TCP 8728 is silently dropped — which reads as a wrong
-password.
+The firewall rule is required **wherever an input firewall exists** — the
+default configuration ends with a rule dropping input that did not arrive on
+the `LAN` interface list, and `wg-smartbill` is not in that list. Ping still
+works, because ICMP is accepted by an earlier rule, while TCP 8728 is silently
+dropped. That combination reads as a wrong password.
+
+Do not assume the drop is there. A board that shipped in bridge mode can have
+an entirely empty filter table:
+
+```
+/ip/firewall/filter/print
+```
+
+If that returns nothing, the API will answer over the tunnel without any rule
+at all — and the router has no input protection whatsoever, which is the larger
+problem. Build the base set first, then add the tunnel rule above the final
+drop:
+
+```
+/ip/firewall/filter/add chain=input action=accept connection-state=established,related,untracked
+/ip/firewall/filter/add chain=input action=drop connection-state=invalid
+/ip/firewall/filter/add chain=input action=accept protocol=icmp
+/ip/firewall/filter/add chain=input action=drop in-interface-list=!LAN
+
+/ip/firewall/filter/add chain=forward action=accept connection-state=established,related,untracked
+/ip/firewall/filter/add chain=forward action=drop connection-state=invalid
+/ip/firewall/filter/add chain=forward action=drop connection-state=new connection-nat-state=!dstnat in-interface-list=WAN
+```
+
+Check `/interface/list/member/print` shows the LAN bridge before you add that
+fourth rule, or you lock yourself out of everything except WinBox-by-MAC.
+
+**No fasttrack rule, deliberately.** MikroTik's stock configuration includes
+one, and it must not be used on a hotspot router: fasttrack shunts established
+connections past the firewall *and past hotspot accounting*, so the byte
+counters stop incrementing. `collect_hotspot_usage` reads exactly those
+counters, and every subscriber would appear to have used almost nothing.
+
+Verify the tunnel rule landed above the `!LAN` drop rather than below it — the
+hotspot inserts its own dynamic rules, which shifts every index:
+
+```
+/ip/firewall/filter/print where !dynamic
+```
 
 Restricting both the service and the user to `10.10.0.1/32` is stronger than
 restricting to a public IP: a tunnel address is reachable only by something
@@ -527,7 +708,13 @@ move hosts.
 
 If the user already exists, `/user/add` fails — use `/user/set` instead.
 
-### 9.5 Register it
+**RouterOS never shows a password back.** `/user/print detail` lists the group,
+the address restriction and the timeouts, and nothing else. If registration
+later fails on credentials there is no way to compare the two sides — set a new
+one and paste it into both from the same clipboard, rather than typing it twice
+and trusting yourself.
+
+### 9.6 Register it
 
 Operator dashboard → **Routers → Add router**: address `10.10.0.N`, username
 `billing`, port `8728`. **Press Test connection before saving.** It tells you
@@ -538,7 +725,7 @@ still standing in front of the machine.
 `HOTSPOT_PKG_<id>_D<devices>` and `PPPOE_PKG_<id>` from the package definition,
 so a manual edit is overwritten the next time somebody buys.
 
-### 9.6 Optional — free ports alongside the paid hotspot
+### 9.7 Optional — free ports alongside the paid hotspot
 
 For an operator who wants their own desks, a till or an office PC online
 without paying: give those ports a separate bridge. The hotspot captures
@@ -546,7 +733,9 @@ whatever interface it runs on, so the fix is to take ports *out* of `bridge`
 rather than to configure the hotspot.
 
 This example frees **ether3** and **ether4** and leaves ether2, ether5 and the
-WiFi behind the portal.
+WiFi behind the portal. It writes the hotspot's bridge as `bridge`; on an RB951
+that is `bridgeLocal`, so substitute the name you read off
+`/interface/bridge/print` — see §9.3.
 
 **Do not run this from a machine plugged into ether3 or ether4** — you lose the
 lease mid-change. Use WiFi, another port, or connect WinBox by MAC address.
@@ -635,17 +824,37 @@ page as though the upload failed.
 /file/print where name~"hotspot/"
 ```
 
-Then point the profile at them:
+Leave the profile on its default:
 
 ```
-/ip/hotspot/profile/set hsprof1 login-by=http-chap,http-pap
+/ip/hotspot/profile/set hsprof1 login-by=cookie,http-chap
 ```
 
-> **Currently unresolved — see Open items.** The portal reads `$(chap-id)` and
-> `$(chap-challenge)` from HTML attributes, and RouterOS emits those as
-> JavaScript escape sequences, so the hash is computed over the wrong bytes and
-> the router answers *invalid username or password*. Until that is fixed, use
-> `login-by=http-pap`.
+**CHAP, and not PAP, is the point.** The radio is open and the portal has no
+certificate, so under PAP every voucher code crosses the air in cleartext and
+anyone in range can harvest codes. CHAP sends `MD5(chap-id + code + challenge)`
+over a challenge that is fresh each time, so a captured hash is worth nothing.
+`cookie` is what lets a phone reconnect later without re-entering its code.
+
+**Verifying the CHAP maths needs both of those turned off**, or the test proves
+nothing: `cookie` lets attempts after the first replay a session rather than
+authenticate, and adding `http-pap` lets a broken hash fall through to
+plaintext and succeed anyway. So, for the test only:
+
+```
+/ip/hotspot/profile/set hsprof1 login-by=http-chap
+```
+
+Redeem a fresh voucher three or four times, clearing the session between
+attempts so each is a real exchange:
+
+```
+/ip/hotspot/active/remove [find mac-address="THE-PHONE-MAC"]
+/log/print follow where topics~"hotspot"
+```
+
+You want `trying to log in by http-chap` followed by `logged in`, every time.
+Then put it back to `cookie,http-chap`.
 
 ---
 
@@ -706,18 +915,16 @@ the old schema. Vercel redeploys the frontend on push by itself.
 
 ## Open items
 
-- **CHAP login — fixed, not yet proven.** Both faults are corrected and the
-  files are on the router: the challenge is now substituted into a JS string
-  literal, and `MD5()` no longer UTF-8 encodes its input. Not yet confirmed
-  with `login-by=http-chap,http-pap` on real hardware. **Test it three or four
-  times, not once** — the UTF-8 fault only corrupted challenges containing a
-  byte above `0x7F`, so roughly half of attempts succeeded by luck even before
-  the fix, and a single success proves nothing.
 - **Off-site backups.** Local only until `rclone` has a remote — the dumps
   currently share a disk with the database.
 - **`PermitRootLogin no`** once no further root work is expected.
-- **Android MAC randomisation.** Device binding is by MAC. A phone that rotates
-  its address looks like a new device and can exhaust a one-device package.
+- **Android MAC randomisation.** Device binding is by MAC, and modern Android
+  randomises per SSID by default — seen on the first test phone of this build,
+  a Galaxy presenting `3E:5E:…` with the locally-administered bit set. A
+  customer who toggles WiFi looks like a new device and can exhaust a
+  one-device package. Not fixable on the router; it needs a decision about what
+  identity a "device" is. When testing, set the phone to **Use device MAC** so
+  you are not chasing this by accident.
 - **Package hygiene.** Check every package's `duration_value`/`duration_unit`
   against its name, and that `is_hotspot` is set correctly — a PPPoE package on
   a hotspot portal sells something the router cannot deliver.
@@ -793,7 +1000,7 @@ The page is served from the router, so it loading proves nothing about your API.
 ```
 
 - **`hits: 0`** — nothing matched. The request never got out. Add the address
-  rule from §9.3; the hostname rule alone breaks after a reboot or against a
+  rule from §9.4; the hostname rule alone breaks after a reboot or against a
   phone using private DNS.
 - **`hits` climbing** — traffic is getting through, so the fault is beyond the
   router. Go to the server logs.
@@ -964,6 +1171,83 @@ All three should be restricted to `10.10.0.1/32`.
 
 ---
 
+### Works plugged direct, dead through the router — but WinBox is fine
+
+The laptop gets online with the cable straight into it, and nothing at all when
+the same cable goes into ether1 with the laptop on ether2. WinBox connects
+throughout, which is what makes this one take an hour.
+
+**WinBox proves almost nothing here.** It rides Layer 2 by MAC address, so it
+works when the laptop has no IP, when the router has no upstream, and when
+every forwarded packet is being dropped. All it demonstrates is that the cable
+and the switch chip are alive. Look at its *Connect To* field: a MAC rather
+than an address means you never had IP connectivity to prove.
+
+Ask the router what it thinks it is:
+
+```
+/ip/address/print
+/ip/dhcp-client/print
+/interface/bridge/port/print
+/ip/firewall/nat/print
+```
+
+**The board is a transparent bridge, not a router**, if you see ether1 listed
+as a bridge port, the DHCP client sitting on the *bridge* rather than on
+ether1, and an empty NAT table. It took an address from your upstream as an
+ordinary client — which is why the router itself pings 8.8.8.8 perfectly while
+nothing behind it works. There is no "behind it". Anything on ether2 is on the
+upstream's segment, competing for a second lease it may not get.
+
+Convert it (§9 assumes a routed board throughout), and **order the commands so
+the address you are connected on dies last**:
+
+```
+/ip/address/add address=192.168.88.1/24 interface=bridgeLocal
+/ip/pool/add name=dhcp-pool ranges=192.168.88.10-192.168.88.254
+/ip/dhcp-server/add name=dhcp-lan interface=bridgeLocal address-pool=dhcp-pool disabled=no
+/ip/dhcp-server/network/add address=192.168.88.0/24 gateway=192.168.88.1 dns-server=8.8.8.8,1.1.1.1
+/ip/dns/set allow-remote-requests=yes
+
+/interface/list/add name=WAN
+/interface/list/add name=LAN
+/interface/list/member/add list=WAN interface=ether1
+/interface/list/member/add list=LAN interface=bridgeLocal
+
+/ip/firewall/nat/add chain=srcnat action=masquerade out-interface-list=WAN
+
+/interface/bridge/port/remove [find interface=ether1]
+/ip/dhcp-client/add interface=ether1 use-peer-dns=yes add-default-route=yes disabled=no
+
+/ip/dhcp-client/remove [find interface=bridgeLocal]
+```
+
+Everything except the last line is safe from a session on the old address — the
+bridge carries both addresses at once. The last line drops you; release and
+renew on the laptop and come back on `192.168.88.1`. Pick a LAN subnet that
+differs from the upstream's: `192.168.88.0/24` behind a `192.168.8.0/24`
+uplink, which look alike and are not.
+
+`allow-remote-requests=yes` is needed before the hotspot works at all — the
+walled garden permits addresses by watching DNS answers, and it can only watch
+lookups that come to the router.
+
+**Partial packet loss afterwards means you left the old DHCP client running.**
+Two clients that present the same MAC — a bridge inherits the MAC of a member
+port — get handed the same lease, and you end up with the address bound on two
+interfaces and two default routes flagged `+` for ECMP. The router then
+alternates between a working path and a dead one:
+
+```
+  0 8.8.8.8      timeout
+  1 192.168.8.17 host unreachable
+  2 8.8.8.8      41ms
+```
+
+That is not a flaky link. It is `/ip/route/print` showing two of everything.
+
+---
+
 ### Whole LAN says "connected, no internet"
 
 Check the router's own WAN before anything else:
@@ -978,7 +1262,7 @@ the hotspot is irrelevant. This is worth ruling out first every single time — 
 costs ten seconds and it is a common cause.
 
 If the router is online and only *one* segment is not, and you have split the
-LAN (§9.6), the usual culprit is the new bridge missing from the `LAN`
+LAN (§9.7), the usual culprit is the new bridge missing from the `LAN`
 interface list — its DHCP and DNS are then dropped by the router's own
 firewall.
 
@@ -1074,15 +1358,16 @@ commands:
 Two failed pings, then re-resolve the endpoint. It logs when it acts, so
 `/log print where topics~"script"` tells you whether a site is flapping.
 
-**`scheduler` is disabled by `device-mode` on a `home` router**, the same as
-hotspot was:
+**`scheduler` is disabled by `device-mode` on a `home` router**, as is `proxy`.
+`hotspot` is not — a `home` board already permits it. Check rather than assume:
 
 ```
-/system/device-mode/update scheduler=yes
+/system/device-mode/print
+/system/device-mode/update hotspot=yes proxy=yes scheduler=yes
 ```
 
-then power-cycle to confirm. Do it at the same time as the hotspot change so
-one trip covers both.
+then power-cycle to confirm. Name every flag you want in one `update` and do it
+at the same time as §9.1, so a single trip to the site covers all of them.
 
 ---
 
@@ -1100,3 +1385,6 @@ symptom. Worth knowing they existed, because the shape repeats.
 | `web` published on all interfaces | Django reachable from the internet past ufw and past TLS |
 | Guide's `.env` block | Four errors, each failing at a different stage |
 | Backup dumped as the app role | RLS filtered the dump — schema, almost no rows, plausible size |
+| `MD5()` UTF-8 encoded the CHAP challenge | Every voucher rejected as *invalid username or password*. The challenge is 16 raw bytes; UTF-8 expands anything above `0x7F` into two, so the hash was taken over the wrong data. Odds of 16 random bytes all landing under `0x7F` are about 1 in 65,000, so it failed essentially always — and it looked like a billing fault, not a JavaScript one |
+| CAP mode left on a redeployed router | The SSID simply did not exist. `wlan1` disabled, `mode=station`, owned by a CAPsMAN controller that was not on the network — so the radio stayed down and every local setting was discarded without a word |
+| Router shipped as a transparent bridge | ether1 in the bridge, DHCP client on the bridge, no NAT. Worked plugged direct, dead through the router, WinBox fine throughout — because WinBox rides Layer 2 and never needed an IP |
