@@ -1,18 +1,33 @@
 from django.conf import settings
 
 
+def client_ip(request):
+    """
+    Who the request came from, as far as we can tell.
+
+    Trusts the first X-Forwarded-For hop because a reverse proxy sits in front
+    in production. That is only sound while the proxy is the sole route in —
+    the app port is bound to loopback, which is what makes it so.
+    """
+    forwarded = request.META.get("HTTP_X_FORWARDED_FOR")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.META.get("REMOTE_ADDR")
+
+
 def is_trusted_mpesa_ip(request):
     """
-    Validates that the request IP belongs to Safaricom
+    Whether this callback came from an address Safaricom is known to use.
+
+    A fast path, not a gate. Safaricom publishes more addresses than any list
+    here tends to hold and changes them without notice, so treating this as the
+    only authenticator means a genuine callback from an unlisted address is
+    dropped — and the customer has already been charged by then. See
+    MpesaSTKCallbackView for what happens when this returns False.
     """
-    x_forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR")
+    ip = client_ip(request)
 
-    if x_forwarded_for:
-        ip = x_forwarded_for.split(",")[0].strip()
-    else:
-        ip = request.META.get("REMOTE_ADDR")
-
-    # ✅ Allow localhost during development
+    # Allow localhost during development
     if settings.MPESA_ALLOW_LOCAL_CALLBACK and ip in ("127.0.0.1", "localhost"):
         return True
 

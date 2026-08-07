@@ -180,8 +180,8 @@ past the portal:
 ### 7. Walled garden — both rules
 
 ```
-/ip/hotspot/walled-garden/add dst-host=api.example.com comment="Billing API"
-/ip/hotspot/walled-garden/ip/add dst-address=SERVER_IP action=accept comment="Billing API direct"
+/ip/hotspot/walled-garden/add dst-host=api.smartbillsolution.com comment="Billing API"
+/ip/hotspot/walled-garden/ip/add dst-address=167.233.247.151 action=accept comment="Billing API direct"
 /ip/hotspot/walled-garden/print
 /ip/hotspot/walled-garden/ip/print
 ```

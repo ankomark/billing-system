@@ -573,11 +573,9 @@ class MpesaSTKCallbackView(APIView):
     throttle_classes = [MpesaCallbackThrottle]
 
     def post(self, request, tenant_token=None):
-        if not is_trusted_mpesa_ip(request):
-            return Response(
-                {"detail": "Unauthorized callback source"},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+        from billing.security import client_ip
+
+        source_ip = client_ip(request)
 
         # Per-operator URL. Unknown tokens are rejected rather than silently
         # falling back, so a mistyped callback URL fails loudly at setup time
@@ -587,7 +585,8 @@ class MpesaSTKCallbackView(APIView):
             tenant = Tenant.objects.filter(public_token=tenant_token).first()
             if tenant is None:
                 logger.warning(
-                    "[mpesa] Callback for unknown tenant token %s", tenant_token
+                    "[mpesa] Callback for unknown tenant token %s from %s",
+                    tenant_token, source_ip,
                 )
                 return Response(
                     {"detail": "Unknown callback endpoint"},
@@ -597,6 +596,73 @@ class MpesaSTKCallbackView(APIView):
         body = request.data.get("Body", {}).get("stkCallback", {})
         result_code = body.get("ResultCode")
         result_desc = body.get("ResultDesc")
+
+        # ── Is this really Safaricom? ───────────────────────────────────────
+        #
+        # The address list is a fast path, not a gate. It held five entries
+        # against a set Safaricom publishes more of and rotates without
+        # telling anyone, and this view used to refuse anything outside it as
+        # its very first act — before reading the body, before logging a line.
+        # The result of being wrong was: customer charged, callback dropped,
+        # no access granted, and nothing recorded anywhere to explain it. The
+        # worst outcome this system can produce, arrived at silently.
+        #
+        # So an unlisted address is not enough to refuse. What actually
+        # authenticates a callback is knowledge we only ever gave Safaricom:
+        # the per-operator token in the URL, which went out in the
+        # CallBackURL of the push, together with something in the body
+        # matching a push this platform itself initiated. Neither is guessable
+        # by someone spraying this endpoint, and both are stronger evidence
+        # than a source address, which is asserted by the caller.
+        if not is_trusted_mpesa_ip(request):
+            checkout_id = body.get("CheckoutRequestID")
+            merchant_id = body.get("MerchantRequestID")
+
+            # AccountReference is the invoice number this platform generated
+            # and sent out with the push. Safaricom returns it in the metadata,
+            # which is present precisely when ResultCode is 0 — that is, when
+            # money has actually moved. So the case that can hurt a customer is
+            # the case that carries the evidence.
+            #
+            # Not the URL token on its own: it ships inside config.js on every
+            # router and is served to every subscriber's browser, so treating
+            # it as a secret would let any customer forge a paid callback.
+            claimed_ref = None
+            for item in body.get("CallbackMetadata", {}).get("Item", []) or []:
+                if item.get("Name") == "AccountReference":
+                    claimed_ref = item.get("Value")
+                    break
+            correlates = bool(claimed_ref) and Invoice.objects.all_tenants().filter(
+                invoice_number=claimed_ref
+            ).exists()
+
+            if tenant is not None and correlates:
+                # Accepted on evidence, and said out loud: an operator seeing
+                # this repeatedly should add the address to MPESA_TRUSTED_IPS
+                # so the fast path does its job again.
+                logger.warning(
+                    "[mpesa] Callback accepted from unlisted address %s — the "
+                    "URL token is valid and invoice %s exists, so this is a "
+                    "push we initiated. Add %s to MPESA_TRUSTED_IPS so the "
+                    "fast path works again. (CheckoutRequestID %s)",
+                    source_ip, claimed_ref, source_ip, checkout_id,
+                )
+            else:
+                # Still refused — but never again silently. Everything needed
+                # to tell a rotated Safaricom address from a stranger probing
+                # the endpoint goes in the log.
+                logger.warning(
+                    "[mpesa] Callback REFUSED from %s — token=%s, "
+                    "CheckoutRequestID=%s, correlates=%s, MerchantRequestID=%s, "
+                    "ResultCode=%s. If this was Safaricom, a paying customer "
+                    "has just been charged and not connected.",
+                    source_ip, "valid" if tenant else "missing/invalid",
+                    checkout_id, correlates, merchant_id, result_code,
+                )
+                return Response(
+                    {"detail": "Unauthorized callback source"},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
 
         items = body.get("CallbackMetadata", {}).get("Item", []) if result_code == 0 else []
 
