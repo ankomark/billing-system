@@ -6,5 +6,10 @@
 # would have broken it without this.
 *.sh text eol=lf
 Dockerfile text eol=lf
+# systemd reads a trailing \r as part of the value, so ExecStart= points at a
+# path that does not exist and the unit fails with a message about the binary
+# rather than about line endings.
+*.service text eol=lf
+*.path text eol=lf
 *.dockerignore text eol=lf
 docker-compose*.yml text eol=lf
