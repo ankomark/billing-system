@@ -12,7 +12,13 @@ ExecStart=/usr/local/bin/wg-peer-watcher
 # Everything not needed for those two things is taken away.
 ProtectSystem=strict
 ReadWritePaths=/etc/wireguard /var/spool/wg-requests
-ProtectHome=true
+
+# read-only, not true. `true` makes /home an empty directory, and
+# wg-add-peer.sh lives at /home/deploy/ — the unit would fail to execute it
+# and report it as a missing file, which sends you looking at the path rather
+# than at the sandbox. Install the peer script under /usr/local/bin and set
+# WG_ADD_PEER if you would rather have this fully off.
+ProtectHome=read-only
 PrivateTmp=true
 NoNewPrivileges=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK

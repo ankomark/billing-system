@@ -503,6 +503,11 @@ WG_INTERFACE_NAME = os.getenv("WG_INTERFACE_NAME", "wg-smartbill")
 # namespace, and an RCE in Django should not come with the ability to
 # reconfigure the server's networking. A systemd path unit on the host watches
 # this directory instead. See docker/wg-peer-watcher.sh.
+#
+# This is the path *inside the container*, and there is rarely a reason to
+# change it. The host side is WG_SPOOL_HOST_DIR in docker-compose.yml — they
+# are two ends of one bind mount, and moving one without the other means
+# Django writes somewhere no watcher is looking, with no error anywhere.
 WG_SPOOL_DIR = os.getenv("WG_SPOOL_DIR", "/var/spool/wg-requests")
 
 CELERY_BEAT_SCHEDULE = {

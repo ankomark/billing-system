@@ -2609,11 +2609,11 @@ class AdminRouterProvisionView(APIView):
             payload["station"] = request.data["station"]
 
         try:
-            # Allocation and creation share one transaction, so the row lock
-            # taken while picking an address is still held when the row that
-            # claims it is written. Split across two, two admins provisioning
-            # at the same moment are both handed 10.10.0.7 — and the
-            # serializer will not catch it, because it only enforces
+            # Allocation and creation share one transaction, so the advisory
+            # lock taken while picking an address is still held when the row
+            # claiming it is written. Split across two, two admins
+            # provisioning at the same moment are both handed 10.10.0.7 — and
+            # the serializer will not catch it, because it only enforces
             # uniqueness across operators for *public* addresses. Private ones
             # genuinely repeat: every operator has a 192.168.88.1. Tunnel
             # addresses are the exception, and this is what keeps them unique.

@@ -33,7 +33,13 @@ x-app: &app
     #
     # Read-write, because the container writes requests. It reads only the
     # .result files the watcher writes back, and nothing outside this path.
-    - ${WG_SPOOL_DIR:-/var/spool/wg-requests}:/var/spool/wg-requests
+    #
+    # The container side is fixed and must stay fixed: Django reads
+    # WG_SPOOL_DIR as a path *inside* the container, so pointing this at the
+    # same variable would move both ends at once and mean that changing where
+    # the host keeps the spool silently made Django write somewhere no watcher
+    # was looking. Override WG_SPOOL_HOST_DIR to move the host side alone.
+    - ${WG_SPOOL_HOST_DIR:-/var/spool/wg-requests}:/var/spool/wg-requests
 
 services:
   postgres:

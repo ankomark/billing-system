@@ -3,14 +3,20 @@ Description=Watch for tunnel peer requests from the billing platform
 Documentation=file:///usr/local/bin/wg-peer-watcher
 
 [Path]
-# Fires whenever the directory changes. The platform writes requests
-# atomically — a temp file, then a rename — so this never sees a half-written
-# JSON document.
-PathChanged=/var/spool/wg-requests
+# Fires while at least one request file exists, and re-arms once the service
+# has deleted them all.
+#
+# Not DirectoryNotEmpty=: the watcher leaves .result files behind for the
+# platform to read, so the directory is never empty and the unit would
+# retrigger in a loop forever. Not PathChanged= either — requests arrive by
+# rename (written to a temp file first, so nothing ever sees half a JSON
+# document), and matching on the glob is what makes the condition depend on
+# the thing we actually care about rather than on directory mtime.
+PathExistsGlob=/var/spool/wg-requests/*.json
 
-# Requests written while this unit was stopped are picked up on start, so a
-# reboot mid-onboarding does not strand an operator with a router that has no
-# peer and no error to explain it.
+# Requests written while this unit was stopped satisfy the glob as soon as it
+# starts, so a reboot mid-onboarding does not strand an operator with a router
+# that has no peer and no error to explain it.
 MakeDirectory=true
 DirectoryMode=0770
 

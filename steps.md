@@ -399,7 +399,6 @@ cd /opt/billing/backend/docker
 install -m 0755 wg-peer-watcher.sh /usr/local/bin/wg-peer-watcher
 install -d -m 0770 -o deploy -g deploy /var/spool/wg-requests
 cp wg-peer-watcher.path wg-peer-watcher.service /etc/systemd/system/
-apt-get install -y jq
 systemctl daemon-reload
 systemctl enable --now wg-peer-watcher.path
 ```

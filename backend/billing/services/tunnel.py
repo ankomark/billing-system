@@ -54,7 +54,7 @@ from cryptography.hazmat.primitives.serialization import (
     Encoding, NoEncryption, PrivateFormat, PublicFormat,
 )
 from django.conf import settings
-from django.db import transaction
+from django.db import connection, transaction
 
 logger = logging.getLogger(__name__)
 
@@ -122,31 +122,50 @@ def tunnel_network():
     return ipaddress.ip_network(settings.WG_TUNNEL_SUBNET, strict=False)
 
 
+# Any constant works, as long as nothing else in the codebase picks the same
+# one. Advisory locks share a single namespace per database.
+_ALLOCATION_LOCK_ID = 0x5C0FFEE1
+
+
 @transaction.atomic
 def allocate_tunnel_ip():
     """
     The next free address in the tunnel subnet.
 
-    Allocated across **every** tenant, deliberately. RouterDevice is
-    tenant-scoped and almost everything that touches it should be, but
-    10.10.0.7 can only belong to one router on the whole platform — scoping
-    this query would hand the same address to two operators, and the second
-    tunnel would simply never work while both configs looked correct.
+    Two things here are easy to get subtly wrong, and both fail the same way:
+    two operators handed 10.10.0.7, the second tunnel never working, and both
+    configurations looking entirely correct.
 
-    Takes a row lock over the tunnel subnet's rows so two admins provisioning
-    at the same moment cannot both be handed the same address.
+    **It must read across every tenant.** RouterDevice is tenant-scoped and
+    almost everything touching it should be — but a tunnel address belongs to
+    one router on the whole platform, not one per operator. The `all_tenants()`
+    *context manager* is what makes that true: the manager method of the same
+    name only bypasses the ORM filter, while Postgres RLS keeps filtering to
+    whichever operator the request is acting for. Using the queryset method
+    alone reads as cross-operator and silently is not.
+
+    **A row lock is not enough.** `select_for_update` locks rows that exist,
+    and the thing being guarded against is two transactions both finding an
+    address absent and both inserting it. There is nothing to lock. An advisory
+    lock serialises the whole allocation instead, and being transaction-scoped
+    it releases when the caller's transaction commits — which is why this must
+    be called inside the same transaction that writes the row.
     """
     from billing.models import RouterDevice
+    from billing.tenancy import all_tenants
+
+    if connection.vendor == "postgresql":
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT pg_advisory_xact_lock(%s)", [_ALLOCATION_LOCK_ID])
 
     network = tunnel_network()
     server_ip = ipaddress.ip_address(settings.WG_SERVER_TUNNEL_IP)
 
     taken = set()
-    rows = (
-        RouterDevice.objects.all_tenants()
-        .select_for_update()
-        .values_list("ip_address", flat=True)
-    )
+    with all_tenants():
+        rows = list(
+            RouterDevice.objects.all_tenants().values_list("ip_address", flat=True)
+        )
     for value in rows:
         try:
             address = ipaddress.ip_address(value)
