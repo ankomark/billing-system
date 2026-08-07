@@ -596,6 +596,8 @@ class MpesaSTKCallbackView(APIView):
         body = request.data.get("Body", {}).get("stkCallback", {})
         result_code = body.get("ResultCode")
         result_desc = body.get("ResultDesc")
+        checkout_id = body.get("CheckoutRequestID")
+        merchant_id = body.get("MerchantRequestID")
 
         # ── Is this really Safaricom? ───────────────────────────────────────
         #
@@ -615,9 +617,6 @@ class MpesaSTKCallbackView(APIView):
         # by someone spraying this endpoint, and both are stronger evidence
         # than a source address, which is asserted by the caller.
         if not is_trusted_mpesa_ip(request):
-            checkout_id = body.get("CheckoutRequestID")
-            merchant_id = body.get("MerchantRequestID")
-
             # AccountReference is the invoice number this platform generated
             # and sent out with the push. Safaricom returns it in the metadata,
             # which is present precisely when ResultCode is 0 — that is, when
@@ -692,14 +691,35 @@ class MpesaSTKCallbackView(APIView):
         # exactly this reason. The URL token is a cross-check, not the source of
         # truth, so a callback cannot be booked against the wrong operator by
         # pointing it at the wrong URL.
+        # CheckoutRequestID first, because a Buy Goods callback has no account
+        # reference to offer.
+        #
+        # A till has no account number, so Safaricom returns only Amount,
+        # MpesaReceiptNumber, TransactionDate and PhoneNumber — the
+        # AccountReference this used to resolve on is simply absent. Every
+        # till payment therefore reached "Missing callback data": receipt
+        # recorded, invoice left pending, no Payment, no access, and a
+        # customer holding an M-Pesa confirmation SMS for money the platform
+        # never credited. Seen on the first successful live payment, for KSh 5.
         invoice = None
-        if reference:
+        if checkout_id:
+            invoice = (
+                Invoice.objects.all_tenants()
+                .select_related("customer", "subscription", "tenant")
+                .filter(mpesa_checkout_request_id=checkout_id)
+                .first()
+            )
+        if invoice is None and reference:
             invoice = (
                 Invoice.objects.all_tenants()
                 .select_related("customer", "subscription", "tenant")
                 .filter(invoice_number=reference)
                 .first()
             )
+        # Downstream writes this onto the transaction and compares it against
+        # the invoice, so give it the number the push was for.
+        if invoice is not None and not reference:
+            reference = invoice.invoice_number
 
         if invoice is not None and tenant is not None and invoice.tenant_id != tenant.id:
             logger.error(
@@ -762,7 +782,11 @@ class MpesaSTKCallbackView(APIView):
             tx.save(update_fields=["error_message", "processed"])
             return Response({"detail": "STK failed"})
 
-        if not all([mpesa_receipt, amount, reference]):
+        # The reference is no longer required here. It is derived from the
+        # invoice above when Safaricom did not send one, and a Buy Goods
+        # callback never does — requiring it failed every till payment on a
+        # field that product does not have.
+        if not all([mpesa_receipt, amount]):
             tx.status = "failed"
             tx.error_message = "Missing callback data"
             tx.processed = True

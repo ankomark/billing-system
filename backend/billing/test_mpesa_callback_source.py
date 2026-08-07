@@ -154,3 +154,87 @@ class MpesaCallbackSourceTests(TestCase):
         with self.assertLogs("billing.views", level="WARNING"):
             resp = self._post(payload, UNLISTED)
         self.assertEqual(resp.status_code, 403)
+
+
+@override_settings(MPESA_TRUSTED_IPS=[SAFARICOM], MPESA_ALLOW_LOCAL_CALLBACK=False)
+class BuyGoodsCallbackTests(TestCase):
+    """
+    A till callback carries no AccountReference, because a till has no account.
+
+    Safaricom returns Amount, MpesaReceiptNumber, TransactionDate and
+    PhoneNumber and nothing else. The invoice used to be resolved from the
+    reference, so every Buy Goods payment reached "Missing callback data" —
+    receipt recorded, invoice left pending, no Payment, no access — while the
+    customer held an M-Pesa confirmation SMS. Found on the first successful
+    live payment.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.get(slug="skylink")
+        with tenant_context(self.tenant):
+            router = RouterDevice.objects.create(
+                tenant=self.tenant, name="r2", ip_address="10.0.0.2",
+                username="a", password="p")
+            package = Package.objects.create(
+                tenant=self.tenant, name="5min", download_speed=5, upload_speed=2,
+                price=Decimal("5.00"), duration_value=5, duration_unit="minutes",
+                monthly_data_cap_gb=0, is_hotspot=True)
+            customer = Customer.objects.create(
+                tenant=self.tenant, full_name="Till Payer", phone="254701071435",
+                connection_type="hotspot", router=router)
+            subscription = Subscription.objects.create(
+                tenant=self.tenant, customer=customer, package=package,
+                status="active", expiry_date=timezone.now() + timedelta(hours=1))
+            self.invoice = Invoice.objects.get(subscription=subscription)
+            self.invoice.payment_status = "pending"
+            self.invoice.mpesa_checkout_request_id = "ws_CO_TILL_1"
+            self.invoice.save(update_fields=[
+                "payment_status", "mpesa_checkout_request_id"])
+        self.url = f"/api/mpesa/callback/{self.tenant.public_token}/"
+
+    def _buy_goods_payload(self, checkout="ws_CO_TILL_1"):
+        return {"Body": {"stkCallback": {
+            "MerchantRequestID": "m-till",
+            "CheckoutRequestID": checkout,
+            "ResultCode": 0,
+            "ResultDesc": "The service request is processed successfully.",
+            # Exactly what a till returns — note the absence of
+            # AccountReference, which a PayBill would carry.
+            "CallbackMetadata": {"Item": [
+                {"Name": "Amount", "Value": 5},
+                {"Name": "MpesaReceiptNumber", "Value": "UH8FL23IHF"},
+                {"Name": "TransactionDate", "Value": 20260808024227},
+                {"Name": "PhoneNumber", "Value": 254701071435},
+            ]},
+        }}}
+
+    def test_a_till_payment_is_credited(self):
+        resp = self.client.post(
+            self.url, self._buy_goods_payload(),
+            content_type="application/json", REMOTE_ADDR=SAFARICOM)
+
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.invoice.refresh_from_db()
+        self.assertEqual(
+            self.invoice.payment_status, "paid",
+            "a paid till invoice was left pending — money taken, nothing given")
+
+    def test_the_transaction_is_not_marked_failed(self):
+        self.client.post(
+            self.url, self._buy_goods_payload(),
+            content_type="application/json", REMOTE_ADDR=SAFARICOM)
+
+        from billing.models import MpesaTransaction
+        with tenant_context(self.tenant):
+            tx = MpesaTransaction.objects.filter(
+                mpesa_receipt="UH8FL23IHF").first()
+        self.assertIsNotNone(tx)
+        self.assertNotEqual(tx.error_message, "Missing callback data")
+        self.assertEqual(tx.status, "success")
+
+    def test_an_unknown_checkout_id_is_still_refused(self):
+        """Correlation has to fail closed when it matches nothing."""
+        resp = self.client.post(
+            self.url, self._buy_goods_payload(checkout="ws_CO_NOT_OURS"),
+            content_type="application/json", REMOTE_ADDR=SAFARICOM)
+        self.assertEqual(resp.status_code, 400)
