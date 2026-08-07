@@ -389,30 +389,37 @@ cat server-public.key
 
 Open **UDP 51820** in the Hetzner Cloud Firewall too.
 
-**On each operator's MikroTik** (RouterOS 7+; check with `/system resource print`):
+**Then install the peer watcher, also once.** This is what lets the Routers
+page add a tunnel peer without anybody opening a terminal — see §9.6. The web
+container writes a request into a spool directory and a systemd path unit out
+here applies it, so Django never needs root or the host's network namespace:
 
-```
-/interface/wireguard/add name=wg-smartbill listen-port=13231
-/ip/address/add address=10.10.0.N/24 interface=wg-smartbill
-/interface/wireguard/peers/add interface=wg-smartbill \
-  public-key="SERVER_PUBLIC_KEY" \
-  endpoint-address=vpn.example.com endpoint-port=51820 \
-  allowed-address=10.10.0.1/32 persistent-keepalive=25s
-/interface/wireguard/print
-```
-
-Take the router's public key with:
-
-```
-:put [/interface/wireguard/get [find name=wg-smartbill] public-key]
+```bash
+cd /opt/billing/backend/docker
+install -m 0755 wg-peer-watcher.sh /usr/local/bin/wg-peer-watcher
+install -d -m 0770 -o deploy -g deploy /var/spool/wg-requests
+cp wg-peer-watcher.path wg-peer-watcher.service /etc/systemd/system/
+apt-get install -y jq
+systemctl daemon-reload
+systemctl enable --now wg-peer-watcher.path
 ```
 
-**Not `/interface/wireguard/print`.** On 7.19 that prints `private-key=` in
-plain sight alongside the public one, and a private key read aloud into a
-terminal you are pasting from is a private key you have to rotate. The `get`
-form returns one line and nothing else. If you do leak it, fix it before
-registering the peer — regenerating is three commands then, and an edit on both
-ends afterwards.
+**Finally, put four values in `backend/.env`** and redeploy. Without them the
+Routers page refuses to provision rather than emitting a script that pastes
+cleanly and produces a tunnel that never comes up:
+
+```bash
+WG_SERVER_PUBLIC_KEY=$(sudo cat /etc/wireguard/server-public.key)
+WG_ENDPOINT_HOST=vpn.example.com
+WG_TUNNEL_SUBNET=10.10.0.0/24
+WG_SERVER_TUNNEL_IP=10.10.0.1
+```
+
+That is the whole of the tunnel setup. **Per-router work is done from the
+dashboard from here on** — §9.6.
+
+Two constants worth understanding, because they are baked into the generated
+script and someone will eventually want to change them:
 
 `allowed-address=10.10.0.1/32`, not `0.0.0.0/0`. The tunnel carries management
 traffic only; routing a hotspot's browsing through a 600 MHz MIPS CPU doing
@@ -422,18 +429,11 @@ software crypto, via Germany, is not what you want.
 expires in seconds, and your server can only reach back through one the router
 is holding open.
 
-**Back on the server:**
-
-```bash
-sudo /home/deploy/wg-add-peer.sh OPERATOR ROUTER_PUBLIC_KEY 10.10.0.N
-```
-
-That applies the peer live rather than restarting the interface, which would
-drop every other operator until their keepalive next fires.
-
-**Prove both directions.** From the router `/ping 10.10.0.1`, and from the
-server `ping 10.10.0.N`. The second is the one that matters — the router
-dialling out doesn't prove your server can reach back.
+> **If you ever do this by hand**, take the router's public key with
+> `:put [/interface/wireguard/get [find name=wg-smartbill] public-key]` — **not**
+> `/interface/wireguard/print`, which on 7.19 prints `private-key=` in plain
+> sight alongside it. A private key read into a terminal you are pasting from
+> is a private key you have to rotate.
 
 ---
 
@@ -716,10 +716,39 @@ and trusting yourself.
 
 ### 9.6 Register it
 
-Operator dashboard → **Routers → Add router**: address `10.10.0.N`, username
-`billing`, port `8728`. **Press Test connection before saving.** It tells you
-which of the address, the firewall, or the password is wrong while you are
-still standing in front of the machine.
+**This replaces §9.5 and most of §8 for every router after the first.** If the
+tunnel is set up on the server, you do not need §9.5's commands, an SSH
+session, or the router's public key — the dashboard produces all of it.
+
+Operator dashboard → **Routers → Add router**:
+
+1. Leave **"Set up a management tunnel"** ticked. It is the right answer for
+   anything behind an LTE box or a shared uplink, which is nearly everything.
+   Untick it only for a router with a genuine public address.
+2. Fill in the name, and the **API username and password you want created** —
+   they do not exist on the router yet; the generated script creates them.
+   Leave the IP address alone, it is allocated for you.
+3. Press **Register & get setup commands**.
+4. **Copy the block** and paste it into WinBox → New Terminal. It builds the
+   tunnel, enables the API, creates the user, adds the firewall rule and turns
+   on NTP.
+5. Press **Test connection**.
+
+Green means the whole chain works — tunnel, firewall, service, credentials.
+The health sweep picks it up within two minutes.
+
+**The block is shown once.** It carries the router's private key and the API
+password, and the platform stores neither. Lose it and you register the router
+again for a fresh one; it costs a paste, not a site visit.
+
+Failures are worth reading precisely, because three different problems arrive
+in the same red box:
+
+| It says | It means |
+|---|---|
+| **timed out** | Nothing at that address. The paste did not happen, or the tunnel is not up — check `/ping 10.10.0.1 count=3` on the router |
+| **connection refused** | Host reachable, API service off or on another port |
+| **invalid user name or password** | Everything works except the credential. Set a new one and paste it into both sides from the same clipboard |
 
 **Do not create user profiles by hand.** The backend builds and maintains
 `HOTSPOT_PKG_<id>_D<devices>` and `PPPOE_PKG_<id>` from the package definition,

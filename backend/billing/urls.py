@@ -91,6 +91,7 @@ from .views import (
     # Admin — routers
     AdminRouterListView,
     AdminRouterDetailView,
+    AdminRouterProvisionView,
     AdminRouterTestView,
     AdminRouterHealthView,
     AdminFailoverLogsView,
@@ -254,6 +255,7 @@ urlpatterns = [
     path("api/admin/routers/",             AdminRouterListView.as_view(),   name="admin-routers"),
     # Before the <int:pk> route. It would not match "test" either way, but the
     # ordering is the thing that keeps it true if the converter ever loosens.
+    path("api/admin/routers/provision/",   AdminRouterProvisionView.as_view(), name="admin-router-provision"),
     path("api/admin/routers/test/",        AdminRouterTestView.as_view(),   name="admin-router-test"),
     path("api/admin/routers/<int:pk>/",    AdminRouterDetailView.as_view(), name="admin-router-detail"),
     path("api/admin/routers/health/",      AdminRouterHealthView.as_view(), name="admin-router-health"),

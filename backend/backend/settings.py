@@ -467,6 +467,44 @@ CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
 # failover has become fast enough that a false one is cheap, which it is not.
 ROUTER_OFFLINE_AFTER_FAILURES = int(os.getenv("ROUTER_OFFLINE_AFTER_FAILURES", "3"))
 
+# ─── The management tunnel ───────────────────────────────────────────────────
+#
+# Operators' routers sit behind CGNAT, so the platform reaches them over
+# WireGuard rather than dialling a public address. These let the Routers page
+# provision a tunnel peer itself, instead of an admin running three commands
+# over SSH for every site — see billing/services/tunnel.py.
+#
+# WG_SERVER_PUBLIC_KEY is the one value that cannot be defaulted: it lives in
+# /etc/wireguard/server-public.key, which is root-only, so it has to be copied
+# into .env once when the server is built:
+#
+#     sudo cat /etc/wireguard/server-public.key
+#
+# Without it, provisioning refuses rather than emitting a script that pastes
+# cleanly and produces a tunnel that never comes up.
+WG_SERVER_PUBLIC_KEY = os.getenv("WG_SERVER_PUBLIC_KEY", "").strip()
+
+# The name routers dial. A name rather than an address, so moving hosts is a
+# DNS change instead of a visit to every router already deployed. Must be
+# grey-clouded in Cloudflare — UDP cannot be proxied.
+WG_ENDPOINT_HOST = os.getenv("WG_ENDPOINT_HOST", "").strip()
+WG_ENDPOINT_PORT = int(os.getenv("WG_ENDPOINT_PORT", "51820"))
+
+WG_TUNNEL_SUBNET = os.getenv("WG_TUNNEL_SUBNET", "10.10.0.0/24")
+WG_SERVER_TUNNEL_IP = os.getenv("WG_SERVER_TUNNEL_IP", "10.10.0.1")
+
+# What the interface is called on the router. Only cosmetic to us, but it goes
+# into the generated script and into the firewall rule that references it, so
+# the two must agree.
+WG_INTERFACE_NAME = os.getenv("WG_INTERFACE_NAME", "wg-smartbill")
+
+# Where peer requests are dropped for the host to pick up. The web container
+# has no business running `wg set` — that needs root and the host's network
+# namespace, and an RCE in Django should not come with the ability to
+# reconfigure the server's networking. A systemd path unit on the host watches
+# this directory instead. See docker/wg-peer-watcher.sh.
+WG_SPOOL_DIR = os.getenv("WG_SPOOL_DIR", "/var/spool/wg-requests")
+
 CELERY_BEAT_SCHEDULE = {
     "expire-subscriptions": {
         "task": "billing.tasks.subscription_tasks.enforce_subscription_expiry",

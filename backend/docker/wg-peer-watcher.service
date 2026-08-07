@@ -1,0 +1,22 @@
+[Unit]
+Description=Apply tunnel peer requests from the billing platform
+After=wg-quick@wg0.service
+Wants=wg-quick@wg0.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/wg-peer-watcher
+
+# Root is needed for `wg set` and for writing /etc/wireguard/wg0.conf, and
+# that is the entire reason this runs out here instead of in the container.
+# Everything not needed for those two things is taken away.
+ProtectSystem=strict
+ReadWritePaths=/etc/wireguard /var/spool/wg-requests
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_DAC_OVERRIDE
+
+[Install]
+WantedBy=multi-user.target

@@ -31,6 +31,27 @@ export const deleteRouter = async (id) => {
 };
 
 /**
+ * Register a router and get back the commands that finish setting it up.
+ *
+ * For hardware behind CGNAT, which is nearly all of it — the platform cannot
+ * dial a router that has no public address, so it needs a WireGuard tunnel.
+ * Setting one up by hand meant SSHing to the server for its public key,
+ * generating a keypair on the router, copying the public half back, and
+ * running a script as root, before this form could be filled in at all.
+ *
+ * This does all of that and returns one block of RouterOS commands. Paste it
+ * into WinBox, press Test connection, done.
+ *
+ * The block contains the router's private key and the API password, and is
+ * returned once — the backend stores neither. Losing it costs one more
+ * provision, not a site visit.
+ */
+export const provisionRouter = async (payload) => {
+  const res = await api.post("admin/routers/provision/", payload);
+  return res.data;
+};
+
+/**
  * Dial the router and report back before anything is saved.
  *
  * Takes either typed-in details or `{ router_id }` for one already stored —

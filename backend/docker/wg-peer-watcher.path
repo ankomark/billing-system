@@ -1,0 +1,18 @@
+[Unit]
+Description=Watch for tunnel peer requests from the billing platform
+Documentation=file:///usr/local/bin/wg-peer-watcher
+
+[Path]
+# Fires whenever the directory changes. The platform writes requests
+# atomically — a temp file, then a rename — so this never sees a half-written
+# JSON document.
+PathChanged=/var/spool/wg-requests
+
+# Requests written while this unit was stopped are picked up on start, so a
+# reboot mid-onboarding does not strand an operator with a router that has no
+# peer and no error to explain it.
+MakeDirectory=true
+DirectoryMode=0770
+
+[Install]
+WantedBy=multi-user.target

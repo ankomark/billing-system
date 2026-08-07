@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   CheckCircle2,
+  ClipboardCopy,
   Pencil,
   Plus,
   Plug,
@@ -19,6 +20,7 @@ import {
   deleteRouter,
   fetchRouters,
   fetchStations,
+  provisionRouter,
   testRouter,
   updateRouter,
 } from "../../services/routers";
@@ -290,6 +292,17 @@ function RouterForm({ router, onDone, onCancel }) {
   const [errors, setErrors] = useState({});
   const [probe, setProbe] = useState(null);
 
+  // Nearly every router these operators run is behind CGNAT — an LTE box, a
+  // shared uplink — so it has no address the platform could dial. Default to
+  // building a tunnel, and let the rare operator with a real public IP turn it
+  // off, rather than the other way round: the common case should not be the
+  // one that needs a decision.
+  const [useTunnel, setUseTunnel] = useState(!isEdit);
+
+  // The RouterOS block, once provisioned. Held only here — it carries the
+  // router's private key and the API password, and the backend keeps neither.
+  const [setup, setSetup] = useState(null);
+
   const set = (k) => (e) => {
     const v = e.target.type === "checkbox" ? e.target.checked : e.target.value;
     setForm((f) => ({ ...f, [k]: v }));
@@ -333,6 +346,38 @@ function RouterForm({ router, onDone, onCancel }) {
     onError,
   });
 
+  /**
+   * Register the router, allocate it a tunnel address, and get the script.
+   *
+   * Deliberately does not call onDone() — the operator still has to paste the
+   * result into WinBox, and closing the form would take the one copy of the
+   * private key with it.
+   */
+  const provision = useMutation({
+    mutationFn: () => {
+      const { ip_address, ...rest } = payload();
+      return provisionRouter({ ...rest, password: form.password });
+    },
+    onSuccess: (data) => {
+      setSetup(data);
+      setForm((f) => ({ ...f, ip_address: data.tunnel_ip }));
+      toast.success(`${data.router.name} registered at ${data.tunnel_ip}`);
+    },
+    onError,
+  });
+
+  const copyScript = async () => {
+    try {
+      await navigator.clipboard.writeText(setup.script);
+      toast.success("Copied — paste it into WinBox → New Terminal");
+    } catch {
+      // Clipboard access is refused in some browsers over plain http, and on
+      // a locked-down work laptop. The textarea below is selectable, so this
+      // is a nuisance rather than a dead end.
+      toast.error("Couldn't copy. Select the text and copy it by hand.");
+    }
+  };
+
   const test = useMutation({
     mutationFn: () =>
       testRouter({
@@ -355,18 +400,47 @@ function RouterForm({ router, onDone, onCancel }) {
   const err = (k) => (Array.isArray(errors[k]) ? errors[k].join(" ") : errors[k]);
   const canTest = form.ip_address.trim() && form.username.trim();
 
+  // Provisioning is for new hardware only. An existing router already has an
+  // address and, if it needed one, a peer — re-running it would allocate a
+  // second address and leave the first in the server's config for good.
+  const tunnelMode = useTunnel && !isEdit;
+  const awaitingSetup = tunnelMode && !setup;
+
   return (
     <form
       onSubmit={(e) => {
         e.preventDefault();
         setErrors({});
-        save.mutate();
+        if (awaitingSetup) provision.mutate();
+        else if (!setup) save.mutate();
+        else onDone();
       }}
       className="rounded-xl border border-white/10 bg-slate-900/80 shadow-lg shadow-black/20 p-5 space-y-4"
     >
       <h2 className="text-white font-semibold">
         {isEdit ? `Edit ${router.name}` : "Add a router"}
       </h2>
+
+      {!isEdit && (
+        <label className="flex items-start gap-2 text-sm text-slate-300 rounded-lg border border-white/10 bg-slate-950/60 px-3 py-2.5">
+          <input
+            type="checkbox"
+            checked={useTunnel}
+            onChange={(e) => setUseTunnel(e.target.checked)}
+            disabled={!!setup}
+            className="mt-0.5 rounded border-white/20 bg-slate-950"
+          />
+          <span>
+            Set up a management tunnel
+            <span className="block text-xs text-slate-500 mt-0.5">
+              For a router with no public IP address — an LTE box, a shared
+              uplink, anything behind CGNAT. We allocate its address, make its
+              keys, and give you one block to paste into WinBox. Leave this off
+              only if the router already has a public address you can reach.
+            </span>
+          </span>
+        </label>
+      )}
 
       <div className="grid sm:grid-cols-2 gap-4">
         <label className="block">
@@ -381,12 +455,20 @@ function RouterForm({ router, onDone, onCancel }) {
         </label>
 
         <label className="block">
-          <span className="text-sm font-medium text-slate-300">IP address</span>
+          <span className="text-sm font-medium text-slate-300">
+            IP address
+            {tunnelMode && (
+              <span className="text-slate-500 font-normal"> (allocated for you)</span>
+            )}
+          </span>
           <input
             value={form.ip_address}
             onChange={set("ip_address")}
-            placeholder="192.168.88.1"
-            className={inputCls(err("ip_address"))}
+            readOnly={tunnelMode}
+            placeholder={tunnelMode ? "Assigned when you register it" : "192.168.88.1"}
+            className={`${inputCls(err("ip_address"))} ${
+              tunnelMode ? "opacity-60 cursor-not-allowed" : ""
+            }`}
           />
           <FieldError text={err("ip_address")} />
         </label>
@@ -490,6 +572,43 @@ function RouterForm({ router, onDone, onCancel }) {
         In service — subscribers may be placed on this router
       </label>
 
+      {setup && (
+        <div className="rounded-lg border border-blue-500/30 bg-blue-500/10 p-4 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm font-semibold text-blue-100">
+              Paste this into WinBox → New Terminal
+            </p>
+            <button
+              type="button"
+              onClick={copyScript}
+              className="inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-3 py-1.5 text-xs font-semibold"
+            >
+              <ClipboardCopy size={13} />
+              Copy
+            </button>
+          </div>
+
+          <textarea
+            readOnly
+            value={setup.script}
+            rows={14}
+            onFocus={(e) => e.target.select()}
+            className="w-full font-mono text-[11px] leading-relaxed rounded-lg border border-white/10 bg-slate-950 text-slate-200 p-3"
+          />
+
+          <p className="text-xs text-blue-200/80">
+            Then press <strong>Test connection</strong>. It dials{" "}
+            <code className="font-mono">{setup.tunnel_ip}</code> over the tunnel
+            and tells you whether the paste took.
+          </p>
+          <p className="text-xs text-amber-300/90">
+            Shown once. This contains the router's private key and its API
+            password, and neither is stored here — copy it now, or register the
+            router again to get a new one.
+          </p>
+        </div>
+      )}
+
       {probe && (
         <div
           className={`rounded-lg px-4 py-3 text-sm border ${
@@ -514,10 +633,20 @@ function RouterForm({ router, onDone, onCancel }) {
       <div className="flex flex-wrap items-center gap-3">
         <button
           type="submit"
-          disabled={save.isPending}
+          disabled={save.isPending || provision.isPending}
           className="bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-lg px-4 py-2 text-sm font-semibold"
         >
-          {save.isPending ? "Saving…" : isEdit ? "Save changes" : "Add router"}
+          {provision.isPending
+            ? "Registering…"
+            : save.isPending
+            ? "Saving…"
+            : setup
+            ? "Done"
+            : awaitingSetup
+            ? "Register & get setup commands"
+            : isEdit
+            ? "Save changes"
+            : "Add router"}
         </button>
         <button
           type="button"
@@ -538,9 +667,9 @@ function RouterForm({ router, onDone, onCancel }) {
       </div>
 
       <p className="text-xs text-slate-500">
-        The router needs its RouterOS API service enabled and reachable from this
-        platform. Testing before you save tells you which of those is missing
-        while you can still fix it.
+        {awaitingSetup
+          ? "Nothing needs setting up on the router first — register it here and you'll get the commands that do it, tunnel included."
+          : "The router needs its RouterOS API service enabled and reachable from this platform. Testing before you save tells you which of those is missing while you can still fix it."}
       </p>
     </form>
   );

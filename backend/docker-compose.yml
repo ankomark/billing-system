@@ -22,6 +22,18 @@ x-app: &app
     # variable in there is a blank page in front of a paying customer, and this
     # suite is the only thing that would ever notice.
     - ../mikrotik-hotspot:/mikrotik-hotspot:ro
+    # Where the Routers page drops tunnel peer requests for the host to apply.
+    #
+    # This is the whole of the container's involvement in WireGuard. Adding a
+    # peer needs root and the host's network namespace; granting either to a
+    # service that answers the internet would mean an RCE in Django came with
+    # control of the server's networking, on the box holding the database.
+    # A systemd path unit out there watches this directory and does the
+    # privileged part — see docker/wg-peer-watcher.sh.
+    #
+    # Read-write, because the container writes requests. It reads only the
+    # .result files the watcher writes back, and nothing outside this path.
+    - ${WG_SPOOL_DIR:-/var/spool/wg-requests}:/var/spool/wg-requests
 
 services:
   postgres:

@@ -2549,6 +2549,120 @@ class AdminRouterListView(APIView):
         return Response(RouterSerializer(router).data, status=status.HTTP_201_CREATED)
 
 
+class AdminRouterProvisionView(APIView):
+    """
+    Register a router and hand back the commands that finish the job.
+
+    What this replaces: an admin reading the server's WireGuard key out of a
+    root-owned file over SSH, generating a keypair on the router, copying its
+    public half back, running wg-add-peer.sh, and only then filling in the form
+    here. Five context switches between a browser, a terminal and WinBox, for
+    every site an operator opens.
+
+    Now the platform picks the address, makes the keys, asks the host to add
+    the peer, and returns one block to paste into WinBox. The operator's whole
+    job is: fill this in, paste that, press Test connection.
+
+    The generated script carries the router's private key, so this returns it
+    once and stores none of it. It travels over the same TLS the API password
+    and the tenant token already use. If it is lost, provision again — a
+    replaced peer costs one paste, and nothing else references it.
+    """
+
+    permission_classes = [IsTenantAdmin]
+
+    def post(self, request):
+        from billing.services import tunnel
+        from .serializers import RouterSerializer
+
+        tenant = getattr(request.user, "tenant", None)
+        if tenant is not None:
+            blocked = tenant.plan_limit_exceeded("routers")
+            if blocked:
+                return Response({"detail": blocked},
+                                status=status.HTTP_402_PAYMENT_REQUIRED)
+
+        name = (request.data.get("name") or "").strip()
+        username = (request.data.get("username") or "").strip()
+        password = request.data.get("password") or ""
+        if not name or not username or not password:
+            return Response(
+                {"detail": "A name, an API username and an API password are needed."},
+                status=400,
+            )
+
+        try:
+            api_port = int(request.data.get("api_port") or 8728)
+        except (TypeError, ValueError):
+            return Response({"detail": "api_port must be a number."}, status=400)
+
+        payload = {
+            "name": name,
+            "username": username,
+            "password": password,
+            "api_port": api_port,
+            "priority": request.data.get("priority", 1),
+            "max_pppoe_sessions": request.data.get("max_pppoe_sessions", 0),
+            "is_active": request.data.get("is_active", True),
+        }
+        if request.data.get("station"):
+            payload["station"] = request.data["station"]
+
+        try:
+            # Allocation and creation share one transaction, so the row lock
+            # taken while picking an address is still held when the row that
+            # claims it is written. Split across two, two admins provisioning
+            # at the same moment are both handed 10.10.0.7 — and the
+            # serializer will not catch it, because it only enforces
+            # uniqueness across operators for *public* addresses. Private ones
+            # genuinely repeat: every operator has a 192.168.88.1. Tunnel
+            # addresses are the exception, and this is what keeps them unique.
+            with transaction.atomic():
+                tunnel_ip = tunnel.allocate_tunnel_ip()
+                private_key, public_key = tunnel.generate_keypair()
+                # Built before anything is saved: a platform with no tunnel
+                # configured should return an explanation, not a stored router
+                # whose address leads nowhere.
+                script = tunnel.build_router_script(
+                    tunnel_ip=tunnel_ip,
+                    private_key=private_key,
+                    api_username=username,
+                    api_password=password,
+                    api_port=api_port,
+                )
+                serializer = RouterSerializer(data={**payload, "ip_address": tunnel_ip})
+                serializer.is_valid(raise_exception=True)
+                router = serializer.save()
+        except tunnel.TunnelNotConfigured as exc:
+            # A misconfigured platform, not a misfilled form. Say which,
+            # because the operator can do nothing about the former and will
+            # otherwise spend the afternoon re-typing the latter.
+            return Response({"detail": str(exc)}, status=503)
+        except tunnel.TunnelAddressExhausted as exc:
+            return Response({"detail": str(exc)}, status=507)
+
+        # Queued last. A peer for a router that failed validation would sit in
+        # the server's wg0.conf forever with nothing referencing it.
+        try:
+            request_id = tunnel.queue_peer(name, public_key, tunnel_ip)
+        except Exception as exc:
+            logger.exception("[tunnel] could not queue peer for %s", name)
+            router.delete()
+            return Response(
+                {"detail": f"Could not reach the tunnel service: {exc}"}, status=503
+            )
+
+        return Response(
+            {
+                "router": RouterSerializer(router).data,
+                "tunnel_ip": tunnel_ip,
+                "request_id": request_id,
+                "script": script,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
 class AdminRouterTestView(APIView):
     """
     Dial a router and say whether these credentials work.
