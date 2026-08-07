@@ -16,6 +16,7 @@ So they are tested together. Fixing either alone is worse than fixing neither.
 """
 
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.test import TestCase
 from django.utils import timezone
@@ -154,11 +155,21 @@ class HotspotGrantAndRemoveTests(TestCase):
                 expiry_date=timezone.now() + timedelta(days=1))
 
     def _grant(self):
+        """
+        enable_hotspot resolves the user profile through
+        ensure_hotspot_profile, which opens its *own* connection from the
+        RouterDevice row rather than using the api it was handed. Unpatched,
+        these tests dial 10.0.0.1 and time out. The profile itself is covered
+        by the router_profiles tests; what is under test here is how many
+        devices get a user.
+        """
         from billing.router_service import _grant_hotspot
-        with tenant_context(self.tenant):
-            return _grant_hotspot(
-                self.api, self.router, self.customer, self.package,
-                self.subscription.expiry_date)
+        with patch("billing.router_service.ensure_hotspot_profile",
+                   return_value="HOTSPOT_PKG_1_D3"):
+            with tenant_context(self.tenant):
+                return _grant_hotspot(
+                    self.api, self.router, self.customer, self.package,
+                    self.subscription.expiry_date)
 
     def test_a_three_device_package_provisions_three_devices(self):
         granted = self._grant()
