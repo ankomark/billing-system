@@ -25,19 +25,20 @@ Substitute throughout: **`bridgeLocal`** (read the real name off
 
 ### 1. Look before you touch
 
-| Command | What it tells you |
-|---|---|
-| `/system/resource/print` | version and board — device-mode needs 7.13+, WireGuard needs 7 |
-| `/system/device-mode/print` | whether `hotspot` and `proxy` are permitted |
-| `/interface/print` | what exists, and what is disabled (`X`) |
-| `/interface/bridge/print` | **the bridge's real name** |
-| `/interface/bridge/port/print` | which ports are bridged — `ether1` here means it is a switch, not a router |
-| `/ip/address/print` | what addresses it holds, and on which interface |
-| `/ip/dhcp-client/print` | where its WAN address comes from |
-| `/ip/route/print` | one default route, no `+` (ECMP) flags |
-| `/ip/firewall/nat/print` | empty = not doing NAT |
-| `/ip/firewall/filter/print` | empty = no input protection at all |
-| `/ping 8.8.8.8 count=3` | whether the router itself is online |
+| Command | Expect | If it is not that |
+|---|---|---|
+| `/system/resource/print` | `version: 7.13` or newer | On 6.x nothing below works — device-mode and WireGuard both need 7. Upgrade first |
+| `/system/device-mode/print` | `hotspot: yes`, `proxy: yes` | Either `no` → **stage 4** |
+| `/interface/bridge/print` | one bridge — **write the name down** | `bridgeLocal` on an RB951. Use whatever it says everywhere below |
+| `/interface/print` | `wlan1` present, no `X` | `X`, or `;;; managed by CAPsMAN` → **stage 5** |
+| `/interface/bridge/port/print` | ether2–5 and `wlan1`, **not `ether1`** | `ether1` listed → it is a switch, not a router → **stage 2** |
+| `/ip/address/print` | one on the bridge, one on `ether1` | Same address on **two** interfaces → the old DHCP client is still running → `/ip/dhcp-client/remove [find interface=bridgeLocal]` |
+| `/ip/dhcp-client/print` | on `ether1`, `status: bound` | On the *bridge* → **stage 2**. `searching` forever → power-cycle the modem; some ISPs bind to the first MAC they see |
+| `/ip/route/print` | exactly one `0.0.0.0/0`, **no `+`** | `+` flags = two default routes, one dead → remove the stale DHCP client as above |
+| `/ip/firewall/nat/print` | a `masquerade` with `out-interface-list=WAN` | Empty → nothing is being translated → the NAT line in **stage 2** |
+| `/ip/firewall/filter/print` | seven rules | Empty → no input protection at all → **stage 3** |
+| `/ping 8.8.8.8 count=3` | `0% packet loss` | 100% → the router has no WAN; fix that before anything else. ~66% with an odd `host unreachable` from its own address → two default routes again |
+| `/system/clock/print` | today's date and time | Wrong → **stage 4**. Session expiry is decided by this clock |
 
 ### 2. Make it a router — only if `ether1` was in the bridge
 
@@ -60,6 +61,20 @@ order matters.
 /ip/dhcp-client/remove [find interface=bridgeLocal]
 ```
 
+Your session dies on that last line. Renew on the laptop
+(`ipconfig /release && ipconfig /renew`) and reconnect to **`192.168.88.1`**,
+not the MAC.
+
+| Check | Expect | If it is not that |
+|---|---|---|
+| `/ip/route/print` | one `0.0.0.0/0` via ether1, no `+` | Two, with `+` → the last line did not run → run it now |
+| `/ip/address/print` | `192.168.88.1/24` on the bridge, a dynamic one on `ether1` | Same address twice → same cause, same fix |
+| `/ping 8.8.8.8 count=5` | `0% packet loss` | ~66% → still two routes. 100% → check `/ip/dhcp-client/print` is `bound` |
+| laptop `ipconfig` | gateway `192.168.88.1` | Still `192.168.8.1` → it is answering the upstream, not this router → release/renew again |
+
+If you lose the session before the last line, nothing is broken — the router
+still holds its old address and you can reconnect there and carry on.
+
 ### 3. Base firewall — only if the filter table was empty
 
 Check `/interface/list/member/print` shows the bridge in `LAN` first, or the
@@ -76,6 +91,12 @@ accounting and every customer then looks like they used nothing.
 /ip/firewall/filter/add chain=forward action=drop connection-state=new connection-nat-state=!dstnat in-interface-list=WAN
 ```
 
+| Check | Expect | If it is not that |
+|---|---|---|
+| `/ip/firewall/filter/print where !dynamic` | seven rules, accepts above drops | Out of order → `/ip/firewall/filter/move <from> <to>`; RouterOS appends, so a re-paste lands at the bottom |
+| `ping 192.168.88.1` from the laptop | replies | Silence → the `!LAN` rule locked you out → reconnect **WinBox by MAC** (IP rules do not apply to it) and `/ip/firewall/filter/remove [find comment=""] ` or add the bridge to `LAN` |
+| `ping 8.8.8.8` from the laptop | replies | Silence → the forward rules are wrong; `/ip/firewall/filter/print` and check the two `accept established` lines are above their drops |
+
 ### 4. Device mode and the clock
 
 `hotspot` is already `yes` on a `home` board; `proxy` is not, and the hostname
@@ -88,6 +109,12 @@ something** — a software reboot does not count.
 /system/clock/set time-zone-name=Africa/Nairobi
 /system/ntp/client/print
 ```
+
+| Check | Expect | If it is not that |
+|---|---|---|
+| `/system/device-mode/print` | `hotspot: yes`, `proxy: yes` | Still `no` → the five-minute window lapsed. Run the update again and pull the power faster. A software reboot never counts |
+| `/system/ntp/client/print` | `status: synchronized` | `using-servers` or blank → the WAN is not up yet, or UDP 123 is blocked upstream. Re-check after a minute |
+| `/system/clock/print` | matches your phone | Hours out → wrong `time-zone-name`; tab-complete it |
 
 ### 5. The radio
 
@@ -103,8 +130,25 @@ first or nothing sticks.
 /interface/wireless/monitor wlan1 once
 ```
 
+| Check | Expect | If it is not that |
+|---|---|---|
+| `/interface/wireless/print` | no `;;; managed by CAPsMAN`, no `X` | Comment still there → `/interface/wireless/cap/set enabled=no` did not take; check `/caps-man/manager/print` too |
+| `/interface/wireless/monitor wlan1 once` | `status: running-ap` | `disabled` → the `disabled=no` did not apply. Anything else → try `country=no_country_set` to test whether the regulatory profile is refusing your channel, then put the country back with `frequency=2412` |
+| `/interface/wireless/print` | `mode=ap-bridge`, your SSID | `mode=station` → it is hunting for someone else's network, not serving one |
+| `/interface/bridge/port/print` | `wlan1` listed, no `I` | Missing → `/interface/bridge/port/add bridge=bridgeLocal interface=wlan1` |
+
 **Stop here and join it from a phone.** It should get a `192.168.88.x` lease
-and browse, with no portal.
+and browse, with **no portal**.
+
+| Check | Expect | If it is not that |
+|---|---|---|
+| `/interface/wireless/registration-table/print` | the phone | Absent → it never associated; wrong SSID, or the radio is not running |
+| `/ip/dhcp-server/lease/print` | a `192.168.88.x` for it | Absent → the DHCP server is not on this bridge → re-check stage 2 |
+| browsing on the phone | works | Lease but no internet → NAT or the forward rules → stages 2 and 3 |
+
+Do not go on until a phone reaches the internet over WiFi. Once the hotspot
+exists, a phone that cannot get online is ambiguous between a radio fault and a
+portal fault, and you will look in the wrong place.
 
 ### 6. The hotspot
 
@@ -118,10 +162,20 @@ Answer `bridgeLocal`, certificate `none`, dns `8.8.8.8,1.1.1.1`, dns name
 past the portal:
 
 ```
-/ip/dhcp-server/print
-/ip/hotspot/print
 /ip/hotspot/ip-binding/add mac-address=AA:BB:CC:DD:EE:FF type=bypassed comment="admin laptop"
+/ip/hotspot/print
+/ip/dhcp-server/print
+/ip/pool/print
+/ip/hotspot/profile/print
 ```
+
+| Check | Expect | If it is not that |
+|---|---|---|
+| `/ip/hotspot/print` | one server, **no `I` flag** | `I` = *inactivated, not allowed by device-mode* → **stage 4**, and everything downstream is doing nothing |
+| `/ip/dhcp-server/print` | **one** server on the bridge | Two → setup made its own → `/ip/dhcp-server/remove <the new one>`. Two on one segment hand out conflicting leases |
+| `/ip/pool/print` | one pool | Two → remove the one no server references |
+| `/ip/hotspot/profile/print` | `dns-name="login.hotspot"` | Anything else → `/ip/hotspot/profile/set hsprof1 dns-name=login.hotspot`. It must match `^https?://([\w-]+\.)?hotspot(:\d+)?$` or every API call is refused by the browser while your server logs clean 200s |
+| `/ip/hotspot/profile/print` | `hotspot-address=192.168.88.1` | Wrong → you answered the interface prompt with the wrong bridge; `/ip/hotspot/remove [find]` and run setup again |
 
 ### 7. Walled garden — both rules
 
@@ -129,7 +183,14 @@ past the portal:
 /ip/hotspot/walled-garden/add dst-host=api.example.com comment="Billing API"
 /ip/hotspot/walled-garden/ip/add dst-address=SERVER_IP action=accept comment="Billing API direct"
 /ip/hotspot/walled-garden/print
+/ip/hotspot/walled-garden/ip/print
 ```
+
+| Check | Expect | If it is not that |
+|---|---|---|
+| `/ip/hotspot/walled-garden/print` | the host rule, **no `inactivated` comment** | `;;; inactivated, not allowed by device-mode` → `proxy` is off → **stage 4**. The host rules run through the router's HTTP proxy |
+| `/ip/hotspot/walled-garden/ip/print` | **one** entry for your server | Two identical → you ran it twice → `/ip/hotspot/walled-garden/ip/remove 1` |
+| `HITS` after a phone loads the portal | non-zero | Still `0` → nothing matched; the portal cannot reach your API at all. Check `API_BASE` in `config.js` and that `api` is grey-clouded — behind Cloudflare the address rule stops matching |
 
 ### 8. Portal files
 
@@ -138,18 +199,49 @@ Dropped at the root they are never served.
 
 ```
 /file/print where name~"hotspot/"
-/ip/hotspot/profile/print
 ```
 
-`login.html` ≈33 KB and `md5.js` ≈8.8 KB are yours; ~4 KB and 7 KB are
-MikroTik's. Leave `login-by=cookie,http-chap`.
+| Check | Expect | If it is not that |
+|---|---|---|
+| `/file/print where name~"hotspot/"` | your seven, all under `hotspot/` | Named `config.js` not `hotspot/config.js` → they landed at the root and are never served → drag them **into** the folder |
+| the sizes | `login.html` ≈33 KB, `md5.js` ≈8.8 KB | ~4 KB and ~7 KB are MikroTik's own — yours did not overwrite them, or `reset-html` has been run since |
+| the phone | **your** portal, operator's name, packages listed | Stock MikroTik page → files at the root, or a cached page; forget the network and rejoin |
+| | | Portal but **no packages** → the walled garden → **stage 7**, and check `HITS` |
+| | | Portal but no business name → the token is wrong; check `TENANT_TOKEN` against Settings → Captive portal setup |
+
+Leave `login-by=cookie,http-chap`. To *prove* the CHAP maths, strip both
+fallbacks first — `cookie` lets later attempts replay the first, and adding
+`http-pap` lets a broken hash succeed in plaintext:
+
+```
+/ip/hotspot/profile/set hsprof1 login-by=http-chap
+/log/print follow where topics~"hotspot"
+/ip/hotspot/active/remove [find mac-address="THE-PHONE-MAC"]
+```
+
+Expect `trying to log in by http-chap` then `logged in`, four times with a
+fresh voucher each. `invalid username or password` every time → the portal
+files are MikroTik's, not yours. Then put it back to `cookie,http-chap`.
 
 ### 9. Tunnel and API access
 
 **Nothing to type.** Operator dashboard → **Routers → Add router**, leave *Set
 up a management tunnel* ticked, and paste the block it gives you. It builds the
-tunnel, enables the API, creates the user and adds the firewall rule. Then
-press **Test connection**. See §9.6.
+tunnel, enables the API, creates the user, adds the firewall rule and turns on
+NTP. Then press **Test connection**. See §9.6.
+
+The three failures it can report mean different things, and only one of them is
+the password:
+
+| Test connection says | It means | Run this |
+|---|---|---|
+| **timed out** | nothing at that address — the paste did not happen, or the tunnel is down | `/ping 10.10.0.1 count=3` on the router. No reply → `/interface/wireguard/peers/print` and check `endpoint-address` resolves and `persistent-keepalive=25s` is set |
+| **connection refused** | reachable, but the API is off or on another port | `/ip/service/print where name=api` — expect `disabled: no`, `port: 8728`, `address: 10.10.0.1/32` |
+| **invalid user name or password** | everything works except the credential | `/user/print detail where name=<yours>` — expect `group=full`, `address=10.10.0.1/32`. RouterOS never shows a password back, so set a new one and paste it into both sides from the same clipboard |
+
+Ping working but Test connection timing out is the firewall: the accept rule
+must sit **above** the `!LAN` drop, and the hotspot's dynamic rules shift every
+index — check with `/ip/firewall/filter/print where !dynamic`.
 
 ### 10. Prove it
 
@@ -158,9 +250,24 @@ press **Test connection**. See §9.6.
 /log/print follow where topics~"hotspot"
 ```
 
-From a phone that is *not* bypassed: portal appears with the operator's name,
-packages listed, a voucher connects it, and WiFi off/on reconnects without
-re-entering the code.
+From a phone that is *not* bypassed:
+
+| Step | Expect | If it is not that |
+|---|---|---|
+| open any `http://` site | your portal, operator's business name | see **stage 8** |
+| packages listed | prices and support numbers | walled garden → **stage 7** |
+| redeem a voucher | `logged in` in the log, phone online | `invalid username or password` → CHAP; **stage 8** |
+| WiFi off and on | reconnects without re-entering the code | asks again → `login-by` lost its `cookie` |
+| dashboard | router shows **online** within 2 minutes | still offline → **stage 9** |
+
+Watching the server at the same time removes all ambiguity:
+
+```bash
+docker compose logs web --since 5m | grep hotspot
+```
+
+Nothing at all → walled garden. Requests arriving with 4xx → token or tenant.
+500 → read the traceback; it is logged now.
 
 ---
 
