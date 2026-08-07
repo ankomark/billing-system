@@ -13,6 +13,13 @@ ALL_SETTING_KEYS = [
     "MPESA_CONSUMER_KEY",
     "MPESA_CONSUMER_SECRET",
     "MPESA_SHORTCODE",
+    # Whether that number is a PayBill or a Buy Goods till, and the store
+    # number that goes with a till. Omitted from this list, a change to either
+    # is not purged and the old value is served until the TTL expires — so an
+    # operator correcting the mistake that stopped their customers paying
+    # would appear not to have fixed it.
+    "MPESA_SHORTCODE_TYPE",
+    "MPESA_STORE_NUMBER",
     "MPESA_PASSKEY",
     "MPESA_CALLBACK_URL",
     "MPESA_ENV",
