@@ -1180,6 +1180,18 @@ class Invoice(TenantScopedModel):
     )
     created_at = models.DateTimeField(auto_now_add=True)
 
+    # What Safaricom called the push we sent for this invoice.
+    #
+    # It is the only thing tying a *failed* callback back to us. The account
+    # reference identifies a successful one, but Safaricom omits the whole
+    # CallbackMetadata block when ResultCode is not 0 — so a push that failed
+    # arrives carrying nothing about the invoice, and cannot be told apart
+    # from a stranger posting at the endpoint. Recorded when the push is
+    # accepted; see MpesaSTKCallbackView.
+    mpesa_checkout_request_id = models.CharField(
+        max_length=100, blank=True, null=True, db_index=True
+    )
+
     class Meta:
         indexes = [
             models.Index(fields=["tenant", "payment_status"], name="invoice_tenant_status_idx"),

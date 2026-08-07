@@ -613,12 +613,27 @@ MPESA_ENV = os.getenv("MPESA_ENV", "sandbox")
 # public token so the callback loads the right operator's credentials.
 PLATFORM_BASE_URL = os.getenv("PLATFORM_BASE_URL", "")
 
+# Safaricom's callback sources. A fast path, not a gate — see
+# MpesaSTKCallbackView, which accepts an unlisted address when the callback
+# correlates to a push this platform sent. That matters because this list is
+# never reliably complete: 196.201.212.69 posted a real result on the first
+# live payment and was not here, and Safaricom publishes more than it
+# documents in any one place.
+#
+# Add addresses as the log reports them, so the fast path keeps doing its job.
 MPESA_TRUSTED_IPS = [
     "196.201.214.200",
     "196.201.214.206",
     "196.201.213.114",
     "196.201.214.207",
     "196.201.214.208",
+    "196.201.212.127",
+    "196.201.212.138",
+    "196.201.212.129",
+    "196.201.212.136",
+    "196.201.212.74",
+    "196.201.212.69",
+    "196.201.213.44",
 ]
 
 MPESA_ALLOW_LOCAL_CALLBACK = os.getenv("MPESA_ALLOW_LOCAL_CALLBACK", "False") == "True"

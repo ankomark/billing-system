@@ -17,6 +17,7 @@ Add any new task module to this list.
 from .alert_tasks import notify_admin_task
 from .auto_failover import migrate_single_customer_task, run_auto_failover_task
 from .mpesa_tasks import initiate_stk_push_task
+from .provisioning import ensure_customer_access_task
 from .platform_billing_tasks import (
     generate_tenant_invoices,
     mark_overdue_tenants,
@@ -53,6 +54,7 @@ __all__ = [
     "migrate_single_customer_task",
     "run_auto_failover_task",
     "initiate_stk_push_task",
+    "ensure_customer_access_task",
     "dispatch_broadcast_task",
     "notify_customer_task",
     "send_sms_task",

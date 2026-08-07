@@ -632,9 +632,22 @@ class MpesaSTKCallbackView(APIView):
                 if item.get("Name") == "AccountReference":
                     claimed_ref = item.get("Value")
                     break
-            correlates = bool(claimed_ref) and Invoice.objects.all_tenants().filter(
-                invoice_number=claimed_ref
-            ).exists()
+
+            # CheckoutRequestID first, because it is the only one a *failed*
+            # push carries. Safaricom omits CallbackMetadata entirely unless
+            # ResultCode is 0, so correlating on the account reference alone
+            # left exactly the failure case unattributable — seen live on the
+            # first real attempt: ResultCode 2029 from an unlisted address,
+            # refused, and the invoice left pending with nothing to explain it.
+            correlates = False
+            if checkout_id:
+                correlates = Invoice.objects.all_tenants().filter(
+                    mpesa_checkout_request_id=checkout_id
+                ).exists()
+            if not correlates and claimed_ref:
+                correlates = Invoice.objects.all_tenants().filter(
+                    invoice_number=claimed_ref
+                ).exists()
 
             if tenant is not None and correlates:
                 # Accepted on evidence, and said out loud: an operator seeing
@@ -654,10 +667,11 @@ class MpesaSTKCallbackView(APIView):
                 logger.warning(
                     "[mpesa] Callback REFUSED from %s — token=%s, "
                     "CheckoutRequestID=%s, correlates=%s, MerchantRequestID=%s, "
-                    "ResultCode=%s. If this was Safaricom, a paying customer "
-                    "has just been charged and not connected.",
+                    "ResultCode=%s, ResultDesc=%r. If this was Safaricom, a "
+                    "paying customer has just been charged and not connected.",
                     source_ip, "valid" if tenant else "missing/invalid",
                     checkout_id, correlates, merchant_id, result_code,
+                    result_desc,
                 )
                 return Response(
                     {"detail": "Unauthorized callback source"},

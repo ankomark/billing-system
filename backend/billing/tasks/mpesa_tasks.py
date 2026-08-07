@@ -68,5 +68,19 @@ def initiate_stk_push_task(self, invoice_id: int, phone_number: str) -> dict:
         # Not retryable — waiting on a human, not a transient failure.
         return {"success": False, "error": str(exc)}
 
-    logger.info(f"[stk_task] STK sent for invoice {invoice.invoice_number}")
+    # Recorded before anything else can happen, because the callback may
+    # arrive before this function has finished returning. Without it a failed
+    # push comes back carrying no reference to the invoice — Safaricom omits
+    # CallbackMetadata entirely unless ResultCode is 0 — and the result is
+    # unattributable.
+    checkout_id = (response or {}).get("CheckoutRequestID")
+    if checkout_id:
+        Invoice.objects.all_tenants().filter(id=invoice_id).update(
+            mpesa_checkout_request_id=checkout_id
+        )
+
+    logger.info(
+        "[stk_task] STK sent for invoice %s (CheckoutRequestID %s)",
+        invoice.invoice_number, checkout_id or "none returned",
+    )
     return response
