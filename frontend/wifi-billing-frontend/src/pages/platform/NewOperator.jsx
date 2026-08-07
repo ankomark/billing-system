@@ -32,6 +32,8 @@ export default function NewOperator() {
     mpesa_consumer_key: "",
     mpesa_consumer_secret: "",
     mpesa_shortcode: "",
+    mpesa_shortcode_type: "paybill",
+    mpesa_store_number: "",
     mpesa_passkey: "",
   });
   // Field-level errors as returned by the serializer, keyed by field name.
@@ -218,10 +220,33 @@ export default function NewOperator() {
               <option value="production">Production — real money</option>
             </select>
           </Field>
+          {/* Asked here because the number does not say which it is, and
+              nothing the platform can see reveals the answer later. A till
+              pushed as a PayBill is accepted by Safaricom and then fails with
+              a code that names nothing, having sent no prompt. */}
+          <Field label="How they get paid" error={errors.mpesa_shortcode_type}>
+            <select value={form.mpesa_shortcode_type}
+                    onChange={set("mpesa_shortcode_type")}
+                    className={input(errors.mpesa_shortcode_type)}>
+              <option value="paybill">PayBill</option>
+              <option value="till">Buy Goods (till)</option>
+            </select>
+          </Field>
+
           <Field label="Shortcode / till" hint="e.g. 600000" error={errors.mpesa_shortcode}>
             <input value={form.mpesa_shortcode} onChange={set("mpesa_shortcode")}
                    className={input(errors.mpesa_shortcode)} />
           </Field>
+
+          {form.mpesa_shortcode_type === "till" && (
+            <Field label="Store number"
+                   hint="Buy Goods only — leave blank if it is the same as the till"
+                   error={errors.mpesa_store_number}>
+              <input value={form.mpesa_store_number}
+                     onChange={set("mpesa_store_number")}
+                     className={input(errors.mpesa_store_number)} />
+            </Field>
+          )}
           <Field label="Consumer key" error={errors.mpesa_consumer_key}>
             <input value={form.mpesa_consumer_key} onChange={set("mpesa_consumer_key")}
                    autoComplete="off" className={input(errors.mpesa_consumer_key)} />

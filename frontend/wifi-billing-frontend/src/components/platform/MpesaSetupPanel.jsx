@@ -26,6 +26,12 @@ const FIELDS = [
   { key: "MPESA_CONSUMER_KEY", label: "Consumer key" },
   { key: "MPESA_CONSUMER_SECRET", label: "Consumer secret", secret: true },
   { key: "MPESA_SHORTCODE", label: "Shortcode / till", hint: "e.g. 600000" },
+  {
+    key: "MPESA_STORE_NUMBER",
+    label: "Store number",
+    hint: "Buy Goods only — blank means same as the till",
+    tillOnly: true,
+  },
   { key: "MPESA_PASSKEY", label: "Passkey", secret: true },
 ];
 
@@ -46,6 +52,10 @@ export default function MpesaSetupPanel({ operatorId, canEdit }) {
         MPESA_CONSUMER_KEY: data.MPESA_CONSUMER_KEY || "",
         MPESA_CONSUMER_SECRET: data.MPESA_CONSUMER_SECRET || "",
         MPESA_SHORTCODE: data.MPESA_SHORTCODE || "",
+        // PayBill unless told otherwise, matching the backend default, so an
+        // operator set up before this existed reads back as what they are.
+        MPESA_SHORTCODE_TYPE: data.MPESA_SHORTCODE_TYPE || "paybill",
+        MPESA_STORE_NUMBER: data.MPESA_STORE_NUMBER || "",
         MPESA_PASSKEY: data.MPESA_PASSKEY || "",
       });
     }
@@ -167,7 +177,34 @@ export default function MpesaSetupPanel({ operatorId, canEdit }) {
             </select>
           </label>
 
-          {FIELDS.map((f) => (
+          <label className="block">
+            <span className="text-sm font-medium text-slate-300">
+              How they get paid
+            </span>
+            <select
+              value={form.MPESA_SHORTCODE_TYPE || "paybill"}
+              onChange={(e) =>
+                setForm({ ...form, MPESA_SHORTCODE_TYPE: e.target.value })
+              }
+              disabled={!canEdit}
+              className={inputCls}
+            >
+              <option value="paybill">PayBill</option>
+              <option value="till">Buy Goods (till)</option>
+            </select>
+            <span className="mt-1 block text-xs text-slate-500">
+              The number alone does not say which. Get this wrong and Safaricom
+              accepts the push, sends no prompt, and reports a code that names
+              nothing.
+            </span>
+          </label>
+
+          {/* Store number is meaningless for a PayBill, so it is not offered
+              there — an empty box inviting a value that would be ignored is
+              worse than no box. */}
+          {FIELDS.filter(
+            (f) => !f.tillOnly || form.MPESA_SHORTCODE_TYPE === "till"
+          ).map((f) => (
             <label key={f.key} className="block">
               <span className="text-sm font-medium text-slate-300">{f.label}</span>
               <input

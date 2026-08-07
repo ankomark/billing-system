@@ -4856,6 +4856,12 @@ class OperatorMpesaSetupView(APIView):
         "MPESA_CONSUMER_KEY",
         "MPESA_CONSUMER_SECRET",
         "MPESA_SHORTCODE",
+        # Whether that number is a PayBill or a Buy Goods till, and the store
+        # number a till is paired with. Absent from this list the page cannot
+        # write them, which is a whole product an operator cannot be onboarded
+        # for — and the failure is a customer getting no prompt.
+        "MPESA_SHORTCODE_TYPE",
+        "MPESA_STORE_NUMBER",
         "MPESA_PASSKEY",
         "MPESA_CALLBACK_URL",
     ]
