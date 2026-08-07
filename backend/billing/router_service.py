@@ -182,12 +182,66 @@ def enable_customer_access(customer):
         enable_pppoe(api, router, customer.pppoe_username, package)
 
     elif customer.connection_type == "hotspot":
-        enable_hotspot(api, router, customer.hotspot_username, package, subscription.expiry_date)
+        _grant_hotspot(api, router, customer, package, subscription.expiry_date)
 
     return True
 
 
+def hotspot_macs_for(customer, *, include_blocked=True):
+    """
+    Every device address belonging to this customer.
+
+    `customer.hotspot_username` holds the *first* device only. Once packages
+    grew a `max_devices`, the rest went into CustomerDevice rows, and this one
+    field stopped describing a customer's access — it describes one phone out
+    of however many they bought.
+
+    `include_blocked` is the difference between the two callers. Granting
+    access must skip a blocked device, or blocking it would achieve nothing.
+    Removing access must not: blocking is refused at redemption and never
+    reaches the router, so a device blocked while already connected keeps its
+    session until the uptime limit fires unless something takes it off.
+    """
+    from .models import CustomerDevice
+
+    devices = (
+        CustomerDevice.objects.all_tenants()
+        .filter(tenant_id=customer.tenant_id, customer=customer)
+    )
+    if not include_blocked:
+        devices = devices.filter(blocked=False)
+
+    macs = []
+    seen = set()
+    for mac in [
+        *devices.values_list("mac_address", flat=True),
+        # Last, and only if not already accounted for: subscribers bound before
+        # the device table existed have this and no device row.
+        (customer.hotspot_username or "").strip(),
+    ]:
+        mac = (mac or "").strip()
+        key = mac.upper()
+        if mac and key not in seen:
+            seen.add(key)
+            macs.append(mac)
+    return macs
+
+
 def disable_customer_access(customer):
+    """
+    Take a customer off the network — all of them, not one of them.
+
+    This disabled `customer.hotspot_username` alone, which is the first device
+    and nothing else — the mirror of enable_customer_access only granting to
+    that one. Fixing the grant without fixing this would have been worse than
+    leaving both: devices two and three would have been provisioned at
+    redemption and then never removed at expiry, which is not a stale row, it
+    is unmetered internet.
+
+    Every device is attempted even if one fails. A router that rejects one
+    removal must not leave the rest connected — that turns a partial failure
+    into free access, silently.
+    """
     if not customer.router:
         return
 
@@ -197,8 +251,47 @@ def disable_customer_access(customer):
 
     if customer.connection_type == "pppoe":
         disable_pppoe(api, customer.pppoe_username)
-    elif customer.connection_type == "hotspot":
-        disable_hotspot(api, customer.hotspot_username)
+        return
+
+    if customer.connection_type == "hotspot":
+        failed = []
+        for mac in hotspot_macs_for(customer):
+            try:
+                disable_hotspot(api, mac)
+            except Exception as exc:
+                failed.append(mac)
+                logger.warning(
+                    "[hotspot] could not disable %s for customer %s: %s",
+                    mac, customer.pk, exc,
+                )
+        if failed:
+            # Raised so the caller's retry sees it. disable_customer_task marks
+            # the router offline and re-raises, which is what gets this looked
+            # at rather than left in a log nobody reads.
+            raise RuntimeError(
+                f"could not disable {len(failed)} device(s) for customer "
+                f"{customer.pk}: {', '.join(failed)}"
+            )
+
+
+def _grant_hotspot(api, router, customer, package, expiry_date):
+    """
+    Put every one of a customer's devices onto the router.
+
+    enable_hotspot creates a user named for one MAC, and all three callers
+    passed `customer.hotspot_username` — the first device. So a package sold as
+    good for three phones provisioned exactly one: the other two got a
+    CustomerDevice row, counted against the limit, were told they were
+    accepted, and had no account on the hardware to log in with.
+
+    Returns how many were granted, so a caller can tell "provisioned nothing"
+    from "provisioned everything".
+    """
+    granted = 0
+    for mac in hotspot_macs_for(customer, include_blocked=False):
+        enable_hotspot(api, router, mac, package, expiry_date)
+        granted += 1
+    return granted
 def get_pppoe_live_usage(router, username):
     """
     Fetch live PPPoE session stats from MikroTik
@@ -452,7 +545,7 @@ def provision_customer_on_router(api, router, customer, subscription):
         enable_pppoe(api, router, customer.pppoe_username, package)
 
     elif customer.connection_type == "hotspot":
-        enable_hotspot(api, router, customer.hotspot_username, package, subscription.expiry_date)
+        _grant_hotspot(api, router, customer, package, subscription.expiry_date)
 
     return True
 
@@ -542,13 +635,8 @@ def migrate_customer_router(customer, reason="manual_migration"):
         enable_pppoe(new_api, new_router, customer.pppoe_username, package)
 
     elif customer.connection_type == "hotspot":
-        enable_hotspot(
-            new_api,
-            new_router,
-            customer.hotspot_username,
-            package,
-            subscription.expiry_date,
-        )
+        _grant_hotspot(
+            new_api, new_router, customer, package, subscription.expiry_date)
 
     else:
         return False, "Unsupported connection type"

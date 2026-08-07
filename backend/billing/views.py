@@ -26,7 +26,7 @@ from .security import (
     poll_token_for,
     poll_token_matches,
 )
-from billing.services.voucher_service import validate_voucher
+from billing.services.voucher_service import mark_voucher_used, validate_voucher
 from billing.router_service import enable_customer_access
 from .mpesa_client import initiate_stk_push
 from billing.models import Customer,Subscription,PPPoEUsageRecord
@@ -1112,6 +1112,11 @@ class HotspotVoucherValidateView(APIView):
                 customer.hotspot_username = mac_address
             customer.status = "active"
             customer.save(update_fields=["hotspot_username", "status"])
+
+            # When this code was first redeemed, and by what. Inside the
+            # transaction that binds the device, so the record cannot claim a
+            # use that was then rolled back.
+            mark_voucher_used(subscription, mac_address)
 
         enable_customer_access(customer)
 

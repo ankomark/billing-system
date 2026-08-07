@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from typing import List, Optional
 
@@ -7,6 +8,8 @@ from django.utils import timezone
 from django.db import transaction
 
 from billing.models import Voucher, Payment, Subscription
+
+logger = logging.getLogger(__name__)
 
 
 # If your Subscription has a "revoked" or "cancelled" state, block it here.
@@ -141,10 +144,22 @@ def _subscription_is_valid_for_access(sub: Subscription) -> bool:
 
 def _mac_allowed(sub: Subscription, mac_address: Optional[str]) -> bool:
     """
-    MAC rebind protection:
-    - If mac_address is given and customer.hotspot_username is already set,
-      it must match.
-    - If hotspot_username is empty, allow (caller can bind after validation).
+    Whether this device may use this subscription at all.
+
+    Not the device *limit* — that lives in the redemption view, which can tell
+    a customer how many devices they have used and how many they bought. This
+    is the cruder question of whether the address is already known to belong to
+    this subscriber, and it exists for callers that have no better answer.
+
+    The hotspot redemption endpoint deliberately does not pass a MAC here, and
+    should not start: refusing there returns "Invalid or expired voucher",
+    which is a lie to somebody whose second phone is perfectly entitled to
+    connect. It calls this with the code alone and does the device accounting
+    itself.
+
+    It used to compare against `customer.hotspot_username` only — the *first*
+    device. Any second device on a multi-device package was therefore refused
+    outright, so the moment a caller did pass a MAC, `max_devices` became 1.
     """
     if not mac_address:
         return True
@@ -153,14 +168,60 @@ def _mac_allowed(sub: Subscription, mac_address: Optional[str]) -> bool:
     if not customer:
         return False
 
-    existing = (customer.hotspot_username or "").strip()
+    from billing.models import CustomerDevice
+
     incoming = mac_address.strip()
+    if not incoming:
+        return True
 
-    # If already bound, must match
-    if existing and existing != incoming:
-        return False
+    known = set()
+    legacy = (customer.hotspot_username or "").strip()
+    if legacy:
+        known.add(legacy.upper())
+    known.update(
+        m.strip().upper()
+        for m in CustomerDevice.objects.all_tenants()
+        .filter(tenant_id=customer.tenant_id, customer=customer, blocked=False)
+        .values_list("mac_address", flat=True)
+        if m
+    )
 
-    return True
+    # Nothing bound yet: the caller binds after validating.
+    if not known:
+        return True
+
+    return incoming.upper() in known
+
+
+def mark_voucher_used(subscription, mac_address: Optional[str] = None) -> None:
+    """
+    Stamp when a code was first redeemed, and by what.
+
+    `Voucher.bound_mac` says "MAC address bound on first use" in its own
+    help_text and `first_used_at` is named for the same event. Neither was ever
+    written — they have been null on every row since the model was added. An
+    operator asking "when was this code first used, and by whom" had the
+    columns for it in the admin and nothing in them.
+
+    Only the first use is recorded; a later device on a multi-device package
+    does not overwrite it. Failure is swallowed on purpose — this is a record,
+    and losing it must not cost a paying customer the connection they just
+    redeemed a working code for.
+    """
+    try:
+        stamped = timezone.now()
+        for voucher in Voucher.objects.all_tenants().filter(
+            subscription=subscription, first_used_at__isnull=True
+        ):
+            voucher.first_used_at = stamped
+            if mac_address and not (voucher.bound_mac or "").strip():
+                voucher.bound_mac = mac_address.strip()
+            voucher.save(update_fields=["first_used_at", "bound_mac"])
+    except Exception:
+        logger.exception(
+            "[voucher] could not record first use for subscription %s",
+            getattr(subscription, "pk", subscription),
+        )
 
 
 def validate_voucher(
