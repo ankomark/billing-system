@@ -680,12 +680,29 @@
                   if (ok && ok.device_token) { saveDeviceToken(MAC, ok.device_token); }
                   waitDone(t('wait.connected'), logIn);
                 },
-                function () {
-                  // Paid, but binding failed. Their code is real and the box
-                  // above takes it, so say that rather than leaving them with
-                  // a receipt and no instruction.
+                function (detail, code) {
+                  // Paid, but binding failed.
+                  //
+                  // This used to say "enter the code in the box at the top"
+                  // whatever went wrong. The box calls this same endpoint with
+                  // this same code and this same MAC, so when the refusal was
+                  // a device limit it failed identically — a customer who had
+                  // just paid was told to retry the one thing that could not
+                  // work, and did, and was refused again.
+                  //
+                  // 409 means the account or the device is the problem and
+                  // nothing the customer types will change it. Anything else
+                  // is transient, and the box is a fair suggestion.
                   waitHide();
-                  setStatus(status, 'Paid. Enter ' + data.voucher_code + ' in the box at the top.', 'ok');
+                  if (code === 409) {
+                    setStatus(status,
+                      (detail || 'This code is already in use on another device.') +
+                      ' Your code is ' + data.voucher_code +
+                      '. Please show it to the attendant.', 'bad');
+                  } else {
+                    setStatus(status,
+                      'Paid. Enter ' + data.voucher_code + ' in the box at the top.', 'ok');
+                  }
                 });
             } else {
               waitDone(t('wait.connected'), logIn);
