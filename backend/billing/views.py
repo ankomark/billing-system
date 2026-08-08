@@ -1060,6 +1060,11 @@ def _evict_idle_device(customer, devices):
         )
         return None
 
+    # Normalised here as well as in active_hotspot_macs. A comparison that
+    # misses frees a slot that is genuinely in use, and that guarantee should
+    # not depend on what a function two modules away happened to return.
+    online = {str(m).strip().upper() for m in online}
+
     idle = [d for d in devices
             if (d.mac_address or "").strip().upper() not in online]
     if not idle:
