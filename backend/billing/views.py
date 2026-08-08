@@ -1024,6 +1024,96 @@ class MpesaTransactionsView(APIView):
         )
 
 
+def _evict_idle_device(customer, devices):
+    """
+    Free the place held by a device that is not actually connected.
+
+    Returns the CustomerDevice released, or None if the limit should stand.
+
+    None is returned in three cases, and they are all deliberate:
+
+    * The router could not be asked. "Nobody is online" and "I could not find
+      out" must not lead to the same decision — an unreachable router would
+      otherwise hand every customer unlimited devices, silently.
+    * Every bound device is connected right now. That is the sharing this
+      limit was built for, and the refusal is correct.
+    * There is no router to ask.
+
+    The oldest binding goes first. Between two idle devices the one last seen
+    longest ago is the likelier to be the phone somebody replaced.
+    """
+    from billing.models import AccessAuditLog
+    from billing.router_service import (
+        active_hotspot_macs, disable_hotspot, safe_connect_router,
+    )
+
+    router = customer.router
+    if router is None:
+        return None
+
+    online = active_hotspot_macs(router)
+    if online is None:
+        logger.warning(
+            "[hotspot] cannot check live sessions for customer %s, so the "
+            "device limit stands — a router we cannot read must not become a "
+            "router that grants everything.", customer.pk,
+        )
+        return None
+
+    idle = [d for d in devices
+            if (d.mac_address or "").strip().upper() not in online]
+    if not idle:
+        return None
+
+    victim = sorted(idle, key=lambda d: (d.last_seen or d.first_seen))[0]
+
+    # Take it off the router too. Leaving the hotspot user behind would let
+    # the evicted device log straight back in and retake a place it no longer
+    # holds in the database.
+    api = safe_connect_router(router)
+    if api is not None:
+        try:
+            disable_hotspot(api, victim.mac_address)
+        except Exception:
+            logger.warning(
+                "[hotspot] evicted %s for customer %s but could not remove it "
+                "from %s", victim.mac_address, customer.pk, router,
+            )
+
+    freed = victim.mac_address
+    victim.delete()
+
+    # This field is what the public status and reconnect endpoints resolve a
+    # subscriber by, so it cannot be left pointing at a binding that no longer
+    # exists.
+    if (customer.hotspot_username or "").strip().upper() == freed.strip().upper():
+        customer.hotspot_username = ""
+        customer.save(update_fields=["hotspot_username"])
+
+    try:
+        AccessAuditLog.objects.create(
+            customer=customer,
+            action="deactivate",
+            reason=(
+                f"Device {freed} released: no live session, and the device "
+                f"limit was reached by another device connecting"
+            ),
+        )
+    except Exception:
+        # An operator losing the record of why a device was dropped is worth
+        # a log line, not worth refusing a customer who has paid.
+        logger.exception(
+            "[hotspot] could not record eviction of %s for customer %s",
+            freed, customer.pk,
+        )
+
+    logger.info(
+        "[hotspot] released %s for customer %s — idle, and the limit was full",
+        freed, customer.pk,
+    )
+    return victim
+
+
 def _record_attempt(tenant, code, mac, outcome):
     """
     Note a refusal, without letting the noting of it become a failure.
@@ -1184,23 +1274,43 @@ class HotspotVoucherValidateView(APIView):
 
             if known is None:
                 if len(devices) >= allowed:
-                    # The limit, and the reason it exists. One code bought for
-                    # one phone was being passed around a room.
-                    _record_attempt(
-                        tenant, code, mac_address, ConnectionAttempt.DEVICE_LIMIT)
-                    return Response(
-                        {
-                            "detail": (
-                                f"This code is already in use on {allowed} "
-                                f"device{'s' if allowed > 1 else ''}."
-                                if allowed > 1 else
-                                "This code is already in use on another phone."
-                            ),
-                            "devices_allowed": allowed,
-                            "devices_used": len(devices),
-                        },
-                        status=status.HTTP_409_CONFLICT,
-                    )
+                    # Full — but full of what?
+                    #
+                    # The limit exists because one code bought for one phone
+                    # was being passed around a room. That is devices online
+                    # *at the same time*. Counting every address ever bound
+                    # cannot tell it apart from a customer who changed phone,
+                    # whose Android rotated its MAC, or who once opened the
+                    # portal on a laptop — and those people have paid.
+                    #
+                    # So ask the router who is actually connected. A device
+                    # with no live session is not using the package it is
+                    # holding a place in, and its binding is released to the
+                    # device standing here. A room genuinely sharing a code
+                    # has every device online at once, nothing is evictable,
+                    # and the refusal below still happens.
+                    evicted = _evict_idle_device(customer, devices)
+                    if evicted is None:
+                        _record_attempt(
+                            tenant, code, mac_address,
+                            ConnectionAttempt.DEVICE_LIMIT)
+                        return Response(
+                            {
+                                "detail": (
+                                    f"This code is in use on {allowed} "
+                                    f"device{'s' if allowed > 1 else ''} right "
+                                    "now. Disconnect one and try again."
+                                    if allowed > 1 else
+                                    "This code is connected on another device "
+                                    "right now. Disconnect it and try again."
+                                ),
+                                "devices_allowed": allowed,
+                                "devices_used": len(devices),
+                            },
+                            status=status.HTTP_409_CONFLICT,
+                        )
+                    devices = [d for d in devices if d.pk != evicted.pk]
+
                 CustomerDevice.objects.create(
                     tenant_id=customer.tenant_id,
                     customer=customer,

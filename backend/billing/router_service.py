@@ -187,6 +187,38 @@ def enable_customer_access(customer):
     return True
 
 
+def active_hotspot_macs(router):
+    """
+    Which addresses have a live hotspot session on this router right now.
+
+    Returns None when the router could not be asked — deliberately not an
+    empty set. "Nobody is online" and "I could not find out" lead to opposite
+    decisions: the first frees a device slot, the second must not, or an
+    unreachable router would silently hand every customer unlimited devices.
+
+    Upper-cased, because RouterOS is inconsistent about the case it reports
+    addresses in and a comparison that misses is a slot freed by mistake.
+    """
+    api = safe_connect_router(router)
+    if api is None:
+        return None
+
+    macs = set()
+    try:
+        for session in api.path("ip", "hotspot", "active"):
+            # Hotspot users here are named for the MAC, but the session also
+            # carries the address it was seen from; take either.
+            for key in ("user", "mac-address"):
+                value = (session.get(key) or "").strip().upper()
+                if value:
+                    macs.add(value)
+    except Exception as exc:
+        logger.warning("[hotspot] could not list active sessions on %s: %s",
+                       router, exc)
+        return None
+    return macs
+
+
 def hotspot_macs_for(customer, *, include_blocked=True):
     """
     Every device address belonging to this customer.
