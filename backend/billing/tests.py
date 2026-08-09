@@ -7672,11 +7672,23 @@ class VoucherDeviceLimitTests(TwoOperatorMixin, TestCase):
     # ---- one device --------------------------------------------------------
 
     def test_one_device_means_one_phone(self):
+        """
+        Also covers the fail-closed path, incidentally but importantly: no
+        router answers in a test, so the live-session check cannot say whether
+        the first device is connected, and a device limit that cannot be
+        checked must hold rather than dissolve.
+
+        Asserts the contract rather than the sentence. This checked for the
+        phrase "another phone", which changed when the refusal started telling
+        customers what to do about it, and the test failed over wording while
+        the behaviour was unchanged.
+        """
         self.allow(1)
         self.assertEqual(self.redeem("AA:00:00:00:00:01").status_code, 200)
         second = self.redeem("BB:00:00:00:00:02")
         self.assertEqual(second.status_code, 409, second.data)
-        self.assertIn("another phone", second.data["detail"])
+        self.assertEqual(second.data["devices_allowed"], 1)
+        self.assertEqual(second.data["devices_used"], 1)
 
     def test_the_same_phone_may_come_back(self):
         """Reconnecting is not a second device."""
