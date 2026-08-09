@@ -1,4 +1,5 @@
 import logging
+import re
 
 import requests
 
@@ -34,6 +35,64 @@ STATUS_MEANINGS = {
 # The failures no amount of retrying fixes, and which affect every message
 # rather than one. An empty account or a rejected key needs a person.
 NEEDS_ATTENTION = {"1001", "1002", "1003", "1004", "1009"}
+
+
+# ─── Numbers as the provider wants them ──────────────────────────────────────
+
+COUNTRY_CODE = "254"
+
+# The first digit of a Kenyan mobile subscriber number, after the country code
+# or the trunk zero. 7xx is the long-standing range; 1xx was opened later and
+# is now widely issued, so leaving it out would have quietly excluded every
+# newer line.
+MOBILE_PREFIXES = ("7", "1")
+
+SUBSCRIBER_DIGITS = 9
+
+
+def normalise_phone(phone):
+    """
+    A number in the form BlessedTexts accepts: 254712345678.
+
+    Subscribers give their number the way they say it — 0712 345 678 — and
+    that is what gets typed into the customer form, so that is what was going
+    on the wire. The provider answers 1007/1008 and the message is silently
+    discarded; the subscriber's expiry warning or voucher code never arrives,
+    and nothing in the product says why.
+
+    Done here, at the boundary to the provider, rather than on the way into the
+    database. The provider's format is the provider's business, and normalising
+    on save would fix nothing for the rows already stored — every existing
+    customer would still need a migration to be reachable.
+
+    Anything this cannot confidently read is returned exactly as given. That is
+    the important half: a number we cannot parse should reach the provider
+    untouched and be refused by it, because the alternative to a visible
+    refusal is guessing, and a wrong guess sends a subscriber's voucher code to
+    a stranger who did nothing but own the number we invented.
+    """
+    if not phone:
+        return phone
+
+    raw = str(phone).strip()
+    digits = re.sub(r"\D", "", raw)
+
+    # 00 is the international prefix dialled from a handset; + is the written
+    # form of the same thing and is already gone with the non-digits.
+    if digits.startswith("00"):
+        digits = digits[2:]
+
+    if digits.startswith(COUNTRY_CODE):
+        local = digits[len(COUNTRY_CODE):]
+    elif digits.startswith("0"):
+        local = digits[1:]
+    else:
+        local = digits
+
+    if len(local) == SUBSCRIBER_DIGITS and local.startswith(MOBILE_PREFIXES):
+        return COUNTRY_CODE + local
+
+    return raw
 
 
 def _credentials(tenant=None):
@@ -81,6 +140,10 @@ def send_sms(phone: str, message: str, tenant=None) -> bool:
     if not api_key or not sender_id:
         logger.warning("[sms] Skipped — BlessedTexts is not set up for this operator")
         return False
+
+    # Subscribers are stored the way they gave their number. The provider wants
+    # one form and refuses the rest.
+    phone = normalise_phone(phone)
 
     payload = {
         "api_key": api_key,
@@ -141,7 +204,10 @@ def send_bulk_sms(pairs, tenant=None):
     payload = {
         "api_key": api_key,
         "sender_id": sender_id,
-        "messages": [{"phone": phone, "message": message} for phone, message in pairs],
+        "messages": [
+            {"phone": normalise_phone(phone), "message": message}
+            for phone, message in pairs
+        ],
     }
 
     try:
@@ -252,6 +318,12 @@ def send_whatsapp(phone: str, message: str, tenant=None) -> bool:
     if not token or not phone_id:
         logger.warning("[whatsapp] Skipped — missing WhatsApp credentials in SystemSetting")
         return False
+
+    # The docstring above has always said international format; nothing made it
+    # so. Same defect as the SMS path and it matters more here, because
+    # notify_customer falls back from one to the other — a number stored as
+    # 0712345678 failed both channels and the customer heard nothing at all.
+    phone = normalise_phone(phone)
 
     url = f"https://graph.facebook.com/{version}/{phone_id}/messages"
     payload = {

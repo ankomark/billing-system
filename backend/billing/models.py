@@ -1647,10 +1647,41 @@ class Payment(TenantScopedModel):
                         "attempting inline", customer_id)
                     enable_customer_access(fresh)
 
+                # Queued, for the same reason provisioning above is queued, and
+                # it took longer to apply here than it should have. For a
+                # hotspot customer this message *is* what they bought — the
+                # voucher code exists nowhere else they can reach except the
+                # page they are standing on, and one 502 from the SMS provider
+                # used to lose it permanently. Each channel retries inside its
+                # own task.
+                #
+                # It also gets the send off this thread. Payment rows are
+                # created inside the M-Pesa callback request, so a synchronous
+                # send was up to 15s of SMS plus 10s of WhatsApp that Safaricom
+                # spent waiting for its 200 — and a callback that times out is
+                # a callback Safaricom sends again.
                 try:
-                    notify_customer(phone, message)
+                    from billing.tasks.notification_tasks import notify_customer_task
+                    notify_customer_task.delay(phone, message, tenant_id=tenant_id)
                 except Exception:
-                    pass
+                    # No broker reachable. One blocking attempt beats a paying
+                    # customer never learning their code.
+                    logger.exception(
+                        "[payment] could not queue the %s message for customer "
+                        "%s — sending inline", connection_type, customer_id)
+                    try:
+                        notify_customer(phone, message)
+                    except Exception:
+                        # Previously `pass`, which is how a paid-for voucher
+                        # code could go missing leaving nothing anywhere that
+                        # said so. Whatever else is true, this must be findable.
+                        logger.exception(
+                            "[payment] customer %s has paid and could not be "
+                            "sent %s on %s — nothing was delivered",
+                            customer_id,
+                            "their voucher code" if _voucher_code
+                            else "their connection details",
+                            phone)
 
         transaction.on_commit(_post_payment_effects)
 

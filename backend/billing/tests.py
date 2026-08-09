@@ -312,15 +312,21 @@ class PaymentProcessingTests(TestCase):
         self.assertEqual(mock_provision.call_args.args[0], self.customer.id)
 
     @patch("billing.router_service.enable_customer_access")
-    @patch("billing.models.notify_customer")
+    @patch("billing.tasks.notification_tasks.notify_customer_task.delay")
     def test_pppoe_notification_contains_credentials(self, mock_notify, _):
+        """
+        Asserts the message was requested, not that it was sent synchronously —
+        the same move provisioning made above, for the same reason. It went
+        through notify_customer() inline until one failed send could lose a
+        paying customer's details with no retry and no log line.
+        """
         with self.captureOnCommitCallbacks(execute=True):
             Payment.objects.create(
                 customer=self.customer, subscription=self.sub,
                 amount=self.package.price, method="cash",
             )
         mock_notify.assert_called_once()
-        phone_arg, message_arg = mock_notify.call_args[0]
+        phone_arg, message_arg = mock_notify.call_args.args[:2]
         self.assertEqual(phone_arg, self.customer.phone)
         self.assertIn("PPPoE", message_arg)
 
@@ -347,6 +353,108 @@ class PaymentProcessingTests(TestCase):
         # prefix was still there, which stopped being true then.
         self.assertRegex(voucher.code, r"^[A-Z0-9]{6}$")
         self.assertEqual(voucher.expires_at, hs_sub.expiry_date)
+
+    @patch("billing.router_service.enable_customer_access")
+    @patch("billing.tasks.notification_tasks.notify_customer_task.delay")
+    def test_the_voucher_code_is_sent_to_the_number_that_paid(self, mock_notify, _):
+        """
+        The code exists in exactly two places a customer can reach: this
+        message and the page they bought it on. Close the tab before the
+        message arrives and a paid-for voucher is gone.
+
+        Nothing asserted it. The voucher row was checked, the notification was
+        mocked away, and every test around it silenced the send rather than
+        reading it — so the message could have carried the wrong code, the
+        wrong number, or no code at all.
+
+        The number matters as much as the code. HotspotPurchaseView creates the
+        customer keyed on the normalised number that was typed into the
+        purchase form, which is the number the STK prompt went to, so this is
+        also what pins the code to the phone that actually paid.
+        """
+        hotspot_pkg = make_hotspot_package()
+        router2 = make_router(name="R3", ip="10.0.0.3")
+        buyer = make_hotspot_customer(
+            router2, phone="254701071435", username_suffix="hs03")
+        with patch("billing.tasks.notification_tasks.notify_customer_task.delay"):
+            sub = Subscription.objects.create(customer=buyer, package=hotspot_pkg)
+
+        with self.captureOnCommitCallbacks(execute=True):
+            Payment.objects.create(
+                customer=buyer, subscription=sub,
+                amount=hotspot_pkg.price, method="mpesa", reference="QK1000",
+            )
+
+        mock_notify.assert_called_once()
+        phone_arg, message_arg = mock_notify.call_args.args[:2]
+        self.assertEqual(phone_arg, "254701071435",
+                         "the code went somewhere other than the paying number")
+
+        voucher = Voucher.objects.filter(subscription=sub).first()
+        self.assertIn(voucher.code, message_arg,
+                      "the message went out without the code in it")
+        self.assertIn("Voucher Code", message_arg)
+
+        # Their operator's, on their operator's account — a walk-up customer
+        # has never heard of the platform.
+        self.assertEqual(
+            mock_notify.call_args.kwargs["tenant_id"], buyer.tenant_id)
+
+    @patch("billing.router_service.enable_customer_access")
+    @patch("billing.tasks.notification_tasks.notify_customer_task.delay")
+    def test_a_lost_voucher_message_is_not_lost_silently(self, mock_notify, _):
+        """
+        It was. The send was wrapped in `except Exception: pass`, so a customer
+        who paid and never got their code left no trace anywhere — not a log
+        line, not a row. The first anyone knew was the customer saying so, and
+        there was nothing to check against.
+        """
+        mock_notify.side_effect = Exception("no broker")
+
+        hotspot_pkg = make_hotspot_package()
+        router2 = make_router(name="R4", ip="10.0.0.4")
+        buyer = make_hotspot_customer(
+            router2, phone="254701071436", username_suffix="hs04")
+        with patch("billing.tasks.notification_tasks.notify_customer_task.delay"):
+            sub = Subscription.objects.create(customer=buyer, package=hotspot_pkg)
+
+        # Both the queue and the inline fallback fail: the worst case, and the
+        # one that has to be findable afterwards.
+        with patch("billing.models.notify_customer",
+                   side_effect=Exception("provider down")), \
+             self.assertLogs("billing.models", level="ERROR") as logs:
+            with self.captureOnCommitCallbacks(execute=True):
+                Payment.objects.create(
+                    customer=buyer, subscription=sub,
+                    amount=hotspot_pkg.price, method="mpesa", reference="QK1001",
+                )
+
+        written = "\n".join(logs.output)
+        self.assertIn("voucher code", written)
+        self.assertIn(str(buyer.id), written)
+
+    @patch("billing.router_service.enable_customer_access")
+    @patch("billing.tasks.notification_tasks.notify_customer_task.delay")
+    def test_a_broker_that_is_down_still_gets_the_message_out(self, mock_notify, _):
+        """Queued is the normal path, not the only one."""
+        mock_notify.side_effect = Exception("no broker")
+
+        hotspot_pkg = make_hotspot_package()
+        router2 = make_router(name="R5", ip="10.0.0.5")
+        buyer = make_hotspot_customer(
+            router2, phone="254701071437", username_suffix="hs05")
+        with patch("billing.tasks.notification_tasks.notify_customer_task.delay"):
+            sub = Subscription.objects.create(customer=buyer, package=hotspot_pkg)
+
+        with patch("billing.models.notify_customer") as inline:
+            with self.captureOnCommitCallbacks(execute=True):
+                Payment.objects.create(
+                    customer=buyer, subscription=sub,
+                    amount=hotspot_pkg.price, method="mpesa", reference="QK1002",
+                )
+
+        inline.assert_called_once()
+        self.assertEqual(inline.call_args.args[0], "254701071437")
 
     @patch("billing.router_service.enable_customer_access")
     @patch("billing.models.notify_customer")
@@ -5477,6 +5585,65 @@ class BlessedTextsSmsTests(TwoOperatorMixin, TestCase):
             send_sms("nonsense", "hello", tenant=self.t1)
         self.assertFalse(alert.called)
 
+    # ---- the number as the provider wants it -------------------------------
+
+    def test_a_number_typed_the_way_people_say_it_goes_out_correctly(self):
+        """
+        0712 345 678 is how a subscriber gives their number and what gets typed
+        into the customer form. It went on the wire exactly like that, the
+        provider answered 1007, and the message was discarded — every expiry
+        warning and voucher code to a locally-formatted number, silently.
+        """
+        body = [{"status_code": "1000"}]
+        with patch("billing.notifications.requests.post",
+                   return_value=self._response(body)) as post:
+            send_sms("0712345678", "hello", tenant=self.t1)
+        self.assertEqual(post.call_args.kwargs["json"]["phone"], "254712345678")
+
+    def test_the_forms_a_number_is_written_in_all_reach_the_same_place(self):
+        body = [{"status_code": "1000"}]
+        for given in ("0712345678", "+254712345678", "254712345678",
+                      "712345678", "0712 345 678", "+254-712-345-678",
+                      "00254712345678", "  0712345678  "):
+            with self.subTest(given=given):
+                with patch("billing.notifications.requests.post",
+                           return_value=self._response(body)) as post:
+                    send_sms(given, "hello", tenant=self.t1)
+                self.assertEqual(
+                    post.call_args.kwargs["json"]["phone"], "254712345678")
+
+    def test_the_newer_01_range_is_not_left_out(self):
+        """011x was issued long after 07x and is somebody's only line."""
+        body = [{"status_code": "1000"}]
+        with patch("billing.notifications.requests.post",
+                   return_value=self._response(body)) as post:
+            send_sms("0110000111", "hello", tenant=self.t1)
+        self.assertEqual(post.call_args.kwargs["json"]["phone"], "254110000111")
+
+    def test_what_cannot_be_read_is_passed_through_untouched(self):
+        """
+        The important half. A number this cannot parse must reach the provider
+        as given and be refused by it — guessing at one would send a voucher
+        code to a stranger who did nothing but own the number we invented.
+        """
+        from billing.notifications import normalise_phone
+
+        for given in ("nonsense", "", "12345", "+256772123456",
+                      "2547123456789", "0254123456"):
+            with self.subTest(given=given):
+                self.assertEqual(normalise_phone(given), given)
+
+    def test_a_broadcast_normalises_every_recipient(self):
+        pairs = [("0712345678", "a"), ("254733000111", "b"), ("0110000222", "c")]
+        body = [{"status_code": "1000"} for _ in pairs]
+        with patch("billing.notifications.requests.post",
+                   return_value=self._response(body)) as post:
+            send_bulk_sms(pairs, tenant=self.t1)
+
+        self.assertEqual(
+            [m["phone"] for m in post.call_args.kwargs["json"]["messages"]],
+            ["254712345678", "254733000111", "254110000222"])
+
     # ---- bulk --------------------------------------------------------------
 
     def test_bulk_sends_one_request_for_many_recipients(self):
@@ -5546,6 +5713,38 @@ class BlessedTextsSmsTests(TwoOperatorMixin, TestCase):
             result = sms_balance(tenant=self.t2)
         post.assert_not_called()
         self.assertFalse(result["ok"])
+
+
+class WhatsappPhoneFormatTests(TwoOperatorMixin, TestCase):
+    """
+    The other half of the same defect.
+
+    send_whatsapp's docstring has always said the number must be in
+    international format; nothing made it so, and it passed straight through to
+    Meta. That matters more here than on the SMS side, because notify_customer
+    tries SMS and falls back to WhatsApp — so a subscriber stored as
+    0712345678 failed both channels and heard nothing at all.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        for key, value in (
+            ("WHATSAPP_TOKEN", "tok"),
+            ("WHATSAPP_PHONE_ID", "12345"),
+        ):
+            SystemSetting.objects.create(tenant=self.t1, key=key, value=value)
+        clear_settings_cache(tenant=self.t1)
+
+    def test_a_locally_written_number_reaches_meta_in_international_form(self):
+        from billing.notifications import send_whatsapp
+
+        response = MagicMock()
+        response.raise_for_status.return_value = None
+        with patch("billing.notifications.requests.post",
+                   return_value=response) as post:
+            self.assertTrue(send_whatsapp("0712345678", "hi", tenant=self.t1))
+        self.assertEqual(post.call_args.kwargs["json"]["to"], "254712345678")
 
 
 # =====================================================
