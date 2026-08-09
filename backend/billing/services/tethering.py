@@ -28,13 +28,49 @@ So this treats TTL as evidence rather than proof, and the shape of the code
 follows from that. One odd packet does nothing. It takes a sustained mismatch —
 several sweeps, minutes apart — before anything happens to a paying customer,
 and what happens is the operator's choice, from writing it down through texting
-them to ending the session. The default is off, and the strongest setting still
-only ends a session: nobody's subscription is touched.
+them to ending the session. The default is off, and no setting touches anybody's
+subscription.
 
 The strongest evidence is the mixed case. If one address is sending traffic at
 both a full starting value and one below it in the same window, that is the
 phone itself browsing while something else browses through it. Hence the third
 address list, which records the normal values rather than the suspicious ones.
+
+BLOCK, AND WHY IT IS NOT LIKE THE OTHERS
+----------------------------------------
+
+Every policy above `block` is decided here, in the sweep, which runs every five
+minutes. That is a floor: an operator who wants sharing stopped before it is
+useful cannot have it from a server that only looks twice in ten minutes.
+
+`block` therefore does not act from here at all. It installs a filter rule on
+the router that rejects forward traffic from any address the mangle rules have
+listed, so enforcement lands on the first packet and needs nothing from us. The
+address list entry carries a timeout, so the block lifts itself once the traffic
+stops; while it continues, the client's own retries keep refreshing the entry
+and the block holds. No queue is left behind, and an unreachable billing server
+cannot strand anybody.
+
+Two things about it are worth stating plainly rather than discovering.
+
+  * It blocks the subscriber, because there is nothing else to block. The
+    tethered device's traffic is NATted by the phone, so it arrives with the
+    subscriber's source address and the subscriber's MAC — one address, one
+    session. "Stop the sharing" and "cut off the customer who paid" are the
+    same action at this layer.
+  * It acts on evidence that is only evidence, with none of the patience the
+    other policies have: no threshold, no attribution, no check that the person
+    on that lease now is the person who earned it. A travel router, a NATted VM
+    and a corporate VPN all land in the same list. Those subscribers lose their
+    connection within a second of a packet arriving, and get an explanation only
+    when the next sweep texts them.
+
+The rule is in chain=forward rather than raw prerouting so that the router
+itself stays reachable: DNS and the hotspot login page are chain=input traffic,
+and a subscriber who can still load a page is a subscriber who can be told why.
+It is placed at the top of the chain, because the stock forward chain accepts
+established connections first and a block underneath that would leave every
+open connection running.
 
 Two things about RouterOS that cost us if forgotten:
 
@@ -97,8 +133,17 @@ TTL_LISTS = {
 
 # Simultaneous connections from one address above which something more than a
 # handset is behind it. A phone browsing sits in the low tens; a laptop with
-# thirty tabs, or four devices streaming, does not. Corroboration only — one
-# torrent client passes this on its own, so nothing acts on it.
+# thirty tabs, or four devices streaming, does not.
+#
+# This used to be corroboration and nothing else: an address could sit in
+# tether-busy all evening without a case ever being opened, because suspects
+# were drawn from the hop lists alone. That left the one signal that survives
+# TTL pinning — the whole reason the rule exists — unable to catch anybody, and
+# a subscriber who normalises their hop counter entirely invisible.
+#
+# It can now open a case on its own, but not on the same terms. One torrent
+# client passes this instantly, so a busy-only case needs the longer threshold
+# in busy_observations() rather than the ordinary one.
 DEFAULT_CONNECTION_LIMIT = 100
 
 
@@ -146,6 +191,32 @@ def mangle_rules(timeout="10m", connection_limit=DEFAULT_CONNECTION_LIMIT):
     return rules
 
 
+def filter_rules(lists):
+    """
+    The rules that actually stop traffic, for the `block` policy.
+
+    One per address list, matching on src-address-list so the router enforces
+    what the mangle rules found without waiting for a sweep. Nothing here has a
+    timeout of its own: the *list entry* expires, and the block goes with it.
+
+    reject rather than drop, deliberately. A dropped packet gives the
+    subscriber a connection that hangs for thirty seconds a time, which reads
+    as "the network is broken" and arrives as a support call. A rejected one
+    fails at once, which reads as "something is refusing me" — closer to the
+    truth, and the SMS that follows explains the rest.
+    """
+    return [
+        {
+            "chain": "forward",
+            "action": "reject",
+            "reject-with": "icmp-admin-prohibited",
+            "src-address-list": name,
+            "comment": f"{RULE_COMMENT} block {name}",
+        }
+        for name in lists
+    ]
+
+
 def _timeout_seconds(value):
     """
     Seconds from either form RouterOS uses: "10m" going in, "00:10:00" coming
@@ -182,54 +253,63 @@ def _timeout_seconds(value):
     return total + number if seen else None
 
 
-def ensure_rules(api, *, timeout="10m", connections=DEFAULT_CONNECTION_LIMIT):
-    """
-    Install the detection rules, or leave them alone if they are already right.
-
-    Idempotent by comment. Anything on the router carrying our comment that is
-    not in the current rule set is removed — that is how a change to the TTLs
-    we look for reaches routers that were configured by an earlier release,
-    rather than leaving both generations firing.
-
-    A rule the router rejects is logged and skipped. One unsupported matcher
-    should not stop the other eight going in, and it should certainly not stop
-    the sweep that called this.
-    """
-    path = api.path("ip", "firewall", "mangle")
-
-    existing = {}
+def _ours(path):
+    """Rows in this table that carry our comment, keyed by it."""
+    found = {}
     for row in path:
         comment = row.get("comment", "") or ""
         if comment.startswith(RULE_COMMENT):
-            existing[comment] = row
+            found[comment] = row
+    return found
 
+
+def _reconcile(path, rules, drift, *, at_top=False):
+    """
+    Make one table hold exactly `rules`, and nothing else of ours.
+
+    Idempotent by comment. Anything carrying our comment that is not in the
+    current rule set is removed — that is how a change to the values we look
+    for reaches routers configured by an earlier release, rather than leaving
+    both generations firing.
+
+    `drift` decides what counts as a difference worth writing. RouterOS
+    normalises values on the way back, so comparing everything verbatim would
+    rewrite every rule on every sweep for no change at all.
+
+    A rule the router rejects is logged and skipped. One unsupported matcher
+    should not stop the others going in, and it should certainly not stop the
+    sweep that called this.
+    """
+    existing = _ours(path)
     added = updated = removed = 0
 
-    for rule in mangle_rules(timeout, connections):
+    # Where the top of the chain is, for rules that have to sit above whatever
+    # the operator already has. Read before anything is added so the anchor is
+    # not one of our own rules.
+    anchor = None
+    if at_top:
+        for row in path:
+            anchor = row.get(".id")
+            break
+
+    for rule in rules:
         current = existing.pop(rule["comment"], None)
 
         if current is None:
+            payload = dict(rule)
+            if at_top and anchor is not None:
+                payload["place-before"] = anchor
             try:
-                path.add(**rule)
+                path.add(**payload)
                 added += 1
             except Exception as e:
                 logger.warning("[tether] router rejected %s: %s",
                                rule["comment"], e)
             continue
 
-        # Only what actually matters is compared. RouterOS normalises values on
-        # the way back, so comparing everything verbatim would rewrite all nine
-        # rules on every sweep for no change at all.
-        changes = {}
-        if current.get("address-list") != rule["address-list"]:
-            changes["address-list"] = rule["address-list"]
+        changes = drift(current, rule)
         if str(current.get("disabled", "false")).lower() in ("true", "yes"):
             changes["disabled"] = "no"
-
-        wanted = _timeout_seconds(rule["address-list-timeout"])
-        actual = _timeout_seconds(current.get("address-list-timeout"))
-        if wanted is not None and actual is not None and wanted != actual:
-            changes["address-list-timeout"] = rule["address-list-timeout"]
 
         if changes:
             try:
@@ -247,9 +327,112 @@ def ensure_rules(api, *, timeout="10m", connections=DEFAULT_CONNECTION_LIMIT):
             logger.warning("[tether] could not remove stale rule %s: %s",
                            comment, e)
 
+    return added, updated, removed
+
+
+def _mangle_drift(current, rule):
+    changes = {}
+    if current.get("address-list") != rule["address-list"]:
+        changes["address-list"] = rule["address-list"]
+
+    wanted = _timeout_seconds(rule["address-list-timeout"])
+    actual = _timeout_seconds(current.get("address-list-timeout"))
+    if wanted is not None and actual is not None and wanted != actual:
+        changes["address-list-timeout"] = rule["address-list-timeout"]
+    return changes
+
+
+def _filter_drift(current, rule):
+    changes = {}
+    for key in ("action", "src-address-list"):
+        if current.get(key) != rule[key]:
+            changes[key] = rule[key]
+    return changes
+
+
+def ensure_rules(api, *, timeout="10m", connections=DEFAULT_CONNECTION_LIMIT,
+                 block_lists=()):
+    """
+    Install the detection rules, or leave them alone if they are already right.
+
+    `block_lists` names the address lists whose traffic should be rejected
+    outright, and is empty for every policy but `block`. Empty is not "leave
+    the filter table alone" — it is "there should be none of ours in it", which
+    is what takes the blocks back off when an operator steps down from `block`
+    to something gentler. A rule that only disappears when the feature is
+    switched off entirely would leave people cut off by a policy no longer in
+    force.
+    """
+    added, updated, removed = _reconcile(
+        api.path("ip", "firewall", "mangle"),
+        mangle_rules(timeout, connections),
+        _mangle_drift,
+    )
+
+    # Top of the chain: the stock forward chain accepts established connections
+    # first, and a reject underneath that would stop new connections while
+    # every download already running carried on.
+    a, u, r = _reconcile(
+        api.path("ip", "firewall", "filter"),
+        filter_rules(block_lists),
+        _filter_drift,
+        at_top=True,
+    )
+    added, updated, removed = added + a, updated + u, removed + r
+
     if added or updated or removed:
         logger.info("[tether] rules: +%s ~%s -%s", added, updated, removed)
     return {"added": added, "updated": updated, "removed": removed}
+
+
+# Set for an operator once a router of theirs has been given rules that stop
+# traffic, and cleared once every one of those rules is off again.
+#
+# It exists because "off" does not dial anybody. That is deliberate and worth
+# keeping — an operator who never asked for this should not cost a connection
+# every five minutes — but it means switching off is the one moment nothing
+# runs to undo what was done. For every other policy that costs nothing: the
+# mangle rules only write to a list, and a stranded one is invisible. A
+# stranded reject rule is a subscriber with no internet, permanently, under a
+# policy that is no longer in force and with nothing anywhere that says why.
+#
+# So the off path reads this one cached setting, and dials only when the answer
+# is yes.
+BLOCK_MARKER = "TETHERING_BLOCK_INSTALLED"
+
+
+def set_block_marker(tenant_id, installed):
+    from billing.models import SystemSetting
+
+    value = "true" if installed else "false"
+    if (get_setting(BLOCK_MARKER, "false", tenant=tenant_id) or "") == value:
+        return
+    SystemSetting.objects.update_or_create(
+        tenant_id=tenant_id, key=BLOCK_MARKER, defaults={"value": value})
+
+    from billing.config import clear_settings_cache
+    clear_settings_cache(BLOCK_MARKER, tenant=tenant_id)
+
+
+def blocks_may_be_installed(tenant=None):
+    return str(get_setting(BLOCK_MARKER, "false", tenant=tenant)
+               or "").strip().lower() == "true"
+
+
+def remove_block_rules(api):
+    """
+    Take off only the rules that stop traffic, leaving detection in place.
+
+    The narrow half of remove_rules, for the operator who has stepped down from
+    `block` rather than switched the feature off. Returns how many came off.
+    """
+    path = api.path("ip", "firewall", "filter")
+    removed = 0
+    for row in list(path):
+        if (row.get("comment") or "").startswith(RULE_COMMENT):
+            path.remove(row[".id"])
+            removed += 1
+    return removed
 
 
 def remove_rules(api):
@@ -259,14 +442,19 @@ def remove_rules(api):
     The rules, the address lists it fills, and any queue it created. Turning
     the feature off should leave the router as it was found, and an operator
     who cannot see that happen will not trust the feature that did it.
+
+    The filter rules come off first. They are the only thing here that stops
+    traffic, so if this run fails halfway the half that ran is the half that
+    gave people their connection back.
     """
     removed = 0
 
-    mangle = api.path("ip", "firewall", "mangle")
-    for row in list(mangle):
-        if (row.get("comment") or "").startswith(RULE_COMMENT):
-            mangle.remove(row[".id"])
-            removed += 1
+    for table in (("ip", "firewall", "filter"), ("ip", "firewall", "mangle")):
+        path = api.path(*table)
+        for row in list(path):
+            if (row.get("comment") or "").startswith(RULE_COMMENT):
+                path.remove(row[".id"])
+                removed += 1
 
     entries = api.path("ip", "firewall", "address-list")
     for row in list(entries):
@@ -456,8 +644,13 @@ LOG = "log"
 WARN = "warn"
 THROTTLE = "throttle"
 KICK = "kick"
+BLOCK = "block"
 
-POLICIES = (OFF, LOG, WARN, THROTTLE, KICK)
+POLICIES = (OFF, LOG, WARN, THROTTLE, KICK, BLOCK)
+
+# Escalating, and ordered so it can be said in one place that block is the only
+# one that does not wait for a sweep — see the module docstring.
+IMMEDIATE = (BLOCK,)
 
 DEFAULT_MESSAGE = (
     "We have noticed your connection being shared to other devices through "
@@ -497,6 +690,52 @@ def min_observations(tenant=None):
     reconnecting device or one odd packet cannot cost somebody their session.
     """
     return _int_setting("TETHERING_MIN_OBSERVATIONS", 3, tenant, minimum=2)
+
+
+def busy_observations(tenant=None):
+    """
+    Sweeps in a row before connection count alone is acted on.
+
+    Twice the ordinary threshold by default — half an hour of an address
+    holding more connections than a handset does, rather than the quarter of an
+    hour a hop-counter mismatch needs. The gap is the false-positive rate: a
+    hop count one below the starting value has one innocent explanation and it
+    is uncommon, while a hundred simultaneous connections has several and one
+    of them is a torrent client that will pass the threshold in a burst. Making
+    it survive six sweeps is what separates that burst from a household.
+
+    Never below the ordinary threshold, whatever is typed. Busy-only evidence
+    is the weaker of the two, and a configuration where it acted sooner than a
+    TTL mismatch would be backwards.
+    """
+    floor = min_observations(tenant)
+    return max(floor, _int_setting("TETHERING_BUSY_OBSERVATIONS", floor * 2,
+                                   tenant, minimum=3))
+
+
+def block_busy(tenant=None):
+    """
+    Whether `block` also rejects on connection count alone. Off by default.
+
+    The hop lists and this one are not the same kind of evidence, and under a
+    policy with no threshold and no appeal that difference decides who gets cut
+    off. One subscriber with a torrent client, or a laptop with a hundred tabs,
+    trips the connection limit inside a second and — with this on — loses their
+    connection for it, with no sweep having judged anything.
+
+    An operator who wants the subscribers who defeat the hop counter caught
+    anyway can switch it on. It should be a decision, not a default.
+    """
+    raw = get_setting("TETHERING_BLOCK_BUSY", "false", tenant=tenant)
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
+def block_lists_for(tenant=None):
+    """Which address lists the router should reject outright."""
+    lists = [HOP1_LIST, HOP2_LIST]
+    if block_busy(tenant):
+        lists.append(BUSY_LIST)
+    return tuple(lists)
 
 
 def throttle_kbps(tenant=None):
@@ -639,9 +878,27 @@ def sweep_router(router, *, now=None):
 
     timeout = list_timeout(tenant_id)
 
+    # Only `block` puts anything on the router that stops traffic. For every
+    # other policy this is empty, which actively takes the reject rules off a
+    # router that was on `block` yesterday.
+    blocking = block_lists_for(tenant_id) if action == BLOCK else ()
+
     try:
+        # Marked before the attempt, not after. A run that adds the rule and
+        # then dies leaves the router blocking and the marker unset, and
+        # nothing would ever come back for it.
+        if blocking:
+            set_block_marker(tenant_id, True)
         ensure_rules(api, timeout=timeout,
-                     connections=connection_limit(tenant_id))
+                     connections=connection_limit(tenant_id),
+                     block_lists=blocking)
+        # Deliberately not cleared here when `blocking` is empty. This is one
+        # router of possibly several, and clearing on the first one that came
+        # clean would strand the reject rules on a sibling that was unreachable
+        # this run. Only _lift_blocks, which reaches every router or gives up,
+        # is allowed to say the blocks are gone. A marker left set costs one
+        # check on the off path; a marker cleared early costs somebody their
+        # connection, permanently.
     except Exception as e:
         # Rules that could not be installed mean nothing will be caught, but
         # the lists from a previous run may still hold something worth reading.
@@ -676,16 +933,21 @@ def sweep_router(router, *, now=None):
     # One address, one sighting — taking the furthest it was seen from. A phone
     # with a laptop and a second router behind it lands in both lists, and
     # counting it twice would reach the threshold in half the time it should.
+    #
+    # tether-busy is in here too, at zero hops. It used to be read only to flag
+    # cases the hop lists had already opened, which meant the one signal that
+    # survives a subscriber pinning their TTL could never open a case of its
+    # own — the evasion it exists to catch went uncaught by the rule written to
+    # catch it. Zero is what marks the evidence as connection count alone, and
+    # _act holds those to the longer busy_observations() threshold.
     suspects = {}
-    for list_name in (HOP1_LIST, HOP2_LIST):
+    for list_name in (HOP1_LIST, HOP2_LIST, BUSY_LIST):
         for ip, entry in lists[list_name].items():
-            hops, best = suspects.get(ip, (0, entry))
+            hops, best = suspects.get(ip, (-1, entry))
             # The entry from the list that saw it furthest away, so the
             # freshness check below reads the one the hop count came from.
-            suspects[ip] = (
-                (LIST_HOPS[list_name], entry)
-                if LIST_HOPS[list_name] > hops else (hops, best)
-            )
+            here = LIST_HOPS.get(list_name, 0)
+            suspects[ip] = (here, entry) if here > hops else (hops, best)
 
     configured = _timeout_seconds(timeout)
 
@@ -884,17 +1146,32 @@ def _act(api, case, action, threshold, tenant_id, now, session=None):
     So a kicked case can earn another kick, on a further threshold's worth of
     sightings after the last one — measured from acted_observations, not from
     zero, so the evidence count stays cumulative.
+
+    `block` reaches here having already been applied — the router rejected the
+    traffic on the first packet, without asking. What is left to do is tell the
+    subscriber why, and record who it was, and both of those are worth the
+    ordinary threshold: the reject lifts itself when the traffic stops, so a
+    single stray packet costs somebody a second of connectivity, and texting
+    them about it would be the part that was hard to take back.
     """
     from billing.models import TetheringCase
 
     if action == LOG or case.customer_id is None:
         return False
 
-    repeatable = action == KICK
+    repeatable = action in (KICK, BLOCK)
+    already = {KICK: TetheringCase.KICKED, BLOCK: TetheringCase.BLOCKED}.get(action)
     allowed = (case.status == TetheringCase.WATCHING) or (
-        repeatable and case.status == TetheringCase.KICKED)
+        repeatable and case.status == already)
     if not allowed:
         return False
+
+    # Connection count on its own is the weaker signal and answers to the
+    # longer threshold. hops is 0 only when nothing but tether-busy has ever
+    # seen this address.
+    if not case.hops:
+        threshold = busy_observations(tenant_id)
+
     if case.observations - case.acted_observations < threshold:
         return False
 
@@ -927,6 +1204,16 @@ def _act(api, case, action, threshold, tenant_id, now, session=None):
             logger.warning("[tether] could not throttle %s: %s",
                            case.ip_address, e)
             case.note = f"throttle failed: {e}"[:255]
+
+    elif action == BLOCK:
+        # Nothing to apply. The router rejected this address the moment the
+        # mangle rule listed it, and will keep rejecting it until the entry
+        # times out — which the subscriber's own retries keep pushing back for
+        # as long as they carry on. All that is owed here is the record and
+        # the text, so the person on the other end learns why their connection
+        # died rather than filing it under "this network is broken".
+        case.status = TetheringCase.BLOCKED
+        applied = True
 
     elif action == KICK:
         try:
@@ -972,6 +1259,12 @@ def close_stale_cases(tenant_id, *, now=None, force=False):
     A throttle queue nobody removes is a customer who paid for 10 Mbps and gets
     512 kbps for the rest of the month, with the reason sitting in a table
     nobody reads. Silence is the signal that the sharing stopped.
+
+    A blocked case needs nothing undone here, and that is the point of how it
+    was applied: the reject rule matches an address list, the list entry has a
+    timeout, so the block has already lifted itself by the time a case looks
+    stale. Nothing about a subscriber's connection depends on this function
+    running, or on the billing server existing at all.
 
     `force` closes every open case regardless of how recently it was seen, and
     exists for one moment: the operator turning the feature off. Nothing sweeps

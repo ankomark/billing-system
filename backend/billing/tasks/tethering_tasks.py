@@ -78,6 +78,15 @@ def detect_tethering(self):
                         "closing what is still open", tenant_id)
                     closed += tethering.close_stale_cases(
                         tenant_id, now=now, force=True)
+
+                # And the rules that reject traffic, which no case is needed to
+                # strand. An operator who ran `block`, caught nobody, and then
+                # switched off leaves a router that will cut off the first
+                # person to tether — with no sweep to notice, no case, no text,
+                # and no policy in force that would explain it. One cached
+                # setting decides whether this is worth a connection.
+                if tethering.blocks_may_be_installed(tenant_id):
+                    _lift_blocks(tenant_id)
                 continue
 
             routers = list(
@@ -108,6 +117,47 @@ def detect_tethering(self):
         "[tether] swept %s router(s): %s sighting(s), %s acted on, %s closed",
         swept, seen, acted, closed)
     return {"routers": swept, "seen": seen, "acted": acted, "closed": closed}
+
+
+def _lift_blocks(tenant_id):
+    """
+    Take the reject rules off every router this operator owns.
+
+    The marker is cleared only when every router has been reached and cleaned.
+    One unreachable box means it stays set and this runs again next sweep,
+    which is the behaviour that matters: the alternative is recording the block
+    as lifted while a subscriber is still sitting behind it.
+    """
+    from billing.models import RouterDevice
+    from billing.router_service import safe_connect_router
+
+    routers = list(
+        RouterDevice.objects.all_tenants()
+        .filter(tenant_id=tenant_id, is_active=True)
+    )
+
+    lifted = 0
+    complete = True
+    for router in routers:
+        api = safe_connect_router(router)
+        if api is None:
+            logger.warning(
+                "[tether] cannot reach %s to lift its blocks — a subscriber "
+                "may still be cut off by a policy that is switched off", router)
+            complete = False
+            continue
+        try:
+            lifted += tethering.remove_block_rules(api)
+        except Exception:
+            logger.exception("[tether] could not lift the blocks on %s", router)
+            complete = False
+
+    if complete:
+        tethering.set_block_marker(tenant_id, False)
+    if lifted:
+        logger.info("[tether] lifted %s block rule(s) for operator %s",
+                    lifted, tenant_id)
+    return lifted
 
 
 # Long enough to show an operator a pattern — the same subscriber three

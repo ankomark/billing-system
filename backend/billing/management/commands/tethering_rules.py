@@ -64,10 +64,20 @@ class Command(BaseCommand):
             return
 
         if action == "install":
+            policy = tethering.policy(router.tenant_id)
             result = tethering.ensure_rules(
                 api,
                 timeout=tethering.list_timeout(router.tenant_id),
-                connections=tethering.connection_limit(router.tenant_id))
+                connections=tethering.connection_limit(router.tenant_id),
+                # Installing by hand must put the same thing on the router the
+                # sweep would, or an operator debugging with this command is
+                # looking at a box configured differently from every other one.
+                block_lists=(
+                    tethering.block_lists_for(router.tenant_id)
+                    if policy == tethering.BLOCK else ()
+                ))
+            if policy == tethering.BLOCK:
+                tethering.set_block_marker(router.tenant_id, True)
             self.stdout.write(self.style.SUCCESS(
                 f"{router.name}: +{result['added']} ~{result['updated']} "
                 f"-{result['removed']}"))
@@ -87,10 +97,32 @@ class Command(BaseCommand):
             if (row.get("comment") or "").startswith(tethering.RULE_COMMENT)
         )
         expected = len(tethering.mangle_rules())
+        policy = tethering.policy(router.tenant_id)
         style = self.style.SUCCESS if installed == expected else self.style.WARNING
         self.stdout.write(style(
-            f"{router.name}: policy={tethering.policy(router.tenant_id)} "
+            f"{router.name}: policy={policy} "
             f"rules={installed}/{expected} {counts}"))
+
+        # The rules that stop traffic, counted separately and named, because
+        # "ten rules installed" says nothing about whether anybody is cut off.
+        blocking = [
+            (row.get("src-address-list") or "?")
+            for row in api.path("ip", "firewall", "filter")
+            if (row.get("comment") or "").startswith(tethering.RULE_COMMENT)
+        ]
+        if blocking:
+            cut_off = sum(len(lists.get(name, {})) for name in set(blocking))
+            note = (f"{router.name}: rejecting traffic from "
+                    f"{', '.join(sorted(set(blocking)))} — "
+                    f"{cut_off} address(es) cut off right now")
+            # Blocking under a policy that is not `block` is the state this is
+            # here to surface: nothing sweeps to lift it, and the subscriber
+            # behind it has no case, no text and no explanation.
+            self.stdout.write(
+                self.style.SUCCESS(note) if policy == tethering.BLOCK
+                else self.style.ERROR(
+                    f"{note} — but policy is {policy}, so nothing will lift "
+                    f"this. Run: tethering_rules install (or remove)"))
 
         # The hole none of the rules can see into, and the reason an operator
         # might be looking at an empty table on a network that is being shared.

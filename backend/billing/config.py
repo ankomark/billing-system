@@ -34,15 +34,24 @@ ALL_SETTING_KEYS = [
     "WHATSAPP_PHONE_ID",
     "WHATSAPP_API_VERSION",
     # Hotspot sharing. TETHERING_POLICY is the switch — off, log, warn,
-    # throttle or kick — and everything else only matters once it is not off.
-    # See billing/services/tethering.py.
+    # throttle, kick or block — and everything else only matters once it is not
+    # off. See billing/services/tethering.py.
     "TETHERING_POLICY",
     "TETHERING_MIN_OBSERVATIONS",
+    "TETHERING_BUSY_OBSERVATIONS",
     "TETHERING_THROTTLE_KBPS",
     "TETHERING_CONNECTION_LIMIT",
     "TETHERING_LIST_TIMEOUT",
     "TETHERING_STALE_MINUTES",
     "TETHERING_MESSAGE",
+    # Whether `block` also rejects on connection count alone. Off by default —
+    # it is the signal a torrent client sets off, and under `block` there is no
+    # threshold between the signal and somebody losing their connection.
+    "TETHERING_BLOCK_BUSY",
+    # Written by the sweep, not by an operator: whether a router of theirs may
+    # still be carrying rules that stop traffic. It is what the off path reads
+    # before deciding to dial anybody. See tethering.BLOCK_MARKER.
+    "TETHERING_BLOCK_INSTALLED",
 ]
 
 

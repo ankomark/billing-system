@@ -10084,6 +10084,422 @@ class TetheringTaskTests(TwoOperatorMixin, TestCase):
                 TetheringCase.objects.filter(pk=open_case.pk).exists())
 
 
+class TetheringBusyEvidenceTests(TwoOperatorMixin, TestCase):
+    """
+    The signal that survives somebody pinning their hop counter.
+
+    tether-busy was read but never able to open a case: suspects were drawn
+    from the hop lists alone, so an address could sit in it all evening and
+    nothing would ever look at it. That left the one rule written to catch the
+    evasion unable to catch it — the subscriber who normalises their TTL was
+    invisible to the detector and to the rule that exists because they are.
+
+    It can open a case now, on a longer threshold, because it is also the
+    signal one torrent client sets off on its own.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        self.api = FakeMikrotik()
+        self.router = self.data["t1"]["router"]
+        with tenant_context(self.t1):
+            self.customer = Customer.objects.create(
+                tenant=self.t1, full_name="Pinned", phone="254711000222",
+                connection_type="hotspot", hotspot_username="AA:BB:CC:DD:EE:02",
+                router=self.router, status="active")
+        self.api.session("10.5.50.20", "AA:BB:CC:DD:EE:02")
+        # No hop-list entry anywhere: this subscriber's traffic arrives at 64
+        # like everybody else's. Connection count is all there is.
+        self.api.suspect("10.5.50.20", "tether-busy")
+
+    def set_policy(self, value, **extra):
+        with tenant_context(self.t1):
+            SystemSetting.objects.update_or_create(
+                tenant=self.t1, key="TETHERING_POLICY",
+                defaults={"value": value})
+            for key, val in extra.items():
+                SystemSetting.objects.update_or_create(
+                    tenant=self.t1, key=key, defaults={"value": str(val)})
+        cache.clear()
+
+    def sweep(self, times=1):
+        from billing.services import tethering
+
+        with patch("billing.router_service.safe_connect_router",
+                   return_value=self.api), \
+             patch("billing.tasks.notification_tasks."
+                   "notify_customer_task.delay") as sent:
+            for i in range(times):
+                with tenant_context(self.t1):
+                    tethering.sweep_router(
+                        self.router,
+                        now=timezone.now() + timezone.timedelta(minutes=5 * i))
+        self.sent = sent
+
+    def case(self):
+        with tenant_context(self.t1):
+            return TetheringCase.objects.filter(customer=self.customer).first()
+
+    def test_connection_count_alone_opens_a_case(self):
+        """
+        The whole point of the rule. Before this it could not: an address in
+        tether-busy and nowhere else was read, flagged onto cases the hop lists
+        had already opened, and otherwise dropped on the floor.
+        """
+        self.set_policy("log")
+        self.sweep()
+        self.assertIsNotNone(
+            self.case(),
+            "an address in tether-busy and nowhere else was seen by nobody")
+
+    def test_a_busy_only_case_records_no_hops(self):
+        """Zero is what says the hop counter never gave this address away."""
+        self.set_policy("log")
+        self.sweep()
+        self.assertEqual(self.case().hops, 0)
+        self.assertTrue(self.case().high_connections)
+
+    def test_connection_count_alone_waits_longer_before_anything_happens(self):
+        """
+        One torrent client passes the connection limit in a burst. A household
+        holds it for the evening, and that is the difference the longer
+        threshold is measuring.
+        """
+        self.set_policy("kick", TETHERING_MIN_OBSERVATIONS=2,
+                        TETHERING_BUSY_OBSERVATIONS=4)
+        self.sweep(times=3)
+        self.assertEqual(self.case().status, TetheringCase.WATCHING,
+                         "acted on the ordinary threshold, not the busy one")
+        self.assertEqual(len(self.api.rows("ip", "hotspot", "active")), 1)
+
+        self.sweep()
+        self.assertEqual(self.case().status, TetheringCase.KICKED)
+
+    def test_a_hop_sighting_puts_the_case_back_on_the_ordinary_threshold(self):
+        """
+        Once the hop counter has given them away the weaker signal is no longer
+        what the case rests on, and holding it to the longer wait would let a
+        confirmed sharer run for twice as long as an ordinary one.
+        """
+        self.set_policy("kick", TETHERING_MIN_OBSERVATIONS=2,
+                        TETHERING_BUSY_OBSERVATIONS=6)
+        self.sweep()
+        self.api.suspect("10.5.50.20", "tether-hop1")
+        self.sweep()
+        self.assertEqual(self.case().hops, 1)
+        self.assertEqual(self.case().status, TetheringCase.KICKED)
+
+    def test_busy_can_never_be_configured_to_act_sooner_than_a_hop_mismatch(self):
+        """Busy-only is the weaker evidence. Acting on it first is backwards."""
+        from billing.services import tethering
+
+        self.set_policy("log", TETHERING_MIN_OBSERVATIONS=5,
+                        TETHERING_BUSY_OBSERVATIONS=3)
+        with tenant_context(self.t1):
+            self.assertGreaterEqual(
+                tethering.busy_observations(self.t1.id),
+                tethering.min_observations(self.t1.id))
+
+    def test_an_address_in_a_hop_list_and_busy_is_still_one_sighting(self):
+        """Counted twice it reaches the threshold in half the time it should."""
+        self.set_policy("log")
+        self.api.suspect("10.5.50.20", "tether-hop1")
+        self.sweep()
+        self.assertEqual(self.case().observations, 1)
+        self.assertEqual(self.case().hops, 1)
+
+
+class TetheringBlockTests(TwoOperatorMixin, TestCase):
+    """
+    The policy that does not wait for a sweep.
+
+    Every other policy is decided in Python every five minutes, which is a
+    floor an operator who wants sharing stopped before it is useful cannot get
+    under. `block` puts a reject rule on the router instead, so enforcement
+    lands on the first packet and the billing server is not in the path at all.
+
+    What these hold the code to is the consequence: the rule stops the paying
+    subscriber, because a NATted tether gives the router nothing else to stop,
+    and a rule that outlives the policy is a permanent outage nobody can
+    explain. So most of these are about it coming off again.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        self.api = FakeMikrotik()
+        self.router = self.data["t1"]["router"]
+        with tenant_context(self.t1):
+            self.customer = Customer.objects.create(
+                tenant=self.t1, full_name="Sharer", phone="254711000333",
+                connection_type="hotspot", hotspot_username="AA:BB:CC:DD:EE:03",
+                router=self.router, status="active")
+        self.api.session("10.5.50.30", "AA:BB:CC:DD:EE:03")
+        self.api.suspect("10.5.50.30", "tether-hop1")
+
+    def set_policy(self, value, **extra):
+        with tenant_context(self.t1):
+            SystemSetting.objects.update_or_create(
+                tenant=self.t1, key="TETHERING_POLICY",
+                defaults={"value": value})
+            for key, val in extra.items():
+                SystemSetting.objects.update_or_create(
+                    tenant=self.t1, key=key, defaults={"value": str(val)})
+        cache.clear()
+
+    def sweep(self, times=1):
+        from billing.services import tethering
+
+        with patch("billing.router_service.safe_connect_router",
+                   return_value=self.api), \
+             patch("billing.tasks.notification_tasks."
+                   "notify_customer_task.delay") as sent:
+            for i in range(times):
+                with tenant_context(self.t1):
+                    tethering.sweep_router(
+                        self.router,
+                        now=timezone.now() + timezone.timedelta(minutes=5 * i))
+        self.sent = sent
+
+    def filters(self):
+        from billing.services import tethering
+
+        return [r for r in self.api.rows("ip", "firewall", "filter")
+                if (r.get("comment") or "").startswith(tethering.RULE_COMMENT)]
+
+    def blocked_lists(self):
+        return sorted(r["src-address-list"] for r in self.filters())
+
+    def case(self):
+        with tenant_context(self.t1):
+            return TetheringCase.objects.filter(customer=self.customer).first()
+
+    # ---- what goes on the router -------------------------------------------
+
+    def test_block_puts_a_reject_rule_on_the_router(self):
+        """
+        This is the whole feature. Without a rule on the router, enforcement
+        waits for the next sweep like everything else, which is the thing it
+        exists not to do.
+        """
+        self.set_policy("block")
+        self.sweep()
+        self.assertEqual(self.blocked_lists(), ["tether-hop1", "tether-hop2"])
+
+    def test_the_reject_fails_fast_rather_than_hanging(self):
+        """
+        A dropped packet gives a connection that hangs for thirty seconds a
+        time, which reads as a broken network and arrives as a support call.
+        """
+        self.set_policy("block")
+        self.sweep()
+        for rule in self.filters():
+            self.assertEqual(rule["action"], "reject")
+            self.assertEqual(rule["reject-with"], "icmp-admin-prohibited")
+
+    def test_the_block_goes_above_the_operators_own_rules(self):
+        """
+        The stock forward chain accepts established connections first. A reject
+        underneath that stops new connections while every download already
+        running carries on — which is not a block, and would read as one.
+        """
+        self.api.rows("ip", "firewall", "filter").append(
+            {".id": "*500", "chain": "forward", "action": "accept",
+             "connection-state": "established,related"})
+        self.set_policy("block")
+        self.sweep()
+        for rule in self.filters():
+            self.assertEqual(rule.get("place-before"), "*500")
+
+    def test_the_router_itself_stays_reachable(self):
+        """
+        chain=forward, not raw prerouting. DNS and the login page are input
+        traffic, and a subscriber who can still load a page is one who can be
+        told why their connection died.
+        """
+        self.set_policy("block")
+        self.sweep()
+        for rule in self.filters():
+            self.assertEqual(rule["chain"], "forward")
+
+    def test_the_normal_list_is_never_blocked(self):
+        """
+        tether-normal holds every honest device on the hotspot. Blocking it
+        would take the whole network down in one sweep.
+        """
+        self.set_policy("block")
+        self.sweep()
+        self.assertNotIn("tether-normal", self.blocked_lists())
+
+    def test_connection_count_alone_is_not_blocked_unless_asked(self):
+        """
+        Under `block` there is no threshold between the signal and somebody
+        losing their connection, and this is the signal a torrent client sets
+        off in a second.
+        """
+        self.set_policy("block")
+        self.sweep()
+        self.assertNotIn("tether-busy", self.blocked_lists())
+
+    def test_an_operator_can_ask_for_connection_count_to_be_blocked_too(self):
+        self.set_policy("block", TETHERING_BLOCK_BUSY="true")
+        self.sweep()
+        self.assertIn("tether-busy", self.blocked_lists())
+
+    def test_no_other_policy_puts_a_reject_rule_on_the_router(self):
+        for value in ("log", "warn", "throttle", "kick"):
+            with self.subTest(policy=value):
+                self.api.rows("ip", "firewall", "filter").clear()
+                self.set_policy(value, TETHERING_MIN_OBSERVATIONS=99)
+                self.sweep()
+                self.assertEqual(self.filters(), [])
+
+    # ---- what happens to the subscriber ------------------------------------
+
+    def test_the_case_is_recorded_and_the_reason_is_sent(self):
+        """
+        The router has already cut them off. All that is left is telling them
+        why, so it is not filed under "this network is broken".
+        """
+        self.set_policy("block", TETHERING_MIN_OBSERVATIONS=2)
+        self.sweep(times=2)
+        self.assertEqual(self.case().status, TetheringCase.BLOCKED)
+        self.assertEqual(self.sent.call_count, 1)
+
+    def test_blocking_does_not_touch_what_they_paid_for(self):
+        """
+        The strongest setting is still a firewall rule that expires. It does
+        not end a subscription, block a device or delete a voucher.
+        """
+        self.set_policy("block", TETHERING_MIN_OBSERVATIONS=2)
+        self.sweep(times=2)
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.status, "active")
+        with tenant_context(self.t1):
+            self.assertFalse(
+                CustomerDevice.objects.filter(customer=self.customer,
+                                              blocked=True).exists())
+
+    def test_a_blocked_case_is_not_texted_again_every_five_minutes(self):
+        self.set_policy("block", TETHERING_MIN_OBSERVATIONS=2)
+        self.sweep(times=8)
+        self.assertEqual(self.sent.call_count, 1)
+
+    # ---- taking it off again, which is the part that matters ---------------
+
+    def test_stepping_down_from_block_takes_the_reject_rules_off(self):
+        """
+        Not just switching the feature off. A rule that only disappears when
+        detection is disabled entirely leaves people cut off by a policy that
+        is no longer in force.
+        """
+        self.set_policy("block")
+        self.sweep()
+        self.assertTrue(self.filters())
+
+        self.set_policy("throttle", TETHERING_MIN_OBSERVATIONS=99)
+        self.sweep()
+        self.assertEqual(self.filters(), [])
+
+    def test_switching_detection_off_lifts_the_blocks(self):
+        """
+        The off path deliberately dials nobody, which makes switching off the
+        one moment nothing runs to undo what was done. A reject rule left there
+        is a subscriber with no internet, permanently, with no policy in force
+        that would explain it.
+        """
+        from billing.tasks.tethering_tasks import detect_tethering
+
+        self.set_policy("block")
+        self.sweep()
+        self.assertTrue(self.filters())
+
+        self.set_policy("off")
+        with patch("billing.router_service.safe_connect_router",
+                   return_value=self.api):
+            detect_tethering()
+
+        self.assertEqual(self.filters(), [],
+                         "switched off with the blocks still on the router")
+
+    def test_switching_off_having_caught_nobody_still_lifts_the_blocks(self):
+        """
+        The case table is not the record of what is on a router. An operator
+        who ran `block`, caught nobody and switched off leaves a box that will
+        cut off the first person to tether, with no sweep to notice.
+        """
+        from billing.tasks.tethering_tasks import detect_tethering
+
+        self.api.rows("ip", "firewall", "address-list").clear()
+        self.set_policy("block")
+        self.sweep()
+        with tenant_context(self.t1):
+            self.assertEqual(TetheringCase.objects.count(), 0)
+        self.assertTrue(self.filters())
+
+        self.set_policy("off")
+        with patch("billing.router_service.safe_connect_router",
+                   return_value=self.api):
+            detect_tethering()
+
+        self.assertEqual(self.filters(), [])
+
+    def test_an_unreachable_router_is_come_back_for(self):
+        """
+        Recording the block as lifted while a subscriber is still behind it is
+        the one outcome there is no way back from — nothing would return to it.
+        """
+        from billing.services import tethering
+        from billing.tasks.tethering_tasks import detect_tethering
+
+        self.set_policy("block")
+        self.sweep()
+        self.set_policy("off")
+
+        with patch("billing.router_service.safe_connect_router",
+                   return_value=None):
+            detect_tethering()
+        with tenant_context(self.t1):
+            self.assertTrue(tethering.blocks_may_be_installed(self.t1.id))
+
+        cache.clear()
+        with patch("billing.router_service.safe_connect_router",
+                   return_value=self.api):
+            detect_tethering()
+        self.assertEqual(self.filters(), [])
+        with tenant_context(self.t1):
+            self.assertFalse(tethering.blocks_may_be_installed(self.t1.id))
+
+    def test_removing_everything_takes_the_reject_rules_too(self):
+        from billing.services import tethering
+
+        self.set_policy("block")
+        self.sweep()
+        tethering.remove_rules(self.api)
+        self.assertEqual(self.api.rows("ip", "firewall", "filter"), [])
+        self.assertEqual(self.api.mangle(), [])
+
+    def test_an_operators_own_filter_rules_are_left_alone(self):
+        """Their firewall is not ours to tidy up."""
+        from billing.services import tethering
+
+        self.api.rows("ip", "firewall", "filter").append(
+            {".id": "*600", "chain": "forward", "action": "drop",
+             "comment": "block bittorrent"})
+        self.set_policy("block")
+        self.sweep()
+        tethering.remove_rules(self.api)
+        self.assertEqual(
+            [r.get("comment") for r in self.api.rows("ip", "firewall", "filter")],
+            ["block bittorrent"])
+
+    def test_installing_twice_does_not_stack_reject_rules(self):
+        self.set_policy("block")
+        self.sweep(times=4)
+        self.assertEqual(len(self.filters()), 2)
+
+
 # =====================================================
 # 56. The ways the wrong person gets punished
 # =====================================================
@@ -10505,18 +10921,27 @@ class TetheringBlindSpotTests(TwoOperatorMixin, TestCase):
                 if r["address-list"] == tethering.BUSY_LIST]
         self.assertEqual(busy[0]["connection-limit"], "250,32")
 
-    def test_being_busy_alone_never_does_anything(self):
+    def test_being_busy_alone_is_not_worth_a_hop_mismatch(self):
         """
-        One torrent client passes this on its own. It is corroboration, and it
-        is recorded as such — an address in that list and nowhere else is not
-        even a sighting.
+        This used to assert that an address in tether-busy and nowhere else was
+        not even a sighting. That was the safe reading of "one torrent client
+        passes this on its own" and it had a cost nobody had counted: the only
+        signal that survives a subscriber pinning their hop counter could never
+        open a case, so the rule written to catch that evasion could not catch
+        it. Somebody tethering with a normalised TTL was invisible to the whole
+        feature.
+
+        So it opens a case now — and waits twice as long before anything is
+        done about it, which is the part that keeps the torrent client safe.
+        Four sweeps at the ordinary threshold of two would have ended this
+        subscriber's session twice over.
         """
         from billing.services import tethering
 
         self.set("TETHERING_POLICY", "kick")
         self.set("TETHERING_MIN_OBSERVATIONS", 2)
         with tenant_context(self.t1):
-            Customer.objects.create(
+            customer = Customer.objects.create(
                 tenant=self.t1, full_name="Busy", phone="254711000333",
                 connection_type="hotspot", hotspot_username="AA:BB:CC:DD:EE:03",
                 router=self.router, status="active")
@@ -10525,14 +10950,21 @@ class TetheringBlindSpotTests(TwoOperatorMixin, TestCase):
 
         with patch("billing.router_service.safe_connect_router",
                    return_value=self.api):
-            for i in range(4):
+            for i in range(3):
                 with tenant_context(self.t1):
                     tethering.sweep_router(
                         self.router,
                         now=timezone.now() + timezone.timedelta(minutes=5 * i))
 
         with tenant_context(self.t1):
-            self.assertEqual(TetheringCase.objects.count(), 0)
+            case = TetheringCase.objects.get(customer=customer)
+        self.assertEqual(case.observations, 3)
+        self.assertEqual(case.hops, 0,
+                         "the hop counter never gave this address away")
+        self.assertTrue(case.high_connections)
+        self.assertEqual(case.status, TetheringCase.WATCHING,
+                         "connection count alone was acted on at the hop "
+                         "threshold — a torrent client loses its session")
         self.assertEqual(len(self.api.rows("ip", "hotspot", "active")), 1)
 
     def test_being_busy_is_recorded_against_a_case_that_exists(self):

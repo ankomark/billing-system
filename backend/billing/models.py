@@ -1376,6 +1376,7 @@ class TetheringCase(TenantScopedModel):
     WARNED = "warned"          # texted, access untouched
     THROTTLED = "throttled"    # slowed at the router
     KICKED = "kicked"          # session ended, login page returns
+    BLOCKED = "blocked"        # rejected at the router, by the router
     CLEARED = "cleared"        # stopped, and anything applied has been undone
 
     STATUS_CHOICES = (
@@ -1383,6 +1384,7 @@ class TetheringCase(TenantScopedModel):
         (WARNED, "Warned"),
         (THROTTLED, "Throttled"),
         (KICKED, "Session ended"),
+        (BLOCKED, "Blocked"),
         (CLEARED, "Cleared"),
     )
 
@@ -1403,7 +1405,15 @@ class TetheringCase(TenantScopedModel):
 
     # How many routers the traffic crossed before reaching ours: 1 is a device
     # behind the subscriber's phone, 2 is a device behind a router behind it.
-    hops = models.PositiveSmallIntegerField(default=1)
+    # 0 means the hop counter never gave this address away at all and the case
+    # rests on connection count alone, which is held to a longer threshold.
+    #
+    # Zero is also the default, and has to be. The sweep raises this with
+    # max(case.hops, hops), so a default of 1 on an unsaved instance silently
+    # floored every new case at one hop — and a busy-only case would have
+    # claimed TTL evidence it never had, and been acted on twice as fast as
+    # intended. Rows written before this all carry a real 1 or 2.
+    hops = models.PositiveSmallIntegerField(default=0)
 
     # Traffic at both the full hop count and one short of it, from the same
     # address, in the same window. That is the phone itself browsing while
@@ -1413,13 +1423,17 @@ class TetheringCase(TenantScopedModel):
 
     # More connections open at once than one handset plausibly holds.
     #
-    # Corroboration, never a trigger. The hop counter is defeatable — pinning
-    # the outgoing value back to 64 is one line on a rooted Android — and an
-    # evaded case looks exactly like an honest one. This is the signal that
-    # survives that, because a household's worth of devices behind one address
-    # cannot hide how many connections it opens. It is also the signal one
-    # enthusiastic torrent client sets off on its own, which is precisely why
-    # nothing is ever done on the strength of it.
+    # The hop counter is defeatable — pinning the outgoing value back to 64 is
+    # one line on a rooted Android — and an evaded case looks exactly like an
+    # honest one. This is the signal that survives that, because a household's
+    # worth of devices behind one address cannot hide how many connections it
+    # opens. It is also the signal one enthusiastic torrent client sets off on
+    # its own.
+    #
+    # It was corroboration only for exactly that reason, which left it unable
+    # to catch the evasion it was written for. It can now open a case alone,
+    # held to a threshold twice as long — see busy_observations(). A case with
+    # `hops` of zero is one this and nothing else has ever seen.
     high_connections = models.BooleanField(default=False)
 
     # The address a throttle was actually applied to, which is not necessarily
@@ -1450,7 +1464,7 @@ class TetheringCase(TenantScopedModel):
     cleared_at = models.DateTimeField(null=True, blank=True)
     note = models.CharField(max_length=255, blank=True)
 
-    OPEN_STATUSES = (WATCHING, WARNED, THROTTLED, KICKED)
+    OPEN_STATUSES = (WATCHING, WARNED, THROTTLED, KICKED, BLOCKED)
 
     class Meta:
         ordering = ["-last_seen"]

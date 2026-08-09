@@ -547,7 +547,7 @@ you sold has nothing to say about what is behind that one phone.
 What gives it away is the hop counter on the packets. A phone talking to your
 router directly arrives with the round number its operating system set (64 on
 Android and iOS, 128 on Windows); a laptop behind that phone has crossed one
-more router, so it arrives one lower. The backend installs nine mangle rules
+more router, so it arrives one lower. The backend installs ten mangle rules
 that write the odd ones into address lists, reads those lists every five
 minutes, and builds a case per subscriber.
 
@@ -560,10 +560,12 @@ Switch it on per operator, in **SystemSetting**:
 
 | Key | Values | Default |
 |---|---|---|
-| `TETHERING_POLICY` | `off`, `log`, `warn`, `throttle`, `kick` | `off` |
+| `TETHERING_POLICY` | `off`, `log`, `warn`, `throttle`, `kick`, `block` | `off` |
 | `TETHERING_MIN_OBSERVATIONS` | sweeps before acting | `3` (≈15 min) |
+| `TETHERING_BUSY_OBSERVATIONS` | sweeps before acting on connection count alone | `6` (≈30 min) |
 | `TETHERING_THROTTLE_KBPS` | speed under `throttle` | `512` |
 | `TETHERING_CONNECTION_LIMIT` | connections that mark an address busy | `100` |
+| `TETHERING_BLOCK_BUSY` | whether `block` also cuts off on connection count | `false` |
 | `TETHERING_STALE_MINUTES` | silence that closes a case | `30` |
 | `TETHERING_MESSAGE` | what the subscriber is told | see below |
 
@@ -582,9 +584,41 @@ Then:
   page — a firewall rule cannot do that, because an authenticated client's
   traffic is already being passed, so dropping packets gives them a broken
   connection rather than a login form.
+- `block` cuts the connection off on the first packet. Read the section below
+  before using it.
 
-None of them touches the subscription, blocks a device or burns a voucher. The
-strongest setting interrupts a session; the customer can log straight back in.
+None of them touches the subscription, blocks a device or burns a voucher.
+
+**`block` — enforcement without waiting for a sweep.**
+
+Every other policy is decided by the five-minute sweep, which is a floor. If
+that is too slow, `block` puts a reject rule on the router itself, matching the
+same address lists the detection rules fill. Enforcement lands on the first
+packet and the billing server is not in the path at all.
+
+It lifts itself: there is no timeout on the rule, but the *address list entry*
+expires, so the block clears about ten minutes after the traffic stops, and the
+client's own retries hold it in place while the sharing continues.
+
+Three things to accept before switching it on.
+
+- **It cuts off the subscriber, not the tethered device.** Their phone NATs the
+  traffic, so it reaches the router with their address and their MAC — one
+  address, one session. There is nothing else to cut off.
+- **It has none of the patience of the other policies.** No threshold, no check
+  that the lease still belongs to the person the evidence is about. A travel
+  router, a NATted VM and a corporate VPN all land in the same list, and lose
+  their connection within a second. The case and the SMS follow on the next
+  sweep, so they learn why up to five minutes later.
+- **Connection count is excluded by default.** `TETHERING_BLOCK_BUSY` is off
+  because a torrent client trips the connection limit in about a second, and
+  under this policy nothing stands between that and somebody being cut off.
+
+The router stays reachable throughout — the rule is in `chain=forward`, and DNS
+and the login page are `input` traffic — so a blocked subscriber can still load
+a page. Run `tethering_rules status` to see how many addresses are cut off right
+now; it prints an error if a router is still blocking under a policy that no
+longer says to.
 
 **Two things it cannot see, both worth knowing before you trust it.**
 
@@ -592,9 +626,11 @@ strongest setting interrupts a session; the customer can log straight back in.
 rooted Android, and there are apps that do it. Nobody who has bothered will
 ever appear in the hop lists. What they cannot hide is how many connections a
 roomful of devices holds open at once, so a tenth rule marks addresses above
-`TETHERING_CONNECTION_LIMIT` as busy. That flag is corroboration only — one
-enthusiastic torrent client trips it alone — so it is recorded on the case and
-shown in the admin, and nothing is ever done on the strength of it.
+`TETHERING_CONNECTION_LIMIT` as busy. That rule can open a case on its own —
+otherwise the one signal that survives the evasion could never catch the people
+evading — but it is held to `TETHERING_BUSY_OBSERVATIONS`, twice the ordinary
+wait, because one enthusiastic torrent client trips it alone. Half an hour of
+it is a household; a burst of it is a download.
 
 *IPv6.* MikroTik's hotspot is IPv4 only: it does not intercept IPv6, does not
 authenticate it, and these rules do not match it. On a router handing out

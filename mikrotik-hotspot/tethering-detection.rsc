@@ -102,14 +102,18 @@ add chain=prerouting action=add-src-to-address-list address-list=tether-hop2 \
 # ---------------------------------------------------------------------
 # 4. Busy — more connections than one handset holds
 # ---------------------------------------------------------------------
-# The one rule above does not depend on the hop counter, and so the one that
-# survives somebody pinning it. A phone browsing sits in the low tens of open
-# connections; four devices streaming does not.
+# The one rule above that does not depend on the hop counter, and so the one
+# that survives somebody pinning it. A phone browsing sits in the low tens of
+# open connections; four devices streaming does not.
 #
-# Corroboration only. One enthusiastic torrent client passes this on its own,
-# so an address in this list and nowhere else means nothing. The /32 is what
-# makes the limit per address rather than per subnet — without it, one busy
-# subscriber puts the whole hotspot range on the list.
+# One enthusiastic torrent client passes this on its own, so the billing system
+# holds an address caught by this and nothing else to twice the usual patience
+# before acting — six sweeps rather than three. If you are watching by hand,
+# apply the same discipline: an address in this list for ten minutes is a busy
+# evening, and an address in it for an hour is a household.
+#
+# The /32 is what makes the limit per address rather than per subnet — without
+# it, one busy subscriber puts the whole hotspot range on the list.
 
 add chain=prerouting action=add-src-to-address-list address-list=tether-busy \
     address-list-timeout=10m hotspot=auth connection-state=new \
@@ -186,6 +190,46 @@ add chain=prerouting action=add-src-to-address-list address-list=tether-busy \
 # point. It interrupts the sharing and gives you a reason to tell them why,
 # without taking away what they paid for.
 #
+#
+# =====================================================================
+# STOPPING IT ON THE FIRST PACKET — TETHERING_POLICY=block
+# =====================================================================
+#
+# Everything above waits for the billing system to look, and it looks every
+# five minutes. If that is too slow, the router can enforce it itself:
+#
+#   /ip firewall filter
+#   add chain=forward action=reject reject-with=icmp-admin-prohibited \
+#       src-address-list=tether-hop1 place-before=0 \
+#       comment="AUTO | WIFI BILLING SYSTEM | tether block tether-hop1"
+#   add chain=forward action=reject reject-with=icmp-admin-prohibited \
+#       src-address-list=tether-hop2 place-before=0 \
+#       comment="AUTO | WIFI BILLING SYSTEM | tether block tether-hop2"
+#
+# Four things about this, and none of them is optional reading.
+#
+#   * It blocks the SUBSCRIBER, not the tethered device. Their phone NATs the
+#     traffic, so it arrives with their address and their MAC — one address,
+#     one session. There is nothing else on this router to block.
+#   * place-before=0 puts it at the top of the chain. The stock forward chain
+#     accepts established connections first, and a reject underneath that stops
+#     new connections while every download already running carries on.
+#   * chain=forward, not /ip firewall raw. DNS and the login page are input
+#     traffic, so the router stays reachable and the subscriber can still be
+#     shown a page. In raw they would get a network that is simply dead.
+#   * There is no timeout on the rule and none is needed: the ADDRESS LIST
+#     entry expires, so the block lifts itself about ten minutes after the
+#     traffic stops, and the client's own retries keep it in place while the
+#     sharing continues.
+#
+# tether-busy is deliberately not in that list. Under this policy there is no
+# threshold between the signal and somebody losing their connection, and a
+# torrent client trips the connection limit in about a second. Add it only if
+# you have decided to accept that.
+#
+# The billing system will not lift these for you unless it knows they are
+# there. If you paste them in by hand, take them off by hand.
+#
 # Whatever you apply, write down how it comes off again. A throttle queue that
 # nobody removes is a customer paying for 10 Mbps and getting 512 kbps for the
 # rest of the month.
@@ -195,9 +239,14 @@ add chain=prerouting action=add-src-to-address-list address-list=tether-busy \
 # TAKING IT ALL BACK OFF
 # =====================================================================
 #
+#   /ip firewall filter remove [find comment~"WIFI BILLING SYSTEM \\| tether"]
 #   /ip firewall mangle remove [find comment~"WIFI BILLING SYSTEM \\| tether"]
 #   /ip firewall address-list remove [find list~"^tether-"]
 #   /queue simple remove [find comment~"WIFI BILLING SYSTEM \\| tether"]
+#
+# The filter rules first, in that order. They are the only thing here that
+# stops traffic, so if you get interrupted halfway the half you did is the half
+# that gave people their connection back.
 #
 # Do the queues even if you think there are none. A throttle applied to an
 # address and never lifted is the worst thing in this file: the subscriber it
