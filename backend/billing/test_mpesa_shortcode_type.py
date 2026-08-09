@@ -14,7 +14,7 @@ Found on a real till after three live attempts.
 from decimal import Decimal
 from unittest.mock import patch
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from billing.mpesa_client import shortcode_config, generate_password
 from billing.models import SystemSetting, Tenant
@@ -95,8 +95,18 @@ class ShortcodeConfigTests(TestCase):
         self.assertEqual(cfg["transaction_type"], "CustomerBuyGoodsOnline")
 
 
+@override_settings(PLATFORM_BASE_URL="https://billing.example.com")
 class StkPayloadTests(TestCase):
-    """What actually goes on the wire."""
+    """
+    What actually goes on the wire.
+
+    PLATFORM_BASE_URL is overridden because initiate_stk_push derives the
+    callback URL before it builds the payload, and there is no default for it —
+    it is not in .env.example, because the only correct value is a hostname the
+    operator has and we do not. Without this the push raises
+    PaymentsNotConfigured and nothing below ever runs: the test failed on the
+    line before the thing it was written to check.
+    """
 
     def setUp(self):
         from billing.config import clear_settings_cache
@@ -148,3 +158,38 @@ class StkPayloadTests(TestCase):
         self.assertEqual(captured["TransactionType"], "CustomerBuyGoodsOnline")
         self.assertEqual(captured["PartyB"], "3439137")
         self.assertEqual(captured["BusinessShortCode"], "3439137")
+
+    def test_the_callback_url_carries_this_operators_token(self):
+        """
+        Reachable now that the push runs to the end, and worth asserting: the
+        token in that URL is the only thing telling the callback whose
+        credentials to load. Derived wrong, every operator's results would be
+        posted to a URL that resolves to somebody else — or to none of them.
+        """
+        from billing import mpesa_client
+
+        captured = {}
+
+        class FakeResponse:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"ResponseCode": "0", "CheckoutRequestID": "ws_CO_1"}
+
+        def fake_post(url, json=None, headers=None, timeout=None):
+            captured.update(json)
+            return FakeResponse()
+
+        with patch.object(mpesa_client, "get_mpesa_access_token", return_value="tok"), \
+             patch.object(mpesa_client.requests, "post", fake_post), \
+             tenant_context(self.tenant):
+            mpesa_client.initiate_stk_push(
+                phone_number="254700000001", amount=Decimal("50"),
+                account_reference="INV-1", description="test",
+                tenant=self.tenant)
+
+        self.assertEqual(
+            captured["CallBackURL"],
+            f"https://billing.example.com/api/mpesa/callback/"
+            f"{self.tenant.public_token}/")
