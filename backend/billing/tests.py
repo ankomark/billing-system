@@ -5513,8 +5513,30 @@ class BlessedTextsSmsTests(TwoOperatorMixin, TestCase):
     def _response(self, payload, status_code=200):
         mock = MagicMock()
         mock.status_code = status_code
+        mock.ok = True
         mock.json.return_value = payload
         mock.raise_for_status.return_value = None
+        return mock
+
+    def _error_response(self, payload, status_code=422):
+        """
+        A refusal the provider returns as an HTTP error rather than a 200.
+
+        Not hypothetical: this is byte-for-byte what a live account answers
+        when the sender ID is not one assigned to it.
+        """
+        import requests as _requests
+
+        mock = MagicMock()
+        mock.status_code = status_code
+        mock.ok = False
+        mock.text = str(payload)
+        if payload is None:
+            mock.json.side_effect = ValueError("no json")
+        else:
+            mock.json.return_value = payload
+        mock.raise_for_status.side_effect = _requests.HTTPError(
+            f"{status_code} Client Error: for url: https://sms.blessedtexts.com/")
         return mock
 
     # ---- single send -------------------------------------------------------
@@ -5584,6 +5606,74 @@ class BlessedTextsSmsTests(TwoOperatorMixin, TestCase):
              patch("billing.tasks.alert_tasks.notify_admin_task.delay") as alert:
             send_sms("nonsense", "hello", tenant=self.t1)
         self.assertFalse(alert.called)
+
+    # ---- refusals that do not arrive as 200 --------------------------------
+
+    def test_a_refusal_sent_as_an_http_error_is_still_read(self):
+        """
+        The provider answers 200 for some refusals and an HTTP error for
+        others, with the same body either way. Only the first was handled:
+        raise_for_status() threw the second away, so the caller logged
+        "422 Client Error" and never reached the code that names it.
+
+        This exact body came off a live account.
+        """
+        body = {"status_code": "1004", "status_desc": "Invalid Sender ID: Blessed"}
+        with patch("billing.notifications.requests.post",
+                   return_value=self._error_response(body)), \
+             self.assertLogs("billing.notifications", level="ERROR") as logs:
+            self.assertFalse(send_sms("254722000000", "hello", tenant=self.t1))
+
+        written = "\n".join(logs.output)
+        self.assertIn("Invalid Sender ID", written,
+                      "the provider said why and it was discarded")
+
+    def test_a_rejected_sender_id_reaches_the_operator(self):
+        """
+        The failure that most needs a person, and the one that was silent.
+        1004 is already in NEEDS_ATTENTION — it never got there, because the
+        escalation happens after the call that was raising.
+
+        Every message this operator sends is failing and only they can fix it.
+        """
+        body = {"status_code": "1004", "status_desc": "Invalid Sender ID: Blessed"}
+        with patch("billing.notifications.requests.post",
+                   return_value=self._error_response(body)), \
+             patch("billing.tasks.alert_tasks.notify_admin_task.delay") as alert:
+            send_sms("254722000000", "hello", tenant=self.t1)
+
+        self.assertTrue(alert.called, "SMS is dead account-wide and nobody was told")
+        self.assertIn("not going out", alert.call_args.args[0])
+
+    def test_a_transport_failure_is_still_a_failure(self):
+        """
+        A 502 from a proxy or an HTML error page carries no status_code, so
+        there is nothing to read and it must not be mistaken for one.
+        """
+        with patch("billing.notifications.requests.post",
+                   return_value=self._error_response(None, status_code=502)):
+            self.assertFalse(send_sms("254722000000", "hello", tenant=self.t1))
+
+    def test_a_bulk_refusal_sent_as_an_http_error_is_counted(self):
+        body = [{"status_code": "1004", "status_desc": "Invalid Sender ID: Blessed",
+                 "phone": "254722000001"}]
+        with patch("billing.notifications.requests.post",
+                   return_value=self._error_response(body)):
+            result = send_bulk_sms([("254722000001", "a")], tenant=self.t1)
+
+        self.assertEqual(result["sent"], 0)
+        self.assertEqual(result["failed"], 1)
+        self.assertIn("Invalid Sender ID", result["errors"][0])
+
+    def test_the_balance_explains_a_rejection_sent_as_an_http_error(self):
+        """Otherwise the operator gets a raw exception string where a reason belongs."""
+        body = {"status_code": "1002", "status_desc": "Invalid API key"}
+        with patch("billing.notifications.requests.post",
+                   return_value=self._error_response(body)):
+            result = sms_balance(tenant=self.t1)
+
+        self.assertFalse(result["ok"])
+        self.assertIn("Invalid API key", result["error"])
 
     # ---- the number as the provider wants it -------------------------------
 

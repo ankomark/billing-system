@@ -113,13 +113,54 @@ def _describe(entry):
     return False, f"{reason} ({code})" if code else reason
 
 
+def _carries_provider_status(body):
+    """Whether a parsed body is BlessedTexts explaining itself."""
+    entry = body[0] if isinstance(body, list) and body else body
+    return isinstance(entry, dict) and "status_code" in entry
+
+
 def _post(url, payload, timeout=15):
+    """
+    Post, and keep the provider's own account of what went wrong.
+
+    This called raise_for_status() and nothing else, on the belief — stated in
+    send_sms below, and true of every refusal the tests covered — that this
+    provider answers HTTP 200 and puts the reason in the body. It answers 200
+    for some of them. An invalid sender ID comes back as **HTTP 422**, with a
+    body in exactly the same shape:
+
+        {"status_code": "1004", "status_desc": "Invalid Sender ID: Blessed"}
+
+    raise_for_status() turned that into an exception and discarded the body, so
+    the caller logged "Request to 2547... failed: 422 Client Error" and stopped.
+    1004 is in STATUS_MEANINGS and in NEEDS_ATTENTION, so it should have been
+    named and should have raised an alert — every message an operator sends is
+    failing and only they can fix it. Neither happened, because the code that
+    does both sits after this function returns.
+
+    An operator lost a day to that: a valid key, a readable credit balance, and
+    every send failing with nothing anywhere saying the sender ID was the
+    reason.
+
+    So a body that carries a status_code is returned however the request was
+    answered, and _describe reads it. A genuine transport failure — a 502 from
+    a proxy, an HTML error page, a timeout — has no such body and still raises.
+    """
     response = requests.post(
         url,
         json=payload,
         headers={"Content-Type": "application/json", "Accept": "application/json"},
         timeout=timeout,
     )
+
+    if not response.ok:
+        try:
+            body = response.json()
+        except ValueError:
+            body = None
+        if _carries_provider_status(body):
+            return body
+
     response.raise_for_status()
     return response.json()
 
