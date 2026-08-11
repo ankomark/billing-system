@@ -352,6 +352,11 @@ class MessageLogSerializer(serializers.ModelSerializer):
             "status_code",
             "reason",
             "message",
+            # The identifier the provider knows this message by. On the page so
+            # it can be quoted to them directly, which is what their support
+            # asks for and what the timestamps were standing in for.
+            "message_id",
+            "message_cost",
             "created_at",
         )
 

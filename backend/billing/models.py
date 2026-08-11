@@ -1798,15 +1798,48 @@ class MessageLog(TenantScopedModel):
     # their own subscriber.
     message = models.TextField(blank=True)
 
+    # The provider's own handle for this message, from the send response.
+    #
+    # Worth storing because it is the only identifier the two systems share.
+    # Matching a row here against the provider's outbox otherwise means reading
+    # timestamps and counting characters — that is genuinely how a delivery was
+    # confirmed once, by noticing "SMS test OK" is eleven characters and the
+    # outbox said eleven. It is also what their support will ask for.
+    #
+    # Blank where there is none: a refusal is not given one, and WhatsApp is a
+    # different provider with a different response.
+    message_id = models.CharField(max_length=64, blank=True)
+
+    # What the provider charged for it, in their units — "0.5" per part.
+    #
+    # Decimal rather than the string they send, so "what did that broadcast
+    # cost" is a sum over rows instead of arithmetic on the balance before and
+    # after, which counts anything else sharing the account.
+    #
+    # Null where the provider gave no figure, which is not the same as free.
+    message_cost = models.DecimalField(
+        max_digits=8, decimal_places=4, null=True, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         indexes = [
+            # Named, and under thirty characters. 0061 created these with
+            # names that were neither: it set them directly in the migration,
+            # where nothing checks the length, while the model left them
+            # unnamed. So Django derived hash names, found different ones in
+            # the database, and every makemigrations offered to rename indexes
+            # on a table that was otherwise correct. Naming them here settles
+            # it, and the length limit is a system check (models.E034) that
+            # Index() itself does not apply — the original names were 32.
+            #
             # The page's default view: this operator's failures, newest first.
-            models.Index(fields=["tenant", "status", "-created_at"]),
+            models.Index(fields=["tenant", "status", "-created_at"],
+                         name="msglog_tenant_status_idx"),
             # And the whole ledger in the same order, for the "All" tab and for
             # the pruning sweep, which deletes by age.
-            models.Index(fields=["tenant", "-created_at"]),
+            models.Index(fields=["tenant", "-created_at"],
+                         name="msglog_tenant_time_idx"),
         ]
 
     def __str__(self):

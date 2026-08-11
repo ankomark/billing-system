@@ -197,8 +197,25 @@ export default function MessageLogs() {
 function Outcome({ row }) {
   if (row.status === "sent") {
     return (
-      <span className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-400">
-        <CheckCircle2 size={13} aria-hidden="true" /> Sent
+      <span className="inline-flex flex-col gap-0.5">
+        <span className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-400">
+          <CheckCircle2 size={13} aria-hidden="true" /> Sent
+        </span>
+        {/*
+          A refusal shows the reason; a success shows the reference, which is
+          the equivalent thing to have when it did leave and the subscriber
+          still says nothing arrived. It is the only identifier this system and
+          the provider share, and what their support asks for. Selectable on
+          click so it can be pasted into that conversation.
+        */}
+        {row.message_id && (
+          <span className="max-w-xs text-[11px] leading-snug text-slate-500">
+            <span className="select-all font-mono" title="The provider's reference for this message">
+              {row.message_id}
+            </span>
+            {row.message_cost != null && ` · ${Number(row.message_cost)} units`}
+          </span>
+        )}
       </span>
     );
   }

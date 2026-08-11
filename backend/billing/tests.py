@@ -5955,6 +5955,88 @@ class MessageLogTests(TwoOperatorMixin, TestCase):
         self.assertEqual(row.phone, "254712345678")
         self.assertIn("ABC123", row.message)
 
+    # ---- what the provider calls it, and what it charged --------------------
+
+    def test_the_providers_reference_is_kept(self):
+        """
+        The only identifier the two systems share.
+
+        Without it, matching a row here to the provider's outbox means reading
+        timestamps and counting characters — which is literally how a delivery
+        was once confirmed, by noticing the body was eleven characters and the
+        outbox said eleven. It is also the first thing their support asks for.
+        """
+        body = [{"status_code": "1000", "message_id": "6496cc3d541ef109508440",
+                 "phone": "254722000000", "message_cost": "0.5"}]
+        with patch("billing.notifications.requests.post",
+                   return_value=self._response(body)):
+            send_sms("254722000000", "hello", tenant=self.t1)
+
+        row = self._logs(self.t1).last()
+        self.assertEqual(row.message_id, "6496cc3d541ef109508440")
+        self.assertEqual(row.message_cost, Decimal("0.5"))
+
+    def test_a_broadcast_keeps_a_reference_per_recipient(self):
+        """One reference each, against the right recipient — not the first one."""
+        body = [
+            {"status_code": "1000", "message_id": "aaa111", "phone": "254722000001",
+             "message_cost": "0.5"},
+            {"status_code": "1000", "message_id": "bbb222", "phone": "254722000002",
+             "message_cost": "1"},
+        ]
+        with patch("billing.notifications.requests.post",
+                   return_value=self._response(body)):
+            send_bulk_sms(
+                [("254722000001", "one"), ("254722000002", "two")], tenant=self.t1)
+
+        rows = {r.phone: r for r in self._logs(self.t1)}
+        self.assertEqual(rows["254722000001"].message_id, "aaa111")
+        self.assertEqual(rows["254722000002"].message_id, "bbb222")
+        self.assertEqual(rows["254722000002"].message_cost, Decimal("1"))
+
+    def test_a_refusal_has_no_reference_and_that_is_not_an_error(self):
+        """The provider issues neither for a message it declined to send."""
+        body = [{"status_code": "1004", "status_desc": "Invalid Sender ID: Blessed"}]
+        with patch("billing.notifications.requests.post",
+                   return_value=self._response(body)), \
+             patch("billing.tasks.alert_tasks.notify_admin_task.delay"):
+            send_sms("254722000000", "hello", tenant=self.t1)
+
+        row = self._logs(self.t1).last()
+        self.assertEqual(row.message_id, "")
+        self.assertIsNone(row.message_cost)
+
+    def test_an_unreadable_cost_is_left_blank_rather_than_guessed(self):
+        """
+        A cost recorded wrongly is worse than one left out: the blank is
+        visibly missing and the wrong figure is not. The row must still save —
+        a send is not failed over a number that would not parse.
+        """
+        body = [{"status_code": "1000", "message_id": "ccc333",
+                 "message_cost": "not a number"}]
+        with patch("billing.notifications.requests.post",
+                   return_value=self._response(body)):
+            self.assertTrue(send_sms("254722000000", "hello", tenant=self.t1))
+
+        row = self._logs(self.t1).last()
+        self.assertEqual(row.status, "sent")
+        self.assertEqual(row.message_id, "ccc333")
+        self.assertIsNone(row.message_cost)
+
+    def test_the_reference_reaches_the_page(self):
+        """It is on the row to be read, so it has to survive the serializer."""
+        body = [{"status_code": "1000", "message_id": "ddd444",
+                 "message_cost": "0.5"}]
+        with patch("billing.notifications.requests.post",
+                   return_value=self._response(body)):
+            send_sms("254722000000", "hello", tenant=self.t1)
+
+        resp = self.auth(self.admin1).get("/api/dashboard/messages/?status=sent")
+        self.assertEqual(resp.status_code, 200)
+        row = resp.data["results"][0]
+        self.assertEqual(row["message_id"], "ddd444")
+        self.assertEqual(Decimal(row["message_cost"]), Decimal("0.5"))
+
     def test_a_transport_failure_is_distinguished_from_a_refusal(self):
         """
         Different problems and different actions: a refusal is something to go

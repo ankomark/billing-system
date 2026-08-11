@@ -1,5 +1,6 @@
 import logging
 import re
+from decimal import Decimal, InvalidOperation
 
 import requests
 
@@ -106,7 +107,34 @@ def normalise_phone(phone):
 
 # ─── The record an operator can actually read ────────────────────────────────
 
-def _record(channel, phone, status, tenant, *, code="", reason="", message=""):
+def _provider_id(entry):
+    """The provider's handle for a message, where the response carried one."""
+    if not isinstance(entry, dict):
+        return ""
+    return str(entry.get("message_id") or "").strip()[:64]
+
+
+def _provider_cost(entry):
+    """
+    What the provider charged, as a number, or None where it said nothing.
+
+    It arrives as a string — "0.5" — and anything unreadable is dropped rather
+    than guessed at. A cost recorded wrongly is worse than one left blank: the
+    blank is visibly missing, and the wrong figure is not.
+    """
+    if not isinstance(entry, dict):
+        return None
+    raw = entry.get("message_cost")
+    if raw in (None, ""):
+        return None
+    try:
+        return Decimal(str(raw).strip())
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _record(channel, phone, status, tenant, *, code="", reason="", message="",
+            provider_id="", cost=None):
     """
     Write one row of the delivery log.
 
@@ -131,6 +159,8 @@ def _record(channel, phone, status, tenant, *, code="", reason="", message=""):
             status_code=code or "",
             reason=reason or "",
             message=message or "",
+            message_id=provider_id or "",
+            message_cost=cost,
         )
         # Only when we know it. Left out, the model's default_tenant applies,
         # which reads the tenant in context and is the right answer inside a
@@ -169,6 +199,8 @@ def _record_many(rows, tenant):
                 status_code=row.get("code") or "",
                 reason=row.get("reason") or "",
                 message=row.get("message") or "",
+                message_id=row.get("message_id") or "",
+                message_cost=row.get("cost"),
                 **common,
             )
             for row in rows
@@ -326,7 +358,8 @@ def send_sms_result(phone: str, message: str, tenant=None):
 
     code = str(entry.get("status_code", "")).strip() if isinstance(entry, dict) else ""
     _record("sms", phone, "sent" if ok else "refused", tenant,
-            code=code, reason="" if ok else reason, message=message)
+            code=code, reason="" if ok else reason, message=message,
+            provider_id=_provider_id(entry), cost=_provider_cost(entry))
     return ok, code or None
 
 
@@ -429,6 +462,8 @@ def send_bulk_sms(pairs, tenant=None):
             "code": str(entry.get("status_code", "")).strip() if isinstance(entry, dict) else "",
             "reason": "" if ok else reason,
             "message": given_message,
+            "message_id": _provider_id(entry),
+            "cost": _provider_cost(entry),
         })
 
     # One row comes back per recipient the provider handled. Anyone it did not
