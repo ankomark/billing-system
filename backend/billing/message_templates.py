@@ -167,6 +167,28 @@ LABELS = {
 _FIELD = re.compile(r"\{(\w+)\}")
 
 
+def when(value, fmt="%d %b %Y %I:%M %p"):
+    """
+    A time the customer reading it will recognise.
+
+    Datetimes are stored in UTC, because USE_TZ is on, and TIME_ZONE is only
+    what they are *displayed* in. Formatting one straight into a message
+    therefore prints UTC — three hours behind Nairobi — so a voucher bought at
+    6:45pm told the customer it expired at 3:45pm, which is to say three hours
+    before they bought it.
+
+    Dates are not exempt: a due date at 22:00 UTC is already the next day here,
+    so "%d %b" on the raw value names the wrong day.
+    """
+    if value is None:
+        return ""
+    from django.utils import timezone
+
+    if timezone.is_aware(value):
+        value = timezone.localtime(value)
+    return f"{value:{fmt}}"
+
+
 def check_template(key, text):
     """
     Why this template may not be saved, or None.

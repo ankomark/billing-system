@@ -197,9 +197,14 @@ def send_platform_billing_reminders(self):
             continue
 
         if offset < 0:
+            from billing.message_templates import when
+
             body = (
                 f"Invoice {invoice.number} for {invoice.amount} is due on "
-                f"{invoice.due_date:%d %b %Y}."
+                # Local, and a date is not exempt from that: due_date is a
+                # DateTimeField, so 22:00 UTC is already tomorrow here and the
+                # raw value names the wrong day.
+                f"{when(invoice.due_date, '%d %b %Y')}."
             )
         else:
             remaining = Tenant.GRACE_DAYS - offset

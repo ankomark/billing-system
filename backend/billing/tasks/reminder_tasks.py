@@ -55,9 +55,11 @@ def send_expiry_reminders(self):
             # subscribers.
             signature = sub.tenant.business_name or sub.tenant.name
 
+            from billing.message_templates import when
+
             message = (
                 f"Reminder: Your internet package expires on "
-                f"{sub.expiry_date:%d %b %Y %I:%M %p}.\n"
+                f"{when(sub.expiry_date)}.\n"
                 "Renew early to avoid interruption.\n"
                 f"{signature}"
             )

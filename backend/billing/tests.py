@@ -22,6 +22,8 @@ from cryptography.fernet import Fernet
 from django.db import connection, transaction
 
 from django.core.cache import cache
+import datetime
+
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import ProtectedError
 from django.db.utils import IntegrityError
@@ -6244,6 +6246,49 @@ class SmsPartCountTests(SimpleTestCase):
 
     def test_nothing_is_no_parts(self):
         self.assertEqual(sms_parts("")[1], 0)
+
+
+class MessageTimeTests(TestCase):
+    """
+    Times in a message are the customer's, not the database's.
+
+    USE_TZ is on, so datetimes are stored in UTC and TIME_ZONE is only what
+    they are displayed in. Formatted straight into a message they print UTC —
+    three hours behind Nairobi — so a voucher bought at 6:45pm said it expired
+    at 3:45pm, three hours before it was bought. Reported from production.
+    """
+
+    def test_a_time_is_shown_where_the_customer_is(self):
+        from django.utils import timezone
+
+        # 15:45 UTC is 18:45 in Nairobi, and the customer's phone says 18:45.
+        utc = datetime.datetime(2026, 8, 11, 15, 45, tzinfo=datetime.timezone.utc)
+        self.assertEqual(
+            message_templates.when(utc), "11 Aug 2026 06:45 PM")
+        # Which is exactly what the naive formatting got wrong.
+        self.assertEqual(f"{utc:%d %b %Y %I:%M %p}", "11 Aug 2026 03:45 PM")
+        self.assertEqual(timezone.get_current_timezone_name(), "Africa/Nairobi")
+
+    def test_a_date_late_in_the_day_is_not_yesterday(self):
+        """
+        22:00 UTC is already tomorrow here, so a due date formatted raw names
+        the wrong day — the off-by-one nobody notices until an invoice does.
+        """
+        utc = datetime.datetime(2026, 8, 11, 22, 0, tzinfo=datetime.timezone.utc)
+        self.assertEqual(message_templates.when(utc, "%d %b %Y"), "12 Aug 2026")
+
+    def test_nothing_stays_nothing(self):
+        self.assertEqual(message_templates.when(None), "")
+
+    def test_the_voucher_message_carries_the_local_time(self):
+        """End to end, through the template that reported the bug."""
+        utc = datetime.datetime(2026, 8, 11, 15, 45, tzinfo=datetime.timezone.utc)
+        text = message_templates.render(
+            message_templates.VOUCHER,
+            voucher="6EAQHDX", brand="fiber1", package="1 Hour",
+            expiry=message_templates.when(utc), support="")
+        self.assertIn("06:45 PM", text)
+        self.assertNotIn("03:45 PM", text)
 
 
 class MessageTemplateTests(TwoOperatorMixin, TestCase):

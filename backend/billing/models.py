@@ -10,6 +10,7 @@ import string
 
 logger = logging.getLogger(__name__)
 
+from billing import message_templates
 from billing.notifications import notify_customer
 from .utils import generate_invoice_number
 from .fields import EncryptedCharField
@@ -1145,7 +1146,7 @@ class Subscription(TenantScopedModel):
                             f"Username: {self.customer.pppoe_username}\n"
                             f"Password: {self.customer.pppoe_password}\n"
                             f"Package: {self.package.name}\n"
-                            f"Expires: {self.expiry_date}"
+                            f"Expires: {message_templates.when(self.expiry_date)}"
                         )
                     )
                 except Exception:
@@ -1609,7 +1610,7 @@ class Payment(TenantScopedModel):
             common = {
                 "brand": brand,
                 "package": pkg_name,
-                "expiry": f"{expiry:%d %b %Y %I:%M %p}",
+                "expiry": templates.when(expiry),
                 "support": support or "",
             }
 
