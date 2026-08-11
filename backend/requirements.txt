@@ -37,6 +37,18 @@ cryptography>=41.0        # Fernet field encryption (billing/fields.py)
 # ── Monitoring ───────────────────────────────────────────────────────────────
 sentry-sdk[django]>=2.0
 
+# ── Tests ────────────────────────────────────────────────────────────────────
+# Only the test runner imports this, but the documented way to run the suite is
+# `docker compose run web python manage.py test billing` — inside the image
+# built from this file — so a dev-only pin would not be there when it is needed.
+#
+# Without it, `manage.py test --parallel` cannot return a failure: a worker
+# pickles its result back to the parent, a traceback is not picklable, and the
+# first test to fail takes down the whole run with "cannot pickle 'traceback'
+# object" instead of reporting which test failed. Django checks for it by name
+# and degrades silently — see django/test/runner.py.
+tblib>=3.0
+
 # ── Serving ──────────────────────────────────────────────────────────────────
 gunicorn>=21.2            # the `web` service in docker-compose.yml runs this
 whitenoise>=6.6           # serves /static/ (Django admin CSS) without nginx

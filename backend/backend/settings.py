@@ -238,7 +238,11 @@ DATABASES = {
 
 REDIS_URL = os.getenv("REDIS_URL", "")
 
-if REDIS_URL:
+# Set by manage.py when the subcommand is `test`, and inherited by the parallel
+# runner's worker processes. See the comment there.
+RUNNING_TESTS = os.getenv("RUNNING_TESTS") == "1"
+
+if REDIS_URL and not RUNNING_TESTS:
     # Production / staging: Redis is available — shared cache across all workers.
     CACHES = {
         "default": {
@@ -253,6 +257,13 @@ if REDIS_URL:
 else:
     # Development: no Redis — use in-process memory cache.
     # get_setting() still works; cache is per-process (not shared across workers).
+    #
+    # Also the cache the test suite runs on, whether or not REDIS_URL is set.
+    # Django gives each parallel worker its own database but they all share one
+    # Redis, and the suite calls cache.clear() in setUp — which is a FLUSHDB, so
+    # one worker wipes another's throttle counters mid-test and LoginThrottleTests
+    # sees 401 where it expects 429. Per-process is exactly the isolation the
+    # workers need, and it is a configuration this project already supports.
     CACHES = {
         "default": {
             "BACKEND": "django.core.cache.backends.locmem.LocMemCache",

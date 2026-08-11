@@ -7,6 +7,14 @@ import sys
 def main():
     """Run administrative tasks."""
     os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'backend.settings')
+
+    # Tests get their own cache — see the CACHES block in settings.py for why.
+    # It is set here rather than there because settings cannot tell: under
+    # `--parallel` the workers are spawned processes whose sys.argv is the
+    # multiprocessing bootstrap, not this command line. The environment is
+    # inherited by those workers, so this reaches them and sys.argv would not.
+    if len(sys.argv) > 1 and sys.argv[1] == 'test':
+        os.environ.setdefault('RUNNING_TESTS', '1')
     try:
         from django.core.management import execute_from_command_line
     except ImportError as exc:
