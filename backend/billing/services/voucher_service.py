@@ -45,8 +45,12 @@ _VOUCHER_RE = re.compile(r"\b[A-Z]{2,10}-[A-Z0-9]{4,12}\b")
 # not anchor: UNLIMITED, the support number and the brand took all three
 # candidate slots and the code was never tried at all. A customer pasting the
 # SMS we sent them was told it was invalid.
+# Separators repeat, because people write what reads well rather than what
+# parses well: an operator's live template says "Your voucher is : QWIALE",
+# with both the word and the colon. One separator matched IS, then met the
+# colon where it wanted the code, and gave up.
 _VOUCHER_LABEL_RE = re.compile(
-    r"VOUCHER\s*(?:CODE)?\s*(?:IS\b|[:\-])\s*([A-Z0-9][A-Z0-9-]{3,19})",
+    r"VOUCHER\s*(?:CODE)?\s*(?:(?:IS\b|[:\-])\s*)+([A-Z0-9][A-Z0-9-]{3,19})",
     re.IGNORECASE,
 )
 

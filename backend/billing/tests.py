@@ -6897,18 +6897,32 @@ class MpesaMessageAsVoucherTests(TwoOperatorMixin, TestCase):
         self.assertEqual(extract_codes(message)[0], "QWIALE", message)
 
     def test_an_operators_own_wording_still_yields_the_code(self):
-        """The wording is theirs now, so the parser cannot assume ours."""
+        """
+        The wording is theirs now, so the parser cannot assume ours. First
+        rather than merely present: only three candidates are ever tried, so a
+        code in the third slot is one word of prose away from being dropped.
+        """
         for template in (
             "{brand} Your voucher is {voucher} for {package}",
             "Asante sana for choosing {brand}! Your voucher is {voucher}",
             "{brand}\nVoucher Code: {voucher}",
             "{brand}\nVoucher - {voucher}",
+            "{brand}\nVoucher: {voucher}",
+            # Both the word and the colon, which is how one was actually
+            # written — people write what reads well, not what parses well.
+            "Welcome to {brand}. Your voucher is : {voucher} for {package}.",
         ):
             with self.subTest(template=template):
                 text = message_templates._fill(
                     template, dict(message_templates.SAMPLE,
                                    voucher="QWIALE", brand="fiber1"))
-                self.assertIn("QWIALE", extract_codes(text), text)
+                self.assertEqual(extract_codes(text)[0], "QWIALE", text)
+
+    def test_prose_about_a_voucher_does_not_invent_a_labelled_code(self):
+        """A separator has to be there — "voucher will expire" names nothing."""
+        codes = extract_codes(
+            "Your voucher will expire soon, please renew with fiber1 today")
+        self.assertNotIn("WILL", codes)
 
     def test_a_support_number_does_not_take_the_codes_place(self):
         """
