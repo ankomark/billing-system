@@ -38,8 +38,16 @@ _VOUCHER_RE = re.compile(r"\b[A-Z]{2,10}-[A-Z0-9]{4,12}\b")
 # UNLIMITED and CONNECTED, which is MAX_CANDIDATES exhausted before the real
 # code is even considered. Tried first, so the one token we can be certain
 # about takes the first slot.
+#
+# "CODE" is optional, and "is" counts as a separator, because the wording is
+# the operator's now — see message_templates. Requiring the exact phrase
+# "Voucher Code:" meant our own default, which reads "Voucher: QWIALE", did
+# not anchor: UNLIMITED, the support number and the brand took all three
+# candidate slots and the code was never tried at all. A customer pasting the
+# SMS we sent them was told it was invalid.
 _VOUCHER_LABEL_RE = re.compile(
-    r"VOUCHER\s*CODE\s*[:\-]?\s*([A-Z0-9][A-Z0-9-]{3,19})", re.IGNORECASE
+    r"VOUCHER\s*(?:CODE)?\s*(?:IS\b|[:\-])\s*([A-Z0-9][A-Z0-9-]{3,19})",
+    re.IGNORECASE,
 )
 
 # Voucher codes as issued now: six characters, no prefix.
@@ -95,20 +103,39 @@ def extract_codes(text: str) -> List[str]:
     text = text[:MAX_INPUT]
     upper = text.upper()
     candidates: List[str] = []
+    # Digits and nothing else, held back until last. Our own messages carry a
+    # support number, and a ten-digit phone number is exactly the shape of an
+    # M-Pesa receipt, so it was taking a candidate slot off the real code.
+    #
+    # Held rather than dropped: a code is six characters from an alphabet that
+    # includes digits, so roughly one in two thousand is all digits, and
+    # discarding those would fail a customer with no way to explain why.
+    digits_only: List[str] = []
 
-    def add(value):
+    def add(value, labelled=False):
+        """
+        `labelled` where the message named this as the code, rather than it
+        merely being code-shaped. That is evidence, so it keeps its place even
+        if it is all digits — a code named as the code is the code.
+        """
         value = value.strip()
-        if value and value not in candidates and value.upper() not in _NOT_A_CODE:
+        if not value or value.upper() in _NOT_A_CODE:
+            return
+        if value in candidates or value in digits_only:
+            return
+        if value.isdigit() and not labelled:
+            digits_only.append(value)
+        else:
             candidates.append(value)
 
     # Our own SMS names the code, so that reading beats every guess below it.
     labelled = _VOUCHER_LABEL_RE.search(text)
     if labelled:
-        add(labelled.group(1).upper())
+        add(labelled.group(1).upper(), labelled=True)
 
     confirmed = _CONFIRMED_RE.search(text)
     if confirmed:
-        add(confirmed.group(1).upper())
+        add(confirmed.group(1).upper(), labelled=True)
 
     for match in _VOUCHER_RE.finditer(upper):
         add(match.group(0))
@@ -122,7 +149,7 @@ def extract_codes(text: str) -> List[str]:
     for match in _BARE_CODE_RE.finditer(upper):
         add(match.group(0))
 
-    return candidates[:MAX_CANDIDATES]
+    return (candidates + digits_only)[:MAX_CANDIDATES]
 
 
 def _subscription_is_valid_for_access(sub: Subscription) -> bool:

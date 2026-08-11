@@ -6876,6 +6876,56 @@ class MpesaMessageAsVoucherTests(TwoOperatorMixin, TestCase):
         resp = self.validate(forged, "AA:BB:CC:11:00:03")
         self.assertEqual(resp.status_code, 400)
 
+    # ---- pasting the SMS we sent them ---------------------------------------
+
+    def test_the_voucher_sms_we_actually_send_can_be_pasted_back(self):
+        """
+        The guard this class was missing. Changing the default wording from
+        "Voucher Code: QWIALE" to "Voucher: QWIALE" stopped the label matching,
+        and UNLIMITED, the support number and the brand took all three
+        candidate slots — so the code in our own SMS was never tried, and the
+        customer pasting it was told it was invalid.
+
+        Written against DEFAULTS rather than a copy of the words, so it fails
+        if the shipped wording drifts out of reach of the parser again.
+        """
+        values = dict(
+            message_templates.SAMPLE, voucher="QWIALE", brand="fiber1")
+        message = message_templates._fill(
+            message_templates.DEFAULTS[message_templates.VOUCHER], values)
+
+        self.assertEqual(extract_codes(message)[0], "QWIALE", message)
+
+    def test_an_operators_own_wording_still_yields_the_code(self):
+        """The wording is theirs now, so the parser cannot assume ours."""
+        for template in (
+            "{brand} Your voucher is {voucher} for {package}",
+            "Asante sana for choosing {brand}! Your voucher is {voucher}",
+            "{brand}\nVoucher Code: {voucher}",
+            "{brand}\nVoucher - {voucher}",
+        ):
+            with self.subTest(template=template):
+                text = message_templates._fill(
+                    template, dict(message_templates.SAMPLE,
+                                   voucher="QWIALE", brand="fiber1"))
+                self.assertIn("QWIALE", extract_codes(text), text)
+
+    def test_a_support_number_does_not_take_the_codes_place(self):
+        """
+        A ten-digit phone number is exactly the shape of an M-Pesa receipt, and
+        our own messages carry one.
+        """
+        text = "fiber1\nVoucher: QWIALE\n1 Hour, valid to 11 Aug\nHelp: 0712345678"
+        self.assertEqual(extract_codes(text)[0], "QWIALE")
+
+    def test_an_all_digit_code_named_as_the_code_is_still_first(self):
+        """
+        Six characters from an alphabet with digits in it means about one code
+        in two thousand is all digits. Held back as a guess, kept as evidence.
+        """
+        text = "Asante for choosing fiber1! Your voucher is 481920 valid to 11 Aug"
+        self.assertEqual(extract_codes(text)[0], "481920")
+
     def test_a_message_for_an_unpaid_invoice_grants_nothing(self):
         with tenant_context(self.t1):
             inv = self.sub.invoice
