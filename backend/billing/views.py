@@ -2361,6 +2361,12 @@ class SystemSettingsView(APIView):
                 "default": default,
                 "placeholders": sorted(templates.PLACEHOLDERS[key]),
                 "required": sorted(templates.REQUIRED[key]),
+                # So the page counts a message rather than a template. See
+                # SAMPLE — {expiry} is eight characters and sends as twenty.
+                "sample": {
+                    name: templates.SAMPLE[name]
+                    for name in templates.PLACEHOLDERS[key]
+                },
             }
             for key, default in templates.DEFAULTS.items()
         }

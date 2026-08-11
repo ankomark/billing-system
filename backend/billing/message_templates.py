@@ -139,6 +139,24 @@ REQUIRED = {
     WELCOME_PPPOE: set(),
 }
 
+# Stand-ins for counting, and for the preview on the settings page.
+#
+# The count has to be taken from a rendered message, not from the template:
+# {expiry} is eight characters and becomes twenty, so counting the template
+# understates every message by twelve and does it worst near the boundary
+# where being wrong actually changes the bill. Long-ish on purpose — a
+# template that fits with these fits with most real values.
+SAMPLE = {
+    "brand": "Skylink Fiber",
+    "name": "John Mwangi",
+    "voucher": "6EAQHDX",
+    "package": "1 Hour Unlimited",
+    "expiry": "11 Aug 2026 03:45 PM",
+    "username": "john_m41",
+    "password": "8kdmz2",
+    "support": "0712345678",
+}
+
 LABELS = {
     VOUCHER: "Voucher SMS",
     PPPOE: "PPPoE details SMS",
@@ -184,10 +202,16 @@ def check_template(key, text):
     bad = non_gsm_characters(text)
     if bad:
         shown = " ".join(bad[:5])
-        _, parts, _ = sms_parts(text)
-        return (f"Remove {shown} — characters outside the standard SMS "
-                f"alphabet cut the size of a message part from 160 to 70, so "
-                f"this would cost {parts} parts to send.")
+        # Counted on a rendered message rather than the template, and stated as
+        # a comparison. A bare figure is worse than none here: a short template
+        # with an emoji in it still costs one part, and "this would cost 1
+        # part" reads as an argument for keeping the emoji.
+        now = sms_parts(_fill(text, SAMPLE))[1]
+        clean = sms_parts(_fill("".join(c for c in text if c not in bad), SAMPLE))[1]
+        cost = (f" A message like this would cost {now} SMS instead of {clean}."
+                if now > clean else "")
+        return (f"Remove {shown}: characters outside the standard SMS alphabet "
+                f"cut a message part from 160 characters to 70.{cost}")
 
     return None
 

@@ -49,6 +49,24 @@ const GSM_BASIC = new Set(
 );
 const GSM_EXTENDED = new Set("^{}\\[~]|€");
 
+/**
+ * A template with stand-in values in it, the way the backend renders one.
+ *
+ * A line whose only placeholders are empty is dropped whole, matching _fill in
+ * message_templates.py — so "Help: {support}" with no support number shows as
+ * nothing rather than as a dangling label.
+ */
+function fillSample(template, sample) {
+  return (template || "")
+    .split("\n")
+    .filter((line) => {
+      const used = [...line.matchAll(/\{(\w+)\}/g)].map((m) => m[1]);
+      return !used.length || !used.every((n) => !String(sample[n] ?? "").trim());
+    })
+    .map((line) => line.replace(/\{(\w+)\}/g, (whole, n) => sample[n] ?? whole))
+    .join("\n");
+}
+
 function smsParts(text) {
   const chars = [...(text || "")];
   const offenders = [...new Set(
@@ -433,7 +451,12 @@ function TemplateEditor({ name, spec, value, error, onChange }) {
   // What they will actually send: their wording where they have written some,
   // and ours where the box is empty, since empty means ours.
   const effective = value.trim() ? value : spec.default;
-  const { length, parts, unicode, offenders } = smsParts(effective);
+
+  // Counted on the message, not the template. {expiry} is eight characters
+  // and goes out as twenty, so counting the template understates every one of
+  // them — and does it worst right at the boundary where it changes the bill.
+  const preview = fillSample(effective, spec.sample || {});
+  const { length, parts, unicode, offenders } = smsParts(preview);
   const using = value.trim() ? "yours" : "ours";
 
   return (
@@ -456,6 +479,13 @@ function TemplateEditor({ name, spec, value, error, onChange }) {
             : "border-white/15 focus:ring-blue-500"
         }`}
       />
+
+      {/* What the customer gets. Worth showing rather than describing: the
+          count below is taken from this text, and an operator can see at a
+          glance that a line they meant to keep vanished with an empty value. */}
+      <pre className="mt-2 whitespace-pre-wrap rounded border border-white/5 bg-black/30 px-3 py-2 text-[11px] leading-relaxed text-slate-400">
+        {preview}
+      </pre>
 
       <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5">
         <span className={`text-xs ${parts > 1 ? "text-amber-300" : "text-slate-400"}`}>
