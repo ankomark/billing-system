@@ -1604,28 +1604,23 @@ class Payment(TenantScopedModel):
                 .get(id=customer_id)
             )
 
-            support_line = f"\nSupport: {support}" if support else ""
+            from billing import message_templates as templates
+
+            common = {
+                "brand": brand,
+                "package": pkg_name,
+                "expiry": f"{expiry:%d %b %Y %I:%M %p}",
+                "support": support or "",
+            }
 
             if connection_type == "hotspot" and _voucher_code:
-                message = (
-                    f"Welcome to {brand}!\n\n"
-                    f"Package: {pkg_name}\n"
-                    f"Valid Until: {expiry:%d %b %Y %I:%M %p}\n\n"
-                    f"Voucher Code: {_voucher_code}\n\n"
-                    "Just stay connected — auto-login will work."
-                    f"{support_line}"
-                )
+                message = templates.render(
+                    templates.VOUCHER, tenant=tenant_id,
+                    voucher=_voucher_code, **common)
             elif connection_type == "pppoe":
-                message = (
-                    f"Welcome to {brand}!\n\n"
-                    "Your PPPoE account is ready:\n"
-                    f"Username: {pppoe_username}\n"
-                    f"Password: {pppoe_password}\n\n"
-                    f"Package: {pkg_name}\n"
-                    f"Valid Until: {expiry:%d %b %Y %I:%M %p}\n\n"
-                    "Use these details on your router."
-                    f"{support_line}"
-                )
+                message = templates.render(
+                    templates.PPPOE, tenant=tenant_id,
+                    username=pppoe_username, password=pppoe_password, **common)
             else:
                 return
 

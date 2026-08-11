@@ -1,9 +1,20 @@
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 
+from billing import message_templates as templates
 from billing.models import Customer
 from billing.notifications import notify_customer
 from billing.tenancy import tenant_context
+
+
+def _common(customer):
+    """What every welcome message can refer to."""
+    tenant = customer.tenant
+    return {
+        "name": customer.full_name,
+        "brand": tenant.business_name or tenant.name,
+        "support": tenant.support_phone or "",
+    }
 
 
 @receiver(post_save, sender=Customer)
@@ -23,22 +34,14 @@ def send_customer_welcome_message(sender, instance, created, **kwargs):
     # --------------------------------------------------
     if customer.connection_type == "hotspot":
 
-        message = (
-            f"Welcome {customer.full_name} 🎉\n"
-            f"You are now with {customer.tenant.business_name or customer.tenant.name}.\n\n"
-            f"You have been registered for WiFi Hotspot access.\n\n"
-            f"📶 To connect:\n"
-            f"1. Turn ON WiFi\n"
-            f"2. Connect to the hotspot\n"
-            f"3. You will be redirected to the login page\n\n"
-            f"💡 After payment, you will receive a voucher code.\n"
-            f"Thank you for choosing us!"
-        )
-
         # Their messaging credentials, not another operator's — a customer
         # can be created from a worker or a shell where no context is set.
         with tenant_context(customer.tenant_id):
-            notify_customer(customer.phone, message)
+            notify_customer(customer.phone, templates.render(
+                templates.WELCOME_HOTSPOT,
+                tenant=customer.tenant_id,
+                **_common(customer),
+            ))
 
     # --------------------------------------------------
     # PPPoE CUSTOMER
@@ -49,19 +52,13 @@ def send_customer_welcome_message(sender, instance, created, **kwargs):
             # Credentials not ready yet → skip safely
             return
 
-        message = (
-            f"Welcome {customer.full_name} 🎉\n"
-            f"You are now with {customer.tenant.business_name or customer.tenant.name}.\n\n"
-            f"Your PPPoE internet account is ready.\n\n"
-            f"🔐 Login Details:\n"
-            f"Username: {customer.pppoe_username}\n"
-            f"Password: {customer.pppoe_password}\n\n"
-            f"📡 Configure your router to PPPoE mode.\n"
-            f"Need help? Contact support.\n\n"
-            f"Thank you for choosing us!"
-        )
-
         # Their messaging credentials, not another operator's — a customer
         # can be created from a worker or a shell where no context is set.
         with tenant_context(customer.tenant_id):
-            notify_customer(customer.phone, message)
+            notify_customer(customer.phone, templates.render(
+                templates.WELCOME_PPPOE,
+                tenant=customer.tenant_id,
+                username=customer.pppoe_username,
+                password=customer.pppoe_password,
+                **_common(customer),
+            ))

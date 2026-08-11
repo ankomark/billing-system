@@ -569,6 +569,37 @@ class SystemSettingSerializer(serializers.Serializer):
     SUPPORT_PHONE   = serializers.CharField(max_length=20, required=False, allow_blank=True)
     SUPPORT_PHONE_2 = serializers.CharField(max_length=20, required=False, allow_blank=True)
 
+    # The operator's own wording. Blank means ours — see message_templates,
+    # which also says why these are validated rather than taken as typed: a
+    # voucher message with no {voucher} in it still sends and still costs, and
+    # one stray emoji triples the price of every message this operator sends.
+    SMS_TEMPLATE_VOUCHER = serializers.CharField(
+        required=False, allow_blank=True, max_length=1000)
+    SMS_TEMPLATE_PPPOE = serializers.CharField(
+        required=False, allow_blank=True, max_length=1000)
+    SMS_TEMPLATE_WELCOME_HOTSPOT = serializers.CharField(
+        required=False, allow_blank=True, max_length=1000)
+    SMS_TEMPLATE_WELCOME_PPPOE = serializers.CharField(
+        required=False, allow_blank=True, max_length=1000)
+
+    def validate(self, attrs):
+        from billing import message_templates as templates
+
+        errors = {}
+        for key in templates.DEFAULTS:
+            text = attrs.get(key)
+            # Blank is how an operator goes back to ours, so it is not a
+            # template and has nothing to check.
+            if not text or not text.strip():
+                continue
+            problem = templates.check_template(key, text)
+            if problem:
+                errors[key] = problem
+
+        if errors:
+            raise serializers.ValidationError(errors)
+        return attrs
+
 
 class BroadcastSerializer(serializers.Serializer):
     channel      = serializers.ChoiceField(choices=["sms", "whatsapp"])

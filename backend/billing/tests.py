@@ -56,6 +56,8 @@ from billing.tasks.router_health import prune_router_events_task
 from billing.tasks.provisioning import ensure_customer_access_task
 from billing.router_service import enable_customer_access
 from billing.notifications import send_sms, send_bulk_sms, sms_balance
+from billing import message_templates
+from billing.message_templates import sms_parts
 from celery.exceptions import Retry
 from billing.router_service import (
     _station_of, _tenant_routers, pick_best_router_for_new_customer,
@@ -393,7 +395,10 @@ class PaymentProcessingTests(TestCase):
         voucher = Voucher.objects.filter(subscription=sub).first()
         self.assertIn(voucher.code, message_arg,
                       "the message went out without the code in it")
-        self.assertIn("Voucher Code", message_arg)
+        # The wording around it is the operator's own now — see
+        # message_templates — so what is checked here is that the code is in
+        # there and that saying so still costs one SMS.
+        self.assertEqual(sms_parts(message_arg)[1], 1, message_arg)
 
         # Their operator's, on their operator's account — a walk-up customer
         # has never heard of the platform.
@@ -6193,6 +6198,202 @@ class MessageLogTests(TwoOperatorMixin, TestCase):
         self.assertEqual(prune_message_logs(), 1)
         with tenant_context(self.t1):
             self.assertEqual(MessageLog.objects.count(), 1)
+
+
+# =====================================================
+# 29b. Message templates
+# =====================================================
+
+class SmsPartCountTests(SimpleTestCase):
+    """
+    What a message costs, which is not what it looks like it costs.
+
+    160 characters per part — but only while every character is in the GSM
+    03.38 alphabet. One that is not drops the part size to 70 and the price of
+    every message triples. That is not hypothetical: the voucher SMS cost three
+    parts instead of one because of a single em dash, and the welcome messages
+    cost five to say hello because they carried three emoji.
+    """
+
+    def test_a_short_plain_message_is_one_part(self):
+        length, parts, encoding = sms_parts("Voucher: 6EAQHDX")
+        self.assertEqual((length, parts, encoding), (16, 1, "GSM-7"))
+
+    def test_the_boundary_is_160_not_161(self):
+        self.assertEqual(sms_parts("a" * 160)[1], 1)
+        # A second part means both carry a header saying which they are, so the
+        # room for text drops to 153 each and 161 characters needs two.
+        self.assertEqual(sms_parts("a" * 161)[1], 2)
+
+    def test_one_em_dash_costs_two_extra_parts(self):
+        """The exact character, and the exact bill, that started this."""
+        plain = "Just stay connected - auto-login will work." + "x" * 130
+        self.assertEqual(sms_parts(plain)[1], 2)
+
+        dashed = plain.replace(" - ", " — ")
+        self.assertEqual(sms_parts(dashed)[2], "UCS-2")
+        self.assertEqual(sms_parts(dashed)[1], 3)
+
+    def test_an_emoji_does_the_same(self):
+        self.assertEqual(sms_parts("Welcome \U0001f389" + "x" * 100)[1], 2)
+
+    def test_an_extended_character_costs_two_of_its_own(self):
+        """{ and } are an escape plus the symbol, so they are not free."""
+        self.assertEqual(sms_parts("{" * 80)[1], 1)
+        self.assertEqual(sms_parts("{" * 81)[1], 2)
+
+    def test_nothing_is_no_parts(self):
+        self.assertEqual(sms_parts("")[1], 0)
+
+
+class MessageTemplateTests(TwoOperatorMixin, TestCase):
+    """The operator's own wording, and the two things they may not do to it."""
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+
+    # ---- the defaults ------------------------------------------------------
+
+    def test_every_default_is_one_part(self):
+        """
+        The whole reason for the rewrite. A new hotspot customer who signs up
+        and pays cost eight parts across two messages; these cost one each.
+        """
+        values = dict(
+            brand="Skylink Fiber", name="John Mwangi", voucher="6EAQHDX",
+            package="1 Hour Unlimited", expiry="11 Aug 2026 03:45 PM",
+            username="john_m41", password="8kdmz2", support="0712345678",
+        )
+        for key in message_templates.DEFAULTS:
+            with self.subTest(template=key):
+                text = message_templates.render(key, tenant=self.t1, **values)
+                length, parts, encoding = sms_parts(text)
+                self.assertEqual(encoding, "GSM-7")
+                self.assertEqual(parts, 1, f"{key} is {length} chars: {text!r}")
+
+    def test_a_missing_support_number_takes_its_line_with_it(self):
+        """Rather than leaving "Help:" standing above nothing."""
+        text = message_templates.render(
+            message_templates.VOUCHER, tenant=self.t1,
+            brand="Skylink", voucher="ABC123", package="1 Hour",
+            expiry="11 Aug", support="")
+        self.assertNotIn("Help:", text)
+        self.assertIn("ABC123", text)
+
+    # ---- the operator's own ------------------------------------------------
+
+    def test_a_saved_template_is_used_instead(self):
+        SystemSetting.objects.create(
+            tenant=self.t1, key=message_templates.VOUCHER,
+            value="Karibu {brand}. Msimbo: {voucher}")
+        clear_settings_cache(tenant=self.t1)
+
+        text = message_templates.render(
+            message_templates.VOUCHER, tenant=self.t1,
+            brand="Skylink", voucher="ABC123", package="1 Hour",
+            expiry="11 Aug", support="0712345678")
+        self.assertEqual(text, "Karibu Skylink. Msimbo: ABC123")
+
+    def test_each_operator_keeps_their_own_wording(self):
+        SystemSetting.objects.create(
+            tenant=self.t1, key=message_templates.VOUCHER, value="One: {voucher}")
+        SystemSetting.objects.create(
+            tenant=self.t2, key=message_templates.VOUCHER, value="Two: {voucher}")
+        clear_settings_cache(tenant=self.t1)
+        clear_settings_cache(tenant=self.t2)
+
+        render = message_templates.render
+        self.assertEqual(
+            render(message_templates.VOUCHER, tenant=self.t1, voucher="X"), "One: X")
+        self.assertEqual(
+            render(message_templates.VOUCHER, tenant=self.t2, voucher="X"), "Two: X")
+
+    def test_an_unrenderable_template_still_sends_something(self):
+        """
+        This runs on the path that tells a paying customer their code. A
+        template nobody can render must not be the reason they never hear it.
+        """
+        SystemSetting.objects.create(
+            tenant=self.t1, key=message_templates.VOUCHER, value="{")
+        clear_settings_cache(tenant=self.t1)
+
+        text = message_templates.render(
+            message_templates.VOUCHER, tenant=self.t1, voucher="ABC123",
+            brand="Skylink", package="1 Hour", expiry="11 Aug", support="")
+        self.assertIn("ABC123", text)
+
+    # ---- what will not save ------------------------------------------------
+
+    def test_a_voucher_template_without_the_voucher_is_refused(self):
+        """
+        It would send, and cost, and leave the customer who paid for a code
+        without the code.
+        """
+        problem = message_templates.check_template(
+            message_templates.VOUCHER, "Thanks for paying {brand}!")
+        self.assertIsNotNone(problem)
+        self.assertIn("{voucher}", problem)
+
+    def test_an_emoji_is_refused_with_the_price_of_keeping_it(self):
+        problem = message_templates.check_template(
+            message_templates.VOUCHER, "{brand} \U0001f389 code {voucher}")
+        self.assertIsNotNone(problem)
+        self.assertIn("160", problem)
+
+    def test_a_mistyped_placeholder_is_named(self):
+        """{vouchr} would otherwise be sent to the customer exactly as typed."""
+        problem = message_templates.check_template(
+            message_templates.VOUCHER, "{brand} code {vouchr}")
+        self.assertIsNotNone(problem)
+        self.assertIn("{vouchr}", problem)
+
+    def test_a_good_template_is_accepted(self):
+        self.assertIsNone(message_templates.check_template(
+            message_templates.VOUCHER,
+            "{brand}\nCode: {voucher}\nUntil {expiry}"))
+
+    # ---- through the settings page -----------------------------------------
+
+    def test_the_settings_endpoint_refuses_a_broken_template(self):
+        resp = self.auth(self.admin1).put(
+            "/api/system/settings/",
+            {"SMS_TEMPLATE_VOUCHER": "No code here, {brand}"},
+            format="json")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("SMS_TEMPLATE_VOUCHER", resp.data)
+
+    def test_the_settings_endpoint_saves_a_good_one(self):
+        resp = self.auth(self.admin1).put(
+            "/api/system/settings/",
+            {"SMS_TEMPLATE_VOUCHER": "{brand}: {voucher}"},
+            format="json")
+        self.assertEqual(resp.status_code, 200)
+        clear_settings_cache(tenant=self.t1)
+        self.assertEqual(
+            message_templates.get_template(message_templates.VOUCHER, tenant=self.t1),
+            "{brand}: {voucher}")
+
+    def test_clearing_it_goes_back_to_ours(self):
+        SystemSetting.objects.create(
+            tenant=self.t1, key=message_templates.VOUCHER, value="Mine: {voucher}")
+        clear_settings_cache(tenant=self.t1)
+
+        resp = self.auth(self.admin1).put(
+            "/api/system/settings/", {"SMS_TEMPLATE_VOUCHER": ""}, format="json")
+        self.assertEqual(resp.status_code, 200)
+        clear_settings_cache(tenant=self.t1)
+        self.assertEqual(
+            message_templates.get_template(message_templates.VOUCHER, tenant=self.t1),
+            message_templates.DEFAULTS[message_templates.VOUCHER])
+
+    def test_the_page_is_told_what_each_message_can_refer_to(self):
+        resp = self.auth(self.admin1).get("/api/system/settings/")
+        self.assertEqual(resp.status_code, 200)
+        spec = resp.data["SMS_TEMPLATES"][message_templates.VOUCHER]
+        self.assertIn("voucher", spec["placeholders"])
+        self.assertEqual(spec["required"], ["voucher"])
+        self.assertTrue(spec["default"])
 
 
 class SmsRetryTests(TestCase):

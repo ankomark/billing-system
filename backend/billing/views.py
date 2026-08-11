@@ -2310,6 +2310,10 @@ class SystemSettingsView(APIView):
         "WHATSAPP_TOKEN",
         "WHATSAPP_PHONE_ID",
         "HOTSPOT_TERMS_URL",
+        "SMS_TEMPLATE_VOUCHER",
+        "SMS_TEMPLATE_PPPOE",
+        "SMS_TEMPLATE_WELCOME_HOTSPOT",
+        "SMS_TEMPLATE_WELCOME_PPPOE",
     ]
 
     def get(self, request):
@@ -2344,6 +2348,22 @@ class SystemSettingsView(APIView):
             except Exception as exc:
                 data["MPESA_CALLBACK_URL_EFFECTIVE"] = ""
                 data["MPESA_CALLBACK_HINT"] = str(exc)
+
+        # What the page needs to offer an editor rather than a bare textarea:
+        # the wording used when the operator has set none, and what each
+        # message is able to refer to. Sent rather than duplicated in the
+        # frontend, so the two cannot disagree about what {support} means.
+        from billing import message_templates as templates
+
+        data["SMS_TEMPLATES"] = {
+            key: {
+                "label": templates.LABELS[key],
+                "default": default,
+                "placeholders": sorted(templates.PLACEHOLDERS[key]),
+                "required": sorted(templates.REQUIRED[key]),
+            }
+            for key, default in templates.DEFAULTS.items()
+        }
 
         return Response(data)
 

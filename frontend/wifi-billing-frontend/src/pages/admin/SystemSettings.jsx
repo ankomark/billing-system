@@ -25,13 +25,60 @@ const EMPTY = {
   SUPPORT_PHONE: "",
   SUPPORT_PHONE_2: "",
   HOTSPOT_TERMS_URL: "",
+  SMS_TEMPLATE_VOUCHER: "",
+  SMS_TEMPLATE_PPPOE: "",
+  SMS_TEMPLATE_WELCOME_HOTSPOT: "",
+  SMS_TEMPLATE_WELCOME_PPPOE: "",
 };
+
+/**
+ * GSM 03.38, and what a message costs in it.
+ *
+ * The same table as billing/message_templates.py, which is the one that
+ * decides whether a template may be saved — this copy only draws the counter
+ * as somebody types. Frozen by the standard, so it does not drift.
+ *
+ * The rule worth knowing: every character here is one of 160 in a part. One
+ * character that is not switches the whole message to UCS-2 and a part becomes
+ * 70, which is how a voucher SMS came to cost three parts over a single em
+ * dash.
+ */
+const GSM_BASIC = new Set(
+  "@£$¥èéùìòÇ\nØø\rÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ !\"#¤%&'()*+,-./0123456789:;<=>?" +
+  "¡ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÑÜ§¿abcdefghijklmnopqrstuvwxyzäöñüà"
+);
+const GSM_EXTENDED = new Set("^{}\\[~]|€");
+
+function smsParts(text) {
+  const chars = [...(text || "")];
+  const offenders = [...new Set(
+    chars.filter((c) => !GSM_BASIC.has(c) && !GSM_EXTENDED.has(c))
+  )];
+
+  let length;
+  let single;
+  let multi;
+  if (offenders.length) {
+    length = chars.length;
+    [single, multi] = [70, 67];
+  } else {
+    length = chars.reduce((n, c) => n + (GSM_EXTENDED.has(c) ? 2 : 1), 0);
+    [single, multi] = [160, 153];
+  }
+
+  const parts = length === 0 ? 0 : length <= single ? 1 : Math.ceil(length / multi);
+  return { length, parts, unicode: offenders.length > 0, offenders };
+}
 
 export default function SystemSettings() {
   const qc = useQueryClient();
   const [form, setForm]     = useState(EMPTY);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState("");
+  // Per-field, because the server refuses a template for a specific reason —
+  // a missing {voucher}, a mistyped placeholder — and a toast that says
+  // "failed to save settings" throws that reason away.
+  const [fieldErrors, setFieldErrors] = useState({});
 
   const { data: settings, isLoading } = useQuery({
     queryKey: ["system-settings"],
@@ -59,12 +106,24 @@ export default function SystemSettings() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setSaving(true);
+    setFieldErrors({});
     try {
       await updateSystemSettings(form);
       toast.success("Settings saved successfully");
       qc.invalidateQueries({ queryKey: ["system-settings"] });
     } catch (err) {
-      toast.error(err.response?.data?.detail || "Failed to save settings");
+      const data = err.response?.data;
+      // DRF answers a failed validation with {field: [reason]}. Keep those
+      // against their fields — the reason is the whole value of the check.
+      const perField = {};
+      if (data && typeof data === "object" && !data.detail) {
+        for (const [key, value] of Object.entries(data)) {
+          if (key in EMPTY) perField[key] = Array.isArray(value) ? value[0] : String(value);
+        }
+      }
+      setFieldErrors(perField);
+      const first = Object.values(perField)[0];
+      toast.error(first || data?.detail || "Failed to save settings");
     } finally {
       setSaving(false);
     }
@@ -215,6 +274,26 @@ export default function SystemSettings() {
             />
           </Section>
 
+          {/* Message wording */}
+          <Section title="Message wording">
+            <p className="text-sm text-slate-400">
+              What your customers actually receive. Leave one blank to use ours.
+              The counter is what it costs to send: a message is 160 characters
+              per SMS, but one emoji or a dash like — drops that to 70, so a
+              short message can quietly cost three times as much.
+            </p>
+            {Object.entries(settings?.SMS_TEMPLATES || {}).map(([key, spec]) => (
+              <TemplateEditor
+                key={key}
+                name={key}
+                spec={spec}
+                value={form[key] || ""}
+                error={fieldErrors[key]}
+                onChange={handleChange}
+              />
+            ))}
+          </Section>
+
           {/* WhatsApp */}
           <Section title="WhatsApp Cloud API">
             <div className="grid sm:grid-cols-2 gap-4">
@@ -338,6 +417,74 @@ function Readonly({ label, value, hint = "", mono = false }) {
         </button>
       </div>
       {hint && <p className="mt-1.5 text-xs text-slate-500">{hint}</p>}
+    </div>
+  );
+}
+
+/**
+ * One message, with what it will cost to send it.
+ *
+ * The counter is the point of this. An operator writing their own wording has
+ * no way to know that adding an emoji tripled the price of every message they
+ * send, and the bill arrives as a balance quietly dropping faster than
+ * expected — which is not a thing anybody traces back to a settings page.
+ */
+function TemplateEditor({ name, spec, value, error, onChange }) {
+  // What they will actually send: their wording where they have written some,
+  // and ours where the box is empty, since empty means ours.
+  const effective = value.trim() ? value : spec.default;
+  const { length, parts, unicode, offenders } = smsParts(effective);
+  const using = value.trim() ? "yours" : "ours";
+
+  return (
+    <div className="rounded-lg border border-white/10 bg-slate-950/40 p-4">
+      <div className="mb-2 flex items-baseline justify-between gap-3">
+        <label className="text-sm font-medium text-slate-300">{spec.label}</label>
+        <span className="text-[11px] uppercase tracking-wider text-slate-500">{using}</span>
+      </div>
+
+      <textarea
+        name={name}
+        value={value}
+        onChange={onChange}
+        rows={4}
+        spellCheck={false}
+        placeholder={spec.default}
+        className={`w-full rounded-lg border bg-slate-950 px-3 py-2 font-mono text-xs leading-relaxed text-slate-100 focus:outline-none focus:ring-2 ${
+          error
+            ? "border-red-500/60 focus:ring-red-500"
+            : "border-white/15 focus:ring-blue-500"
+        }`}
+      />
+
+      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5">
+        <span className={`text-xs ${parts > 1 ? "text-amber-300" : "text-slate-400"}`}>
+          {length} characters · <b>{parts === 1 ? "1 SMS" : `${parts} SMS`}</b>
+          {unicode && " · unicode"}
+        </span>
+        {spec.placeholders.map((p) => (
+          <code
+            key={p}
+            title={spec.required.includes(p) ? "Required in this message" : undefined}
+            className={`rounded px-1.5 py-0.5 text-[11px] ${
+              spec.required.includes(p)
+                ? "bg-emerald-500/10 text-emerald-300"
+                : "bg-white/5 text-slate-400"
+            }`}
+          >
+            {`{${p}}`}
+          </code>
+        ))}
+      </div>
+
+      {unicode && (
+        <p className="mt-1.5 text-xs text-amber-300">
+          {offenders.slice(0, 5).join(" ")} {offenders.length === 1 ? "is" : "are"}{" "}
+          outside the standard SMS alphabet, so a part holds 70 characters
+          instead of 160.
+        </p>
+      )}
+      {error && <p className="mt-1.5 text-xs text-red-400">{error}</p>}
     </div>
   );
 }
