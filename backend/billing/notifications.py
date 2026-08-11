@@ -18,7 +18,8 @@ BALANCE_ENDPOINT = f"{BLESSEDTEXTS_BASE}/sms/v1/credit-balance"
 SUCCESS = "1000"
 
 # The provider answers HTTP 200 for a refusal and puts the reason in the body,
-# so these are the difference between "sent" and "silently discarded".
+# so these are the difference between "sent" and "silently discarded". Some
+# refusals arrive as an HTTP error instead, carrying the same body — see _post.
 STATUS_MEANINGS = {
     "1000": "Success",
     "1001": "Missing API key",
@@ -29,12 +30,20 @@ STATUS_MEANINGS = {
     "1006": "Missing phone number",
     "1007": "Invalid phone number format",
     "1008": "Invalid phone number",
-    "1009": "Out of SMS credit",
+    # "Low bulk credits" in the provider's own wording. Not "out of" — the
+    # account can still have some, and an alert that says it is empty when it
+    # is merely low sends an operator looking for the wrong thing.
+    "1009": "Low SMS credit",
 }
 
 # The failures no amount of retrying fixes, and which affect every message
 # rather than one. An empty account or a rejected key needs a person.
 NEEDS_ATTENTION = {"1001", "1002", "1003", "1004", "1009"}
+
+# Stands in for a status code where the operator has no BlessedTexts account
+# configured at all, so nothing was ever asked and there is no code to report.
+# A verdict all the same, and a permanent one: see send_sms_result.
+UNCONFIGURED = "unconfigured"
 
 
 # ─── Numbers as the provider wants them ──────────────────────────────────────
@@ -96,9 +105,28 @@ def normalise_phone(phone):
 
 
 def _credentials(tenant=None):
+    """
+    The operator's API key and sender ID, with surrounding whitespace removed.
+
+    Both are pasted into a settings form by hand. A trailing space or a newline
+    picked up from a copy goes on the wire intact, comes back 1002 or 1004, and
+    is indistinguishable on the settings page from a value that is simply
+    wrong — the field looks right because it *is* right, apart from the part
+    that does not render.
+
+    We have already lost a day to a sender ID whose reason was being discarded.
+    Losing another to one that only looks correct would be worse.
+
+    A value that is nothing but whitespace strips to empty and is then treated
+    as unset, which is what it is: the caller declines to send rather than
+    asking the provider about a blank sender ID.
+    """
+    def clean(value):
+        return value.strip() if isinstance(value, str) else value
+
     return (
-        get_setting("BLESSEDTEXTS_API_KEY", tenant=tenant),
-        get_setting("BLESSEDTEXTS_SENDER_ID", tenant=tenant),
+        clean(get_setting("BLESSEDTEXTS_API_KEY", tenant=tenant)),
+        clean(get_setting("BLESSEDTEXTS_SENDER_ID", tenant=tenant)),
     )
 
 
@@ -165,22 +193,25 @@ def _post(url, payload, timeout=15):
     return response.json()
 
 
-def send_sms(phone: str, message: str, tenant=None) -> bool:
+def send_sms_result(phone: str, message: str, tenant=None):
     """
-    Send one SMS through BlessedTexts, on the operator's own account.
+    Send one SMS through BlessedTexts, and report what the provider said.
 
-    Returns True only when the provider accepted it.
+    Returns (accepted, code): the status code the provider answered with, or
+    None where it never gave one — a timeout, a 502 from a proxy, an
+    unreadable body. UNCONFIGURED where the operator has no account set up, so
+    nothing was asked in the first place.
 
-    That distinction is the whole point of this rewrite. The previous version
-    called raise_for_status() and returned True — but this provider answers HTTP
-    200 for a refusal and puts the reason in the body, so a message rejected for
-    an empty account or a bad number was reported as sent. An expiry warning
-    nobody received, recorded as delivered, is worse than a visible failure.
+    That None is the whole reason this exists alongside send_sms(). A bool
+    cannot tell a refusal from a failure to ask, and send_sms_task retried both
+    five times: an invalid sender ID rejects every message an operator sends,
+    and the old task answered by sending each one six times. The provider
+    having given a verdict means retrying cannot change it.
     """
     api_key, sender_id = _credentials(tenant)
     if not api_key or not sender_id:
         logger.warning("[sms] Skipped — BlessedTexts is not set up for this operator")
-        return False
+        return False, UNCONFIGURED
 
     # Subscribers are stored the way they gave their number. The provider wants
     # one form and refuses the rest.
@@ -197,21 +228,43 @@ def send_sms(phone: str, message: str, tenant=None) -> bool:
         body = _post(SMS_ENDPOINT, payload)
     except Exception as exc:
         logger.error("[sms] Request to %s failed: %s", phone, exc)
-        return False
+        return False, None
 
     # A send answers with a list; a malformed request can answer with a bare
     # object. Both shapes are handled rather than assumed.
     entries = body if isinstance(body, list) else [body]
     if not entries:
         logger.error("[sms] Empty response for %s", phone)
-        return False
+        return False, None
 
-    ok, reason = _describe(entries[0])
+    entry = entries[0]
+    ok, reason = _describe(entry)
     if ok:
         logger.info("[sms] Sent to %s", phone)
     else:
         logger.error("[sms] Refused for %s: %s", phone, reason)
-        _flag_if_serious(entries[0], tenant)
+        _flag_if_serious(entry, tenant)
+
+    code = str(entry.get("status_code", "")).strip() if isinstance(entry, dict) else ""
+    return ok, code or None
+
+
+def send_sms(phone: str, message: str, tenant=None) -> bool:
+    """
+    Send one SMS through BlessedTexts, on the operator's own account.
+
+    Returns True only when the provider accepted it.
+
+    That distinction is the whole point of this rewrite. The previous version
+    called raise_for_status() and returned True — but this provider answers HTTP
+    200 for a refusal and puts the reason in the body, so a message rejected for
+    an empty account or a bad number was reported as sent. An expiry warning
+    nobody received, recorded as delivered, is worse than a visible failure.
+
+    Use send_sms_result() where the difference between "refused" and "could not
+    be asked" matters, which is anywhere a retry might follow.
+    """
+    ok, _code = send_sms_result(phone, message, tenant=tenant)
     return ok
 
 
@@ -301,16 +354,22 @@ def sms_balance(tenant=None):
     except Exception as exc:
         return {"ok": False, "balance": None, "error": str(exc)}
 
-    code = str(body.get("status_code", "")).strip()
-    if code != SUCCESS:
-        return {
-            "ok": False,
-            "balance": None,
-            "error": STATUS_MEANINGS.get(code, "Unknown error"),
-        }
+    # This read body["status_code"] directly, on the documented shape — an
+    # object. _post now returns whatever carries a status_code, and a refusal
+    # can carry it inside a list, so a bare .get() was an AttributeError raised
+    # out of a settings page that was only asking how much credit was left.
+    entry = body[0] if isinstance(body, list) and body else body
+
+    # _describe rather than a second copy of the same lookup, which had already
+    # drifted: it threw away the provider's status_desc and answered "Unknown
+    # error" for any code not in our table — the very mistake the send path was
+    # fixed for.
+    ok, reason = _describe(entry)
+    if not ok:
+        return {"ok": False, "balance": None, "error": reason}
 
     try:
-        balance = int(float(body.get("balance", 0)))
+        balance = int(float(entry.get("balance", 0)))
     except (TypeError, ValueError):
         balance = None
     return {"ok": True, "balance": balance, "error": None}

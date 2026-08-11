@@ -5586,6 +5586,45 @@ class BlessedTextsSmsTests(TwoOperatorMixin, TestCase):
         self.assertEqual(sent["api_key"], "their-key")
         self.assertEqual(sent["sender_id"], "99999")
 
+    # ---- credentials as they were pasted in --------------------------------
+
+    def _reset_credentials(self, api_key, sender_id):
+        SystemSetting.objects.filter(
+            tenant=self.t1,
+            key__in=["BLESSEDTEXTS_API_KEY", "BLESSEDTEXTS_SENDER_ID"],
+        ).delete()
+        SystemSetting.objects.create(
+            tenant=self.t1, key="BLESSEDTEXTS_API_KEY", value=api_key)
+        SystemSetting.objects.create(
+            tenant=self.t1, key="BLESSEDTEXTS_SENDER_ID", value=sender_id)
+        clear_settings_cache(tenant=self.t1)
+
+    def test_a_pasted_key_does_not_fail_over_the_whitespace_around_it(self):
+        """
+        Both are typed into a settings form by hand and a copy brings the
+        newline with it. It went on the wire that way, came back 1002 or 1004,
+        and the field on the settings page looked correct because the part that
+        was wrong does not render.
+        """
+        self._reset_credentials(" test-key\n", "\t23107 ")
+
+        body = [{"status_code": "1000"}]
+        with patch("billing.notifications.requests.post",
+                   return_value=self._response(body)) as post:
+            self.assertTrue(send_sms("254722000000", "hello", tenant=self.t1))
+
+        sent = post.call_args.kwargs["json"]
+        self.assertEqual(sent["api_key"], "test-key")
+        self.assertEqual(sent["sender_id"], "23107")
+
+    def test_a_sender_id_of_only_whitespace_is_unset_rather_than_sent(self):
+        """Asking the provider about a blank sender ID has one possible answer."""
+        self._reset_credentials("test-key", "   ")
+
+        with patch("billing.notifications.requests.post") as post:
+            self.assertFalse(send_sms("254722000000", "hello", tenant=self.t1))
+        post.assert_not_called()
+
     # ---- the failures that need a person -----------------------------------
 
     def test_running_out_of_credit_reaches_the_operator(self):
@@ -5803,6 +5842,86 @@ class BlessedTextsSmsTests(TwoOperatorMixin, TestCase):
             result = sms_balance(tenant=self.t2)
         post.assert_not_called()
         self.assertFalse(result["ok"])
+
+    def test_balance_survives_a_refusal_that_arrives_in_a_list(self):
+        """
+        This read body["status_code"] straight off the documented shape, an
+        object. _post now returns whatever carries a status_code and a refusal
+        can carry it inside a list, so the bare .get() was an AttributeError
+        raised out of a settings page that only wanted to know the credit left.
+        """
+        body = [{"status_code": "1002", "status_desc": "Invalid API key"}]
+        with patch("billing.notifications.requests.post",
+                   return_value=self._error_response(body)):
+            result = sms_balance(tenant=self.t1)
+
+        self.assertFalse(result["ok"])
+        self.assertIn("Invalid API key", result["error"])
+
+    def test_balance_keeps_a_reason_for_a_code_we_have_never_seen(self):
+        """
+        The send path was fixed for exactly this and the balance path kept its
+        own copy of the lookup, which answered "Unknown error" while the
+        provider was saying why.
+        """
+        body = {"status_code": "1099", "status_desc": "Account suspended"}
+        with patch("billing.notifications.requests.post",
+                   return_value=self._response(body)):
+            result = sms_balance(tenant=self.t1)
+
+        self.assertFalse(result["ok"])
+        self.assertIn("Account suspended", result["error"])
+
+
+class SmsRetryTests(TestCase):
+    """
+    What a failed send is worth trying again.
+
+    send_sms_task raised on any falsy result, so every refusal was sent six
+    times. The day an operator's sender ID was rejected, every message in the
+    queue asked the same question six times and got the same answer — and the
+    first failure sat in the log behind four identical ones.
+    """
+
+    def _run(self, ok, code):
+        from billing.tasks.notification_tasks import send_sms_task
+
+        with patch("billing.tasks.notification_tasks.send_sms_result",
+                   return_value=(ok, code)) as send:
+            return send_sms_task("254722000000", "hello"), send
+
+    def test_a_refusal_is_not_asked_again(self):
+        """
+        1004 rejects every message this operator sends. Retrying is five more
+        of the same answer, and _flag_if_serious has already told the one
+        person who can fix it.
+        """
+        result, send = self._run(False, "1004")
+        self.assertFalse(result)
+        send.assert_called_once()
+
+    def test_an_unroutable_number_is_not_asked_again(self):
+        """A number the provider will not route stays unroutable at 10s and 20s."""
+        result, _ = self._run(False, "1008")
+        self.assertFalse(result)
+
+    def test_an_operator_with_no_account_is_not_asked_again(self):
+        from billing.notifications import UNCONFIGURED
+
+        result, _ = self._run(False, UNCONFIGURED)
+        self.assertFalse(result)
+
+    def test_a_send_that_got_no_answer_is_retried(self):
+        """
+        A timeout or a 502 is the case retrying exists for: nothing was
+        decided, so nothing rules out the next attempt succeeding.
+        """
+        with self.assertRaises(Exception):
+            self._run(False, None)
+
+    def test_a_success_is_a_success(self):
+        result, _ = self._run(True, "1000")
+        self.assertTrue(result)
 
 
 class WhatsappPhoneFormatTests(TwoOperatorMixin, TestCase):

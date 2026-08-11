@@ -1,7 +1,7 @@
 import logging
 from celery import shared_task
 
-from billing.notifications import send_sms, send_whatsapp
+from billing.notifications import send_sms_result, send_whatsapp
 from billing.tenancy import tenant_context
 
 logger = logging.getLogger(__name__)
@@ -15,16 +15,39 @@ logger = logging.getLogger(__name__)
     retry_jitter=True,
 )
 def send_sms_task(self, phone: str, message: str, tenant_id: int | None = None) -> bool:
-    # The operator travels with the task: send_sms() resolves the Africa's
-    # Talking credentials via get_setting(), and a worker has no request
-    # context to infer the operator from. Without this a message could be sent
-    # — and billed — through another operator's account.
+    """
+    One SMS, retried only where retrying could help.
+
+    This raised on any falsy result, so every refusal was sent six times. The
+    day an operator's sender ID was rejected, every message in the queue asked
+    the provider the same question six times and got the same answer — load on
+    them, load on us, and five later attempts hiding the first failure in the
+    log behind four identical ones.
+
+    So the provider having answered ends it. A status code is a verdict, and no
+    amount of backoff turns an invalid sender ID or an unroutable number into a
+    delivery; _flag_if_serious has already told the operator about the ones only
+    they can fix. No code means we never got an answer — a timeout, a 502, a
+    broken connection — and that is exactly what retrying is for.
+    """
+    # The operator travels with the task: the send resolves BlessedTexts
+    # credentials via get_setting(), and a worker has no request context to
+    # infer the operator from. Without this a message could be sent — and
+    # billed — through another operator's account.
     with tenant_context(tenant_id):
-        result = send_sms(phone, message)
-    if not result:
-        raise Exception(f"SMS delivery failed to {phone}")
-    logger.info(f"[sms] Sent to {phone}")
-    return True
+        ok, code = send_sms_result(phone, message)
+
+    if ok:
+        logger.info(f"[sms] Sent to {phone}")
+        return True
+
+    if code is not None:
+        logger.error(
+            "[sms] Not delivered to %s and not retried — the provider answered "
+            "%s, which will not change on a second attempt", phone, code)
+        return False
+
+    raise Exception(f"SMS delivery failed to {phone}")
 
 
 @shared_task(
