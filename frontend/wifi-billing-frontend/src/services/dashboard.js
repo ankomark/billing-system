@@ -16,6 +16,26 @@ export const fetchFailedMpesa = async () => {
 };
 
 /**
+ * What happened to the messages this operator sent.
+ *
+ * The counterpart of fetchFailedMpesa, and overdue: a failed send used to
+ * reach the server log and nowhere else, which is how a rejected sender ID
+ * cost an operator a day with every message failing and nothing saying why.
+ *
+ * `status` defaults to "errors" on the server — refused and failed together,
+ * since somebody opening this has messages that did not arrive.
+ */
+export const fetchMessageLogs = async ({
+  page = 1, pageSize = 25, status = "errors", channel = "", search = "",
+} = {}) => {
+  const params = { page, page_size: pageSize, status };
+  if (channel) params.channel = channel;
+  if (search) params.search = search;
+  const res = await api.get("dashboard/messages/", { params });
+  return res.data;
+};
+
+/**
  * The whole M-Pesa ledger, not only what went wrong.
  *
  * Covers both connection types — it is one callback endpoint, and the

@@ -8,7 +8,7 @@ from .models import (
     Customer, Package, Subscription, Invoice, Payment,
     MpesaTransaction, User, SystemSetting, Voucher, RouterDevice,
     PlatformPlan, Tenant, TenantSubscription, TenantInvoice, TenantPayment,
-    Station,
+    Station, MessageLog,
 )
 
 
@@ -330,6 +330,28 @@ class MpesaTransactionDashboardSerializer(serializers.ModelSerializer):
             "status",
             "processed",
             "error_message",
+            "created_at",
+        )
+
+
+class MessageLogSerializer(serializers.ModelSerializer):
+    """
+    One delivery attempt, as the errors page shows it.
+
+    `message` is included: "did the voucher code go out, and which one" is the
+    question this log was built to answer, and the body is where the answer is.
+    """
+
+    class Meta:
+        model = MessageLog
+        fields = (
+            "id",
+            "channel",
+            "phone",
+            "status",
+            "status_code",
+            "reason",
+            "message",
             "created_at",
         )
 

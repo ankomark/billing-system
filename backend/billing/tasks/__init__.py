@@ -27,6 +27,7 @@ from .platform_billing_tasks import (
 from .notification_tasks import (
     dispatch_broadcast_task,
     notify_customer_task,
+    prune_message_logs,
     send_sms_task,
     send_whatsapp_task,
 )
@@ -57,6 +58,7 @@ __all__ = [
     "ensure_customer_access_task",
     "dispatch_broadcast_task",
     "notify_customer_task",
+    "prune_message_logs",
     "send_sms_task",
     "send_whatsapp_task",
     "send_expiry_reminders",

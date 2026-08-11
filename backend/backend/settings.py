@@ -538,6 +538,12 @@ CELERY_BEAT_SCHEDULE = {
         "task": "billing.tasks.router_health.prune_connection_attempts_task",
         "schedule": crontab(hour=5, minute=10),
     },
+    # Delivery records grow with traffic rather than with faults, because
+    # successes are recorded too — see MessageLog.
+    "prune-message-logs": {
+        "task": "billing.tasks.notification_tasks.prune_message_logs",
+        "schedule": crontab(hour=5, minute=20),
+    },
     "collect-pppoe-usage": {
         "task": "billing.tasks.usage_tasks.collect_pppoe_usage_snapshots",
         "schedule": crontab(minute="*/5"),

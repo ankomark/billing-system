@@ -104,6 +104,79 @@ def normalise_phone(phone):
     return raw
 
 
+# ─── The record an operator can actually read ────────────────────────────────
+
+def _record(channel, phone, status, tenant, *, code="", reason="", message=""):
+    """
+    Write one row of the delivery log.
+
+    Everything below used to end at logger.error, which is a file on a server
+    an operator cannot read and would not know to ask for. M-Pesa has had a
+    table and a page since its callback was written; this is the same thing for
+    messages. See MessageLog.
+
+    Never raises. A log row is worth having and is worth nothing at all if
+    failing to write one can stop a message going out, or turn a refusal the
+    caller was handling into an exception it was not expecting.
+    """
+    try:
+        from billing.config import _resolve_tenant_id
+        from billing.models import MessageLog
+
+        tenant_id = _resolve_tenant_id(tenant)
+        fields = dict(
+            channel=channel,
+            phone=phone or "",
+            status=status,
+            status_code=code or "",
+            reason=reason or "",
+            message=message or "",
+        )
+        # Only when we know it. Left out, the model's default_tenant applies,
+        # which reads the tenant in context and is the right answer inside a
+        # request or a tenant_context() block.
+        if tenant_id is not None:
+            fields["tenant_id"] = tenant_id
+
+        MessageLog.objects.create(**fields)
+    except Exception:
+        logger.exception("[notify] could not record the delivery attempt")
+
+
+def _record_many(rows, tenant):
+    """
+    The same, for a broadcast, in one insert rather than one per recipient.
+
+    A broadcast to four hundred subscribers is one request to the provider —
+    deliberately, see send_bulk_sms — and it would be a poor trade to answer
+    that with four hundred INSERTs.
+
+    Never raises, for the same reason _record does not.
+    """
+    if not rows:
+        return
+    try:
+        from billing.config import _resolve_tenant_id
+        from billing.models import MessageLog
+
+        tenant_id = _resolve_tenant_id(tenant)
+        common = {"tenant_id": tenant_id} if tenant_id is not None else {}
+        MessageLog.objects.bulk_create([
+            MessageLog(
+                channel=row.get("channel", "sms"),
+                phone=row.get("phone") or "",
+                status=row["status"],
+                status_code=row.get("code") or "",
+                reason=row.get("reason") or "",
+                message=row.get("message") or "",
+                **common,
+            )
+            for row in rows
+        ])
+    except Exception:
+        logger.exception("[notify] could not record %s delivery attempts", len(rows))
+
+
 def _credentials(tenant=None):
     """
     The operator's API key and sender ID, with surrounding whitespace removed.
@@ -211,6 +284,9 @@ def send_sms_result(phone: str, message: str, tenant=None):
     api_key, sender_id = _credentials(tenant)
     if not api_key or not sender_id:
         logger.warning("[sms] Skipped — BlessedTexts is not set up for this operator")
+        _record("sms", phone, "failed", tenant, code=UNCONFIGURED, message=message,
+                reason="SMS is not set up for this operator — no BlessedTexts "
+                       "API key or sender ID has been saved")
         return False, UNCONFIGURED
 
     # Subscribers are stored the way they gave their number. The provider wants
@@ -228,6 +304,7 @@ def send_sms_result(phone: str, message: str, tenant=None):
         body = _post(SMS_ENDPOINT, payload)
     except Exception as exc:
         logger.error("[sms] Request to %s failed: %s", phone, exc)
+        _record("sms", phone, "failed", tenant, reason=str(exc), message=message)
         return False, None
 
     # A send answers with a list; a malformed request can answer with a bare
@@ -235,6 +312,8 @@ def send_sms_result(phone: str, message: str, tenant=None):
     entries = body if isinstance(body, list) else [body]
     if not entries:
         logger.error("[sms] Empty response for %s", phone)
+        _record("sms", phone, "failed", tenant, message=message,
+                reason="The provider answered with nothing at all")
         return False, None
 
     entry = entries[0]
@@ -246,6 +325,8 @@ def send_sms_result(phone: str, message: str, tenant=None):
         _flag_if_serious(entry, tenant)
 
     code = str(entry.get("status_code", "")).strip() if isinstance(entry, dict) else ""
+    _record("sms", phone, "sent" if ok else "refused", tenant,
+            code=code, reason="" if ok else reason, message=message)
     return ok, code or None
 
 
@@ -289,6 +370,13 @@ def send_bulk_sms(pairs, tenant=None):
     api_key, sender_id = _credentials(tenant)
     if not api_key or not sender_id:
         logger.warning("[sms] Bulk skipped — BlessedTexts is not set up for this operator")
+        reason = ("SMS is not set up for this operator — no BlessedTexts API "
+                  "key or sender ID has been saved")
+        _record_many([
+            {"phone": phone, "status": "failed", "code": UNCONFIGURED,
+             "reason": reason, "message": message}
+            for phone, message in pairs
+        ], tenant)
         return {
             "sent": 0,
             "failed": len(pairs),
@@ -308,20 +396,40 @@ def send_bulk_sms(pairs, tenant=None):
         body = _post(SMS_ENDPOINT, payload, timeout=60)
     except Exception as exc:
         logger.error("[sms] Bulk request failed: %s", exc)
+        _record_many([
+            {"phone": phone, "status": "failed", "reason": str(exc),
+             "message": message}
+            for phone, message in pairs
+        ], tenant)
         return {"sent": 0, "failed": len(pairs), "errors": [str(exc)]}
 
     entries = body if isinstance(body, list) else [body]
     sent = failed = 0
     errors = []
-    for entry in entries:
+    rows = []
+    for index, entry in enumerate(entries):
         ok, reason = _describe(entry)
+        # The provider answers in the order it was asked, so the pair at this
+        # index is whose message this is. Its own phone field is preferred
+        # where it gave one, since that is the number it actually acted on.
+        given_phone, given_message = pairs[index] if index < len(pairs) else ("", "")
+        phone = entry.get("phone") if isinstance(entry, dict) else None
+
         if ok:
             sent += 1
         else:
             failed += 1
-            phone = entry.get("phone", "unknown") if isinstance(entry, dict) else "unknown"
+            phone = phone or given_phone or "unknown"
             errors.append(f"{phone}: {reason}")
             _flag_if_serious(entry, tenant)
+
+        rows.append({
+            "phone": phone or given_phone,
+            "status": "sent" if ok else "refused",
+            "code": str(entry.get("status_code", "")).strip() if isinstance(entry, dict) else "",
+            "reason": "" if ok else reason,
+            "message": given_message,
+        })
 
     # One row comes back per recipient the provider handled. Anyone it did not
     # answer for was not sent, and counting them as failed beats implying they
@@ -330,6 +438,15 @@ def send_bulk_sms(pairs, tenant=None):
     if unanswered > 0:
         failed += unanswered
         errors.append(f"{unanswered} recipient(s) got no response from the provider")
+        # Named individually rather than as a count, because "four hundred sent,
+        # three failed" is useless to whoever has to work out which three.
+        rows.extend([
+            {"phone": phone, "status": "failed", "message": message,
+             "reason": "The provider returned no result for this recipient"}
+            for phone, message in pairs[len(entries):]
+        ])
+
+    _record_many(rows, tenant)
 
     if failed:
         logger.warning("[sms] Bulk: %s sent, %s failed", sent, failed)
@@ -417,6 +534,9 @@ def send_whatsapp(phone: str, message: str, tenant=None) -> bool:
 
     if not token or not phone_id:
         logger.warning("[whatsapp] Skipped — missing WhatsApp credentials in SystemSetting")
+        _record("whatsapp", phone, "failed", tenant, message=message,
+                reason="WhatsApp is not set up for this operator — no token or "
+                       "phone number ID has been saved")
         return False
 
     # The docstring above has always said international format; nothing made it
@@ -441,9 +561,15 @@ def send_whatsapp(phone: str, message: str, tenant=None) -> bool:
         response = requests.post(url, json=payload, headers=headers, timeout=10)
         response.raise_for_status()
         logger.info(f"[whatsapp] Sent to {phone}")
+        _record("whatsapp", phone, "sent", tenant, message=message)
         return True
     except Exception as exc:
         logger.error(f"[whatsapp] Failed to {phone}: {exc}")
+        # Meta issues no status code of the kind BlessedTexts does, so the
+        # exception text is the whole of what it said. Usually an HTTP status
+        # and, for the one that matters most, "401 Unauthorized" — an expired
+        # token, which fails every message the same way a bad sender ID does.
+        _record("whatsapp", phone, "failed", tenant, reason=str(exc), message=message)
         return False
 
 

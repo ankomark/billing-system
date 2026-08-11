@@ -5873,6 +5873,246 @@ class BlessedTextsSmsTests(TwoOperatorMixin, TestCase):
         self.assertIn("Account suspended", result["error"])
 
 
+class MessageLogTests(TwoOperatorMixin, TestCase):
+    """
+    The record an operator can read.
+
+    Everything below used to end at logger.error, which is a file on a server
+    an operator cannot open and would not know to ask for. That is how a
+    rejected sender ID cost one of them a day: every send failing, and the one
+    line saying why sitting somewhere only an SSH session could reach.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        for key, value in (
+            ("BLESSEDTEXTS_API_KEY", "test-key"),
+            ("BLESSEDTEXTS_SENDER_ID", "23107"),
+        ):
+            SystemSetting.objects.create(tenant=self.t1, key=key, value=value)
+        clear_settings_cache(tenant=self.t1)
+
+        # Building the operators creates subscriptions, which notify, which now
+        # writes rows — the feature working, and noise here. Cleared so each
+        # test counts only what it sent itself.
+        from billing.models import MessageLog
+        MessageLog.objects.all_tenants().delete()
+
+    def _response(self, payload, ok=True, status_code=200):
+        mock = MagicMock()
+        mock.status_code = status_code
+        mock.ok = ok
+        mock.json.return_value = payload
+        mock.raise_for_status.return_value = None
+        return mock
+
+    def _logs(self, tenant=None):
+        from billing.models import MessageLog
+
+        qs = MessageLog.objects.all_tenants()
+        if tenant is not None:
+            qs = qs.filter(tenant=tenant)
+        return qs.order_by("created_at")
+
+    # ---- the failure that started this --------------------------------------
+
+    def test_a_rejected_sender_id_is_written_down_where_it_can_be_read(self):
+        """
+        The exact failure that cost a day. The reason existed the whole time —
+        the provider said it in the response body — and reached nothing an
+        operator could open.
+        """
+        body = [{"status_code": "1004", "status_desc": "Invalid Sender ID: Blessed"}]
+        with patch("billing.notifications.requests.post",
+                   return_value=self._response(body)), \
+             patch("billing.tasks.alert_tasks.notify_admin_task.delay"):
+            send_sms("254722000000", "hello", tenant=self.t1)
+
+        row = self._logs(self.t1).last()
+        self.assertEqual(row.channel, "sms")
+        self.assertEqual(row.status, "refused")
+        self.assertEqual(row.status_code, "1004")
+        self.assertIn("Invalid Sender ID", row.reason)
+        self.assertEqual(row.phone, "254722000000")
+
+    def test_a_success_is_recorded_too(self):
+        """
+        "The customer says their code never arrived" is the question this
+        exists for, and only a record of the successes can answer it.
+        """
+        body = [{"status_code": "1000"}]
+        with patch("billing.notifications.requests.post",
+                   return_value=self._response(body)):
+            send_sms("0712345678", "Voucher Code: ABC123", tenant=self.t1)
+
+        row = self._logs(self.t1).last()
+        self.assertEqual(row.status, "sent")
+        self.assertEqual(row.status_code, "1000")
+        self.assertEqual(row.reason, "")
+        # Normalised, because that is the number the provider was actually
+        # given and therefore the one the message went to.
+        self.assertEqual(row.phone, "254712345678")
+        self.assertIn("ABC123", row.message)
+
+    def test_a_transport_failure_is_distinguished_from_a_refusal(self):
+        """
+        Different problems and different actions: a refusal is something to go
+        and fix, a timeout may already have retried and succeeded.
+        """
+        with patch("billing.notifications.requests.post",
+                   side_effect=Exception("timeout")):
+            send_sms("254722000000", "hello", tenant=self.t1)
+
+        row = self._logs(self.t1).last()
+        self.assertEqual(row.status, "failed")
+        self.assertEqual(row.status_code, "")
+        self.assertIn("timeout", row.reason)
+
+    def test_an_operator_with_no_sms_account_gets_a_row_saying_so(self):
+        """
+        This returned False before reaching the network and left nothing
+        behind, so "nothing is sending" and "nothing is configured" looked
+        identical from inside the product.
+        """
+        with patch("billing.notifications.requests.post") as post:
+            send_sms("254722000000", "hello", tenant=self.t2)
+        post.assert_not_called()
+
+        row = self._logs(self.t2).last()
+        self.assertEqual(row.status, "failed")
+        self.assertIn("not set up", row.reason)
+
+    # ---- the other channel --------------------------------------------------
+
+    def test_whatsapp_is_recorded_on_the_same_table(self):
+        """
+        notify_customer falls back SMS → WhatsApp, so the failure that actually
+        loses a voucher is both channels failing. One table shows that; two
+        never would.
+        """
+        SystemSetting.objects.create(
+            tenant=self.t1, key="WHATSAPP_TOKEN", value="tok")
+        SystemSetting.objects.create(
+            tenant=self.t1, key="WHATSAPP_PHONE_ID", value="12345")
+        clear_settings_cache(tenant=self.t1)
+
+        from billing.notifications import send_whatsapp
+
+        with patch("billing.notifications.requests.post",
+                   side_effect=Exception("401 Client Error: Unauthorized")):
+            send_whatsapp("254722000000", "hello", tenant=self.t1)
+
+        row = self._logs(self.t1).last()
+        self.assertEqual(row.channel, "whatsapp")
+        self.assertEqual(row.status, "failed")
+        self.assertIn("401", row.reason)
+
+    # ---- broadcasts ---------------------------------------------------------
+
+    def test_a_broadcast_records_every_recipient_individually(self):
+        """
+        "Four hundred sent, three failed" is useless to whoever has to work out
+        which three.
+        """
+        pairs = [("254722000001", "a"), ("254722000002", "b")]
+        body = [
+            {"status_code": "1000", "phone": "254722000001"},
+            {"status_code": "1008", "status_desc": "Invalid Phone number",
+             "phone": "254722000002"},
+        ]
+        with patch("billing.notifications.requests.post",
+                   return_value=self._response(body)):
+            send_bulk_sms(pairs, tenant=self.t1)
+
+        rows = list(self._logs(self.t1))
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0].status, "sent")
+        self.assertEqual(rows[1].status, "refused")
+        self.assertEqual(rows[1].phone, "254722000002")
+        self.assertIn("Invalid Phone number", rows[1].reason)
+
+    def test_a_recipient_the_provider_never_answered_for_is_named(self):
+        pairs = [("254722000001", "a"), ("254722000002", "b")]
+        body = [{"status_code": "1000", "phone": "254722000001"}]
+        with patch("billing.notifications.requests.post",
+                   return_value=self._response(body)):
+            send_bulk_sms(pairs, tenant=self.t1)
+
+        rows = list(self._logs(self.t1))
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[1].phone, "254722000002")
+        self.assertEqual(rows[1].status, "failed")
+
+    # ---- it must never be the thing that breaks a send ----------------------
+
+    def test_a_send_still_succeeds_when_the_record_cannot_be_written(self):
+        """
+        A log row is worth having and worth nothing if failing to write one can
+        stop a message going out — or turn a refusal the caller was handling
+        into an exception it never expected.
+        """
+        body = [{"status_code": "1000"}]
+        with patch("billing.notifications.requests.post",
+                   return_value=self._response(body)), \
+             patch("billing.models.MessageLog.objects.create",
+                   side_effect=Exception("table is gone")):
+            self.assertTrue(send_sms("254722000000", "hello", tenant=self.t1))
+
+    # ---- one operator must never read another's -----------------------------
+
+    def test_one_operator_never_sees_another_operators_messages(self):
+        """
+        These rows carry subscribers' numbers and the text sent to them.
+        """
+        body = [{"status_code": "1000"}]
+        with patch("billing.notifications.requests.post",
+                   return_value=self._response(body)):
+            send_sms("254722000000", "for t1", tenant=self.t1)
+
+        from billing.models import MessageLog
+
+        with tenant_context(self.t2):
+            self.assertEqual(MessageLog.objects.count(), 0)
+        with tenant_context(self.t1):
+            self.assertEqual(MessageLog.objects.count(), 1)
+
+    # ---- what the page asks for ---------------------------------------------
+
+    def test_the_page_defaults_to_what_did_not_arrive(self):
+        from billing.dashboards import message_logs
+        from billing.models import MessageLog
+
+        with tenant_context(self.t1):
+            MessageLog.objects.create(channel="sms", phone="1", status="sent")
+            MessageLog.objects.create(channel="sms", phone="2", status="refused")
+            MessageLog.objects.create(channel="whatsapp", phone="3", status="failed")
+
+            errors = list(message_logs(status="errors"))
+            self.assertEqual(
+                sorted(r.status for r in errors), ["failed", "refused"],
+                "the page opens on failures and must show both kinds")
+
+            self.assertEqual(len(list(message_logs())), 3)
+            self.assertEqual(len(list(message_logs(channel="whatsapp"))), 1)
+
+    def test_the_log_is_pruned(self):
+        from billing.models import MessageLog
+        from billing.tasks.notification_tasks import prune_message_logs
+
+        with tenant_context(self.t1):
+            old = MessageLog.objects.create(channel="sms", phone="1", status="sent")
+            MessageLog.objects.create(channel="sms", phone="2", status="sent")
+
+        # auto_now_add cannot be set on create, so it is moved afterwards.
+        MessageLog.objects.all_tenants().filter(pk=old.pk).update(
+            created_at=timezone.now() - timezone.timedelta(days=90))
+
+        self.assertEqual(prune_message_logs(), 1)
+        with tenant_context(self.t1):
+            self.assertEqual(MessageLog.objects.count(), 1)
+
+
 class SmsRetryTests(TestCase):
     """
     What a failed send is worth trying again.

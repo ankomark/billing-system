@@ -22,6 +22,7 @@ const PackageForm      = lazy(() => import("./pages/admin/PackageForm"));
 const UnpaidInvoices   = lazy(() => import("./pages/admin/UnpaidInvoices"));
 const FailedMpesa      = lazy(() => import("./pages/admin/FailedMpesa"));
 const MpesaTransactions = lazy(() => import("./pages/admin/MpesaTransactions"));
+const MessageLogs      = lazy(() => import("./pages/admin/MessageLogs"));
 const PPPoESessions    = lazy(() => import("./pages/admin/PPPoESessions"));
 const Routers          = lazy(() => import("./pages/admin/Routers"));
 const Stations         = lazy(() => import("./pages/admin/Stations"));
@@ -151,6 +152,10 @@ export default function App() {
             for. */}
         <Route path="/admin/mpesa/failed"           element={<Admin><FailedMpesa /></Admin>} />
         <Route path="/admin/mpesa/transactions"     element={<Admin><MpesaTransactions /></Admin>} />
+        {/* Staff too, for the same reason as the two above: "did my customer
+            get their voucher code" is a support question before it is an
+            administrative one. */}
+        <Route path="/admin/messages"               element={<Admin><MessageLogs /></Admin>} />
 
         {/* Admin — network */}
         <Route path="/admin/pppoe/sessions"         element={<Admin><PPPoESessions /></Admin>} />

@@ -43,9 +43,11 @@ from .analytics import (
     revenue_by_method as analytics_by_method,
 )
 from django.utils.dateparse import parse_datetime
-from .dashboards import (unpaid_invoices,pending_invoices,failed_mpesa_transactions,)
+from .dashboards import (unpaid_invoices,pending_invoices,failed_mpesa_transactions,message_logs,)
+from .notifications import normalise_phone
 from .serializers import (
     InvoiceDashboardSerializer,
+    MessageLogSerializer,
     MpesaTransactionDashboardSerializer,
     MpesaTransactionSerializer,
 )
@@ -954,6 +956,48 @@ class FailedMpesaTransactionsView(APIView):
         paginator = StandardPagination()
         page = paginator.paginate_queryset(qs, request)
         serializer = MpesaTransactionDashboardSerializer(page, many=True)
+        return paginator.get_paginated_response(serializer.data)
+
+
+class MessageLogsView(APIView):
+    """
+    Every message this operator tried to send, and what came back.
+
+    The counterpart of FailedMpesaTransactionsView above, and overdue. M-Pesa
+    has had a table and a page since its callback was written; messaging had
+    only logger.error, which is a file on a server an operator cannot read.
+    That is how a rejected sender ID cost one of them a day — every send
+    failing, nothing in the product saying so.
+
+    ?status=errors is the default the page opens on: refused and failed
+    together, because someone looking here has messages that did not arrive and
+    should not have to know which of the two kinds theirs was.
+
+    Staff may read it, like the M-Pesa ledger — "did my customer get their
+    code" is a support question before it is an administrative one.
+    """
+    permission_classes = [IsTenantMember]
+
+    def get(self, request):
+        qs = message_logs(
+            channel=request.GET.get("channel"),
+            status=request.GET.get("status", "errors"),
+        )
+
+        search = (request.GET.get("search") or "").strip()
+        if search:
+            # The number is what an operator has in front of them, usually read
+            # out by the customer, so it is matched in whichever form it was
+            # stored — the provider is sent 2547…, the customer says 07…
+            qs = qs.filter(
+                Q(phone__icontains=search)
+                | Q(phone__icontains=normalise_phone(search))
+                | Q(reason__icontains=search)
+            )
+
+        paginator = StandardPagination()
+        page = paginator.paginate_queryset(qs, request)
+        serializer = MessageLogSerializer(page, many=True)
         return paginator.get_paginated_response(serializer.data)
 
 

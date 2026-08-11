@@ -5,6 +5,7 @@ import {
   Settings, MessageSquare, LogOut, Activity, Router,
   RefreshCw, Search, Wifi, ShieldAlert, HeartPulse, X,
   UserPlus, CreditCard, UserCog, MapPin, TrendingUp, Receipt, PlugZap,
+  MailWarning,
 } from "lucide-react";
 
 export default function AdminSidebar({ open, onClose }) {
@@ -98,6 +99,9 @@ export default function AdminSidebar({ open, onClose }) {
           {isAdmin && (
             <NavItem to="/admin/broadcast"     icon={MessageSquare} label="Broadcast"       onClick={onClose} />
           )}
+          {/* Next to Broadcast, which is where an operator is standing when
+              they find out a send did not work. */}
+          <NavItem to="/admin/messages"        icon={MailWarning}   label="Message Delivery" onClick={onClose} />
           <NavItem to="/admin/access-lookup"   icon={Search}        label="Access Lookup"   onClick={onClose} />
           <NavItem to="/admin/failed-connections" icon={PlugZap}   label="Failed Connections" onClick={onClose} />
 

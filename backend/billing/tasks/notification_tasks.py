@@ -2,9 +2,17 @@ import logging
 from celery import shared_task
 
 from billing.notifications import send_sms_result, send_whatsapp
-from billing.tenancy import tenant_context
+from billing.tenancy import all_tenants, tenant_context
 
 logger = logging.getLogger(__name__)
+
+# How long a delivery record is worth keeping.
+#
+# Long enough to answer the question it exists for — "the customer says their
+# voucher never arrived", which reaches an operator days later, and "everything
+# started failing at some point last week" — and short enough that a busy
+# operator's successes do not accumulate forever. Every send writes a row.
+MESSAGE_LOG_RETENTION_DAYS = 60
 
 
 @shared_task(
@@ -64,6 +72,31 @@ def send_whatsapp_task(self, phone: str, message: str, tenant_id: int | None = N
         raise Exception(f"WhatsApp delivery failed to {phone}")
     logger.info(f"[whatsapp] Sent to {phone}")
     return True
+
+
+@shared_task
+def prune_message_logs(days=MESSAGE_LOG_RETENTION_DAYS):
+    """
+    Drop delivery records past the retention window.
+
+    Every message written records a row, successes included — that is the point
+    of it, since "we sent it and the provider took it" is the answer to the
+    support question that prompted the log. But it means the table grows with
+    traffic rather than with faults, and nothing else would ever remove a row.
+    """
+    from django.utils import timezone
+
+    from billing.models import MessageLog
+
+    cutoff = timezone.now() - timezone.timedelta(days=days)
+    # Retention is platform-wide by nature, so this opts out of scoping
+    # explicitly rather than pruning only whoever happens to be in context.
+    with all_tenants():
+        deleted, _ = MessageLog.objects.all_tenants().filter(
+            created_at__lt=cutoff).delete()
+    logger.info("[notify] pruned %s delivery record(s) older than %s days",
+                deleted, days)
+    return deleted
 
 
 @shared_task

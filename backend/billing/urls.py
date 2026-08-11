@@ -34,6 +34,7 @@ from .views import (
     UnpaidInvoicesView,
     PendingInvoicesView,
     FailedMpesaTransactionsView,
+    MessageLogsView,
     MpesaTransactionsView,
     DailyRevenueView,
 
@@ -154,6 +155,9 @@ urlpatterns = [
     path("api/dashboard/mpesa/failed/",     FailedMpesaTransactionsView.as_view(),  name="failed-mpesa"),
     # Every transaction, not only the ones that went wrong.
     path("api/mpesa/transactions/",         MpesaTransactionsView.as_view(),        name="mpesa-transactions"),
+    # The same thing for messages, which had nothing at all until now — a failed
+    # send reached logger.error and no further. Defaults to the failures.
+    path("api/dashboard/messages/",         MessageLogsView.as_view(),              name="message-logs"),
 
     # ─── M-Pesa ──────────────────────────────────────────────────────────────
     path("api/mpesa/stk-push/",     MpesaSTKPushView.as_view(),     name="mpesa-stk-push"),

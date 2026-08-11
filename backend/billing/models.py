@@ -1741,6 +1741,79 @@ class AccessAuditLog(TenantScopedModel):
 
 
 # =====================================================
+# MESSAGE DELIVERY LOG
+# =====================================================
+
+class MessageLog(TenantScopedModel):
+    """
+    Every notification this operator tried to send, and what came back.
+
+    M-Pesa has had this since its callback was written: a row per transaction,
+    a page listing the failures, and an operator holding a receipt number who
+    can go and look. Messaging had nothing. A send that failed reached
+    logger.error and stopped there, which is a file on a server an operator
+    cannot read and would not know to ask for.
+
+    That is not a hypothetical gap. An operator lost a day to a rejected sender
+    ID: every message failing, a valid API key, a credit balance that read
+    correctly, and no way to see the one line that said why. Somebody had to
+    post to the provider by hand and print the response to find it. A row here
+    would have answered it in a glance.
+
+    Successes are recorded too, not only failures. The recurring support
+    question is "the customer says their code never arrived" — and "we sent it,
+    the provider took it, here is when" is an answer, where silence is not.
+    Pruned by prune_message_logs; see billing/tasks/notification_tasks.py.
+    """
+
+    CHANNELS = (
+        ("sms", "SMS"),
+        ("whatsapp", "WhatsApp"),
+    )
+
+    # Three outcomes, not two, because "the provider refused this" and "we
+    # never got an answer" need different actions from whoever is reading. A
+    # refusal is a thing to go and fix; a transport failure is a thing that may
+    # already have retried and succeeded.
+    STATUSES = (
+        ("sent", "Sent"),
+        ("refused", "Refused"),
+        ("failed", "Failed"),
+    )
+
+    channel = models.CharField(max_length=10, choices=CHANNELS)
+    phone = models.CharField(max_length=32, blank=True)
+    status = models.CharField(max_length=10, choices=STATUSES)
+
+    # The provider's own code — "1004", "1009". Blank where there is none:
+    # WhatsApp does not issue them, and neither does a timeout.
+    status_code = models.CharField(max_length=20, blank=True)
+
+    # What we would otherwise have written to the log, in the provider's words
+    # where it gave any. This is the column the page exists for.
+    reason = models.TextField(blank=True)
+
+    # The body as sent. It is how "did the voucher code go out, and which one"
+    # gets answered without guessing, and it is the operator's own message to
+    # their own subscriber.
+    message = models.TextField(blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            # The page's default view: this operator's failures, newest first.
+            models.Index(fields=["tenant", "status", "-created_at"]),
+            # And the whole ledger in the same order, for the "All" tab and for
+            # the pruning sweep, which deletes by age.
+            models.Index(fields=["tenant", "-created_at"]),
+        ]
+
+    def __str__(self):
+        return f"{self.channel} → {self.phone} — {self.status} — {self.created_at:%Y-%m-%d %H:%M}"
+
+
+# =====================================================
 # SYSTEM SETTINGS
 # =====================================================
 
