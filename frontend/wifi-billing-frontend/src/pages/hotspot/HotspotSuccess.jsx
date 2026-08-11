@@ -21,7 +21,14 @@ export default function HotspotSuccess() {
   const voucher = params.get("voucher");
   const packageName = params.get("package");
 
-  const [countdown, setCountdown] = useState(8);
+  // Thirty seconds when there is a code on screen, eight when there is not.
+  //
+  // Eight is ample to read "you're connected" and carry on. It is not enough
+  // to copy down a code, and this is the only place the code is shown — an
+  // operator with no SMS credentials sends no SMS at all, so for their
+  // customers it exists here and in the database and nowhere else. Being
+  // hurried off the page is being hurried off the only copy.
+  const [countdown, setCountdown] = useState(voucher ? 30 : 8);
   const [copied, setCopied] = useState(false);
   const [paused, setPaused] = useState(false);
 
@@ -31,10 +38,11 @@ export default function HotspotSuccess() {
 
   // Auto redirect after countdown.
   //
-  // Pauses while the code is on screen and uncopied. It used to run at six
-  // seconds flat, which is not long enough to copy a code down, and the
-  // redirect leaves the page — so the one moment the customer could see it
-  // was also the one moment they were being hurried away from it.
+  // Pauses only where the copy button could not reach the clipboard — common
+  // on a captive portal, which is served over plain http, and there the code
+  // has to be selected by hand, which takes as long as it takes. Otherwise
+  // this runs to zero and continues on its own, because a customer who has
+  // their code and stops reading should not be left on a dead page.
   useEffect(() => {
     if (paused) return undefined;
     const timer = setInterval(() => {
