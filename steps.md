@@ -19,9 +19,42 @@ and what it looks like when it goes wrong; this is for the second router and
 the twentieth, when you only need the sequence.
 
 Substitute throughout: **`bridgeLocal`** (read the real name off
-`/interface/bridge/print` — an RB951 does not call it `bridge`),
+`/interface/bridge/print` — an RB951 does not call it `bridge`, an RB5009 does),
 **`YOUR-SSID`**, **`api.example.com`** and **`SERVER_IP`**, and
 **`AA:BB:CC:DD:EE:FF`** (your own laptop's MAC).
+
+**Substitute them before you press enter.** RouterOS accepts
+`AA:BB:CC:DD:EE:FF` as a perfectly valid MAC and binds it, so the placeholder
+does not fail — it succeeds against a device that does not exist, and you find
+out later when the bypass you thought you had is not there. The same goes for
+anything in angle brackets.
+
+### Which board you have
+
+Two shapes turn up, and the difference decides whether **stage 5** is a
+configuration job or a shopping list:
+
+| | Board with a radio | Board without one |
+|---|---|---|
+| Example | RB951, hAP ac² | **RB5009UG+S+**, RB4011, CCR |
+| `/interface/print` shows | `wlan1` | ether ports only |
+| Bridge is called | `bridgeLocal` on an RB951 | `bridge` |
+| The WiFi | configured in **stage 5A** | a separate AP — **stage 5B** |
+
+Everything else is identical. The hotspot runs on the bridge either way, and a
+board with no radio is not a worse hotspot gateway — an RB5009's four ARM64
+cores carry far more sessions than an RB951's 600 MHz MIPS. It just cannot
+broadcast, so somebody else's access point has to, and **how that AP is
+configured decides whether your billing works at all**. See stage 5B.
+
+```
+/system/resource/print
+/interface/print
+```
+
+`board-name` and the absence of any `wlan` interface answer it in one look. On
+a radio-less board `/interface/wireless/print` returns *no such command* — the
+package is absent because the hardware is. That is not a fault.
 
 ### 1. Look before you touch
 
@@ -30,15 +63,41 @@ Substitute throughout: **`bridgeLocal`** (read the real name off
 | `/system/resource/print` | `version: 7.13` or newer | On 6.x nothing below works — device-mode and WireGuard both need 7. Upgrade first |
 | `/system/device-mode/print` | `hotspot: yes`, `proxy: yes` | Either `no` → **stage 4** |
 | `/interface/bridge/print` | one bridge — **write the name down** | `bridgeLocal` on an RB951. Use whatever it says everywhere below |
-| `/interface/print` | `wlan1` present, no `X` | `X`, or `;;; managed by CAPsMAN` → **stage 5** |
+| `/interface/print` | `wlan1` present, no `X` | No `wlan` at all → radio-less board → **stage 5B**. `X`, or `;;; managed by CAPsMAN` → **stage 5A** |
 | `/interface/bridge/port/print` | ether2–5 and `wlan1`, **not `ether1`** | `ether1` listed → it is a switch, not a router → **stage 2** |
 | `/ip/address/print` | one on the bridge, one on `ether1` | Same address on **two** interfaces → the old DHCP client is still running → `/ip/dhcp-client/remove [find interface=bridgeLocal]` |
 | `/ip/dhcp-client/print` | on `ether1`, `status: bound` | On the *bridge* → **stage 2**. `searching` forever → power-cycle the modem; some ISPs bind to the first MAC they see |
 | `/ip/route/print` | exactly one `0.0.0.0/0`, **no `+`** | `+` flags = two default routes, one dead → remove the stale DHCP client as above |
 | `/ip/firewall/nat/print` | a `masquerade` with `out-interface-list=WAN` | Empty → nothing is being translated → the NAT line in **stage 2** |
 | `/ip/firewall/filter/print` | seven rules | Empty → no input protection at all → **stage 3** |
+| `/ip/firewall/filter/print where action=fasttrack-connection` | **nothing** | A `defconf: fasttrack` rule → remove it now, see below. MikroTik ships one and it must not run on a hotspot |
 | `/ping 8.8.8.8 count=3` | `0% packet loss` | 100% → the router has no WAN; fix that before anything else. ~66% with an odd `host unreachable` from its own address → two default routes again |
 | `/system/clock/print` | today's date and time | Wrong → **stage 4**. Session expiry is decided by this clock |
+
+**Remove fasttrack before you go on**, on any board that arrived with MikroTik's
+default configuration:
+
+```
+/ip/firewall/filter/remove [find action=fasttrack-connection]
+/ip/firewall/filter/print where chain=forward
+```
+
+Fasttrack shunts established connections past the firewall **and past hotspot
+accounting**, so the byte counters stop incrementing and
+`collect_hotspot_usage` reads exactly those counters. Every subscriber then
+appears to have used almost nothing. Nothing breaks visibly — customers get
+online, the portal works, vouchers redeem — and you find out from a usage
+report weeks later.
+
+Stage 3 builds a rule set without one, so this only bites when defconf is
+present, which is precisely the case where you skip stage 3 and assume the
+default set is fine. **A factory reset puts it back**, so re-check after any
+reset rather than trusting that you did this once.
+
+The remaining dynamic rule `;;; special dummy rule to show fasttrack counters`
+is a counter placeholder and disappears on reboot. Confirm the forward chain
+still holds `accept established,related,untracked`, `drop invalid` and `drop
+all from WAN not DSTNATed` afterwards.
 
 ### 2. Make it a router — only if `ether1` was in the bridge
 
@@ -116,7 +175,7 @@ something** — a software reboot does not count.
 | `/system/ntp/client/print` | `status: synchronized` | `using-servers` or blank → the WAN is not up yet, or UDP 123 is blocked upstream. Re-check after a minute |
 | `/system/clock/print` | matches your phone | Hours out → wrong `time-zone-name`; tab-complete it |
 
-### 5. The radio
+### 5A. The radio — boards that have one
 
 Open, no WPA — customers authenticate at the portal. Free it from CAPsMAN
 first or nothing sticks.
@@ -150,6 +209,48 @@ Do not go on until a phone reaches the internet over WiFi. Once the hotspot
 exists, a phone that cannot get online is ambiguous between a radio fault and a
 portal fault, and you will look in the wrong place.
 
+### 5B. The access point — boards with no radio
+
+Nothing to type on the MikroTik. The hotspot still runs on `bridge` and
+captures every port in it, so an AP plugged into ether2–8 puts its wireless
+clients behind the portal automatically — **provided the AP is bridging and not
+routing.**
+
+That proviso is the whole of this stage, and getting it wrong is the most
+expensive mistake in this document.
+
+On the AP:
+
+| Setting | Value | Why |
+|---|---|---|
+| Mode | **Bridge / Access Point** — not Router, not WISP, not Repeater | See below |
+| DHCP server | **off** | Leases must come from the MikroTik, or clients land on the wrong subnet and never meet the hotspot |
+| LAN address | static, outside the pool — `192.168.88.2` | The pool starts at `.10`; you still need to reach its admin page |
+| WiFi security | **open, no WPA** | Subscribers authenticate with a voucher. A WiFi password is a second secret for one purchase |
+| Client isolation / AP isolation | **on** | The MikroTik's `default-forwarding=no` cannot help you — that traffic never leaves the AP |
+| Uplink | LAN port to the MikroTik, **not** the AP's WAN port | A cable in the WAN port makes it route no matter what the mode says |
+
+**An AP left in router mode NATs every client behind its own single address and
+MAC.** The hotspot then sees *one device*. One voucher logs in and the entire
+site is online under it; device binding counts one; all usage for every
+customer accrues to one session. And it tests perfectly, because you test with
+one phone. This is not a subtle degradation — it is the billing not working at
+all, presenting as everything working.
+
+**Then join the SSID from a phone and check the lease, before creating the
+hotspot:**
+
+| Check | Expect | If it is not that |
+|---|---|---|
+| the phone's IP | `192.168.88.x` | `192.168.0.x`, `192.168.1.x`, or anything else → **the AP is still routing.** Fix that before going on |
+| `/ip/dhcp-server/lease/print` on the MikroTik | the phone, by its own MAC | Absent → the AP is not bridging to this segment |
+| a second phone | a **second** lease, a different MAC | Only one lease for two phones → routing again, and the one you will not notice |
+| browsing | works, **no portal** | Lease but no internet → NAT or forward rules → stages 2 and 3 |
+
+That "second phone" row is the one worth doing. A single device cannot tell
+bridging from routing, and every later symptom of getting it wrong looks like a
+billing bug rather than a cabling one.
+
 ### 6. The hotspot
 
 ```
@@ -180,8 +281,8 @@ past the portal:
 ### 7. Walled garden — both rules
 
 ```
-/ip/hotspot/walled-garden/add dst-host=api.smartbillsolution.com comment="Billing API"
-/ip/hotspot/walled-garden/ip/add dst-address=167.233.247.151 action=accept comment="Billing API direct"
+/ip/hotspot/walled-garden/add dst-host=api.example.com comment="Billing API"
+/ip/hotspot/walled-garden/ip/add dst-address=SERVER_IP action=accept comment="Billing API direct"
 /ip/hotspot/walled-garden/print
 /ip/hotspot/walled-garden/ip/print
 ```
@@ -757,11 +858,27 @@ NTP needs the WAN up, so a cold boot runs on a wrong clock for a few seconds
 before it syncs. That is fine — the point is that it converges rather than
 staying wrong indefinitely.
 
-### 9.2 The radio
+### 9.2 The radio, or the access point
 
 A hotspot captures the interface it runs on. If the WiFi is not on that
 interface, or is not broadcasting at all, the hotspot works perfectly and no
-customer can reach it. Check before you build anything on top:
+customer can reach it.
+
+Which half of this section applies depends on the board:
+
+```
+/interface/print
+```
+
+`wlan1` present → **§9.2a**. Ether ports only, as on an RB5009UG+S+ or an
+RB4011 → the board has no radio at all, and the WiFi is a separate access
+point → **§9.2b**. On such a board `/interface/wireless/print` answers *no such
+command*; the package is absent because the hardware is, and that is not a
+fault to chase.
+
+#### 9.2a A board with its own radio
+
+Check before you build anything on top:
 
 ```
 /interface/print
@@ -825,6 +942,62 @@ the SSID, take a `192.168.88.x` lease and browse, with no portal:
 
 Once the hotspot exists, a phone that cannot reach the internet is ambiguous
 between a radio fault and a portal fault, and you will look in the wrong place.
+
+#### 9.2b A board with no radio, and a separate AP
+
+There is nothing to configure on the MikroTik. The hotspot binds to the bridge
+and captures every port in it, so an access point plugged into any bridged
+ether port puts its wireless clients behind the portal without the router
+knowing or caring that they arrived over WiFi.
+
+All of the risk moves to the AP, and it concentrates in one setting.
+
+**The AP must bridge, not route.** Mode *Access Point* or *Bridge*; its own DHCP
+server off; a static address outside the pool — `192.168.88.2`, since the pool
+starts at `.10` — so its admin page stays reachable; open WiFi with no WPA,
+because the voucher is the credential; and its uplink cable in a **LAN** port,
+never the WAN port, which makes most consumer APs route regardless of the mode
+they claim.
+
+Consumer APs ship in router mode. An AP left that way NATs every wireless
+client behind one address and one MAC, and the consequences are not
+proportional to the mistake:
+
+- The hotspot sees **one device**. One voucher authenticates it, and everyone
+  on that SSID is online under that one session.
+- Device binding counts one device, so a one-device package covers the site.
+- All usage accrues to one customer; every other customer records nothing.
+- `collect_hotspot_usage` and the tethering sweep are both reading a single
+  session that is genuinely carrying a building's worth of traffic.
+
+None of that raises an error anywhere. It presents as the platform working.
+
+**And it tests clean with one phone**, which is how it survives commissioning.
+The check that catches it is two phones and two leases:
+
+```
+/ip/dhcp-server/lease/print
+```
+
+Two devices on the SSID must produce **two** leases with **two** MACs, both
+`192.168.88.x`. One lease for two phones is the AP routing. A lease in some
+other subnet — `192.168.0.x`, `192.168.1.x` — is the same fault seen earlier.
+
+**Client isolation belongs on the AP too.** `default-forwarding=no` in §9.2a is
+what stops customers reaching each other's devices on an open network, and it
+has no equivalent here: traffic between two clients of the same AP is switched
+inside the AP and never reaches the MikroTik. Turn on whatever that vendor
+calls it — *Client Isolation*, *AP Isolation*, *Guest Mode*.
+
+Prove a phone browses with **no portal** before creating the hotspot, exactly
+as in §9.2a and for exactly the same reason: afterwards, a phone that cannot
+reach the internet is ambiguous between an AP fault and a portal fault.
+
+One consolation for the extra box: a radio-less board is usually a much larger
+router. An RB5009's four ARM64 cores at 1 GB of RAM will carry a hotspot an
+RB951 could not, and removing fasttrack costs it nothing measurable. Splitting
+free ports off (§9.7) is also more useful there, since such boards come with
+seven or more LAN ports and no radio competing for them.
 
 ### 9.3 Create the hotspot
 
@@ -951,6 +1124,17 @@ one, and it must not be used on a hotspot router: fasttrack shunts established
 connections past the firewall *and past hotspot accounting*, so the byte
 counters stop incrementing. `collect_hotspot_usage` reads exactly those
 counters, and every subscriber would appear to have used almost nothing.
+
+The rule set above omits it. **A board that kept its defconf firewall still has
+one**, and that is the likelier case, because a full default rule set is
+exactly what makes you skip this stage:
+
+```
+/ip/firewall/filter/remove [find action=fasttrack-connection]
+```
+
+A factory reset restores it along with everything else, so this is a check to
+repeat after any reset rather than a job done once per router.
 
 Verify the tunnel rule landed above the `!LAN` drop rather than below it — the
 hotspot inserts its own dynamic rules, which shifts every index:
@@ -1156,6 +1340,10 @@ From a phone on that WiFi — not a bypassed device:
 5. Enter it under **"Already paid? Use your code"**
 6. **The phone goes online**
 7. Turn WiFi off and on — it reconnects without re-entering the code
+8. **On an external AP (§9.2b): a second phone must still be shown the
+   portal.** If it is online already, riding the first phone's session, the AP
+   is routing rather than bridging and one voucher is covering the whole site.
+   Nothing else in this list detects that
 
 Watch the server while you do it. It removes all ambiguity:
 
@@ -1173,8 +1361,22 @@ docker compose logs web --since 5m | grep hotspot
 
 Not done yet, and it needs the business registration.
 
-1. Operator dashboard → **Settings**: consumer key, consumer secret, shortcode,
-   passkey
+1. Operator dashboard → **Settings**: consumer key, consumer secret, shortcode
+   type, shortcode, store number (Buy Goods only), passkey
+
+   **PayBill and Buy Goods are different products and the push has to name
+   which.** A till carries two numbers doing different jobs — the *store
+   number* signs the STK password and identifies the merchant, the *till* is
+   where the money lands — and they are often, but not always, the same value.
+   Sign with the wrong one and Safaricom accepts the request, returns
+   `ResponseCode 0`, then fails it a second later with `ResultCode 2029` having
+   delivered no prompt to the phone. Nothing names the field that was wrong,
+   and **Test M-Pesa still passes**, because OAuth is fine.
+
+   The settings page reports what a push will actually carry — business
+   shortcode, party_b, transaction type — underneath the fields. Read it back
+   rather than trusting what you typed; it is resolved by the same code that
+   builds a real push.
 2. Register **exactly** the callback URL shown on that same page —
    `https://api.example.com/api/mpesa/callback/<operator token>/`. The token is
    what makes the callback load the right operator's credentials.
@@ -1430,6 +1632,33 @@ online while the dashboard says expired.
 The sweep runs every 5 minutes, so up to five minutes of overrun is normal.
 `limit-uptime` on the hotspot user is what makes it prompt; the sweep is the
 backstop.
+
+---
+
+### One voucher put the whole site online
+
+Or: usage figures are near zero for everybody, or the platform sees one
+customer where there are twenty. All the same fault, on a site using an
+external access point (§9.2b).
+
+```
+/ip/hotspot/active/print
+/ip/hotspot/host/print
+/ip/dhcp-server/lease/print
+```
+
+**One active session and one lease, while several people are connected**, means
+the AP is routing rather than bridging. Every wireless client is NATed behind
+the AP's single address and MAC before it reaches the MikroTik, so the hotspot
+is authenticating the AP, not the customers.
+
+Nothing on the router is wrong and nothing needs changing there. Fix it on the
+AP: mode Bridge / Access Point, its DHCP server off, uplink in a LAN port
+rather than the WAN port. Then re-check that two phones produce two leases.
+
+The same shape explains near-zero usage across the board: `collect_hotspot_usage`
+is reading one session's counters and attributing them to one customer, while
+everyone else has no session to read.
 
 ---
 
@@ -1717,3 +1946,5 @@ symptom. Worth knowing they existed, because the shape repeats.
 | `MD5()` UTF-8 encoded the CHAP challenge | Every voucher rejected as *invalid username or password*. The challenge is 16 raw bytes; UTF-8 expands anything above `0x7F` into two, so the hash was taken over the wrong data. Odds of 16 random bytes all landing under `0x7F` are about 1 in 65,000, so it failed essentially always — and it looked like a billing fault, not a JavaScript one |
 | CAP mode left on a redeployed router | The SSID simply did not exist. `wlan1` disabled, `mode=station`, owned by a CAPsMAN controller that was not on the network — so the radio stayed down and every local setting was discarded without a word |
 | Router shipped as a transparent bridge | ether1 in the bridge, DHCP client on the bridge, no NAT. Worked plugged direct, dead through the router, WinBox fine throughout — because WinBox rides Layer 2 and never needed an IP |
+| `defconf: fasttrack` on a hotspot router | Nothing, by design. Customers online, portal fine, vouchers redeeming, byte counters frozen — every subscriber reading as having used almost nothing, discoverable only from a usage report weeks later. Caught by reading the default rule set rather than by any symptom, and it came **back** on a factory reset after having been removed once |
+| Two operators issued the same M-Pesa till, transposed | The store number and till number swapped between them: one operator worked, the other's STK push was rejected by Safaricom with no PIN prompt on the customer's phone, nothing in the dashboard and nothing in the logs. The credentials test passes either way, because OAuth is fine and only the password signature is wrong. The settings page showed neither number's role, which is what made it unreadable |
