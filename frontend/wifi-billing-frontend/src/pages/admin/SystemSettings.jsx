@@ -16,6 +16,12 @@ const EMPTY = {
   MPESA_CONSUMER_KEY: "",
   MPESA_CONSUMER_SECRET: "",
   MPESA_SHORTCODE: "",
+  // PayBill and Buy Goods are different Daraja products, and a till carries
+  // two numbers where a PayBill carries one. Both were absent from this page
+  // while the backend read them, so a till operator's type defaulted to
+  // paybill and their pushes were rejected with no prompt and no error.
+  MPESA_SHORTCODE_TYPE: "",
+  MPESA_STORE_NUMBER: "",
   MPESA_PASSKEY: "",
   MPESA_CALLBACK_URL: "",
   BLESSEDTEXTS_API_KEY: "",
@@ -120,6 +126,11 @@ export default function SystemSettings() {
   const handleChange = (e) => {
     setForm((f) => ({ ...f, [e.target.name]: e.target.value }));
   };
+
+  // Blank means paybill, matching shortcode_config's fallback. An operator who
+  // has never touched this setting must see the same product the backend is
+  // already assuming for them, not an empty select suggesting neither.
+  const isTill = (form.MPESA_SHORTCODE_TYPE || "paybill") === "till";
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -232,14 +243,74 @@ export default function SystemSettings() {
           {/* M-Pesa */}
           <Section title="M-Pesa STK Push">
             <div className="grid sm:grid-cols-2 gap-4">
+              <Select
+                label="Shortcode type"
+                name="MPESA_SHORTCODE_TYPE"
+                value={form.MPESA_SHORTCODE_TYPE || "paybill"}
+                onChange={handleChange}
+                options={[
+                  ["paybill", "PayBill"],
+                  ["till", "Buy Goods (till)"],
+                ]}
+                hint="Safaricom issues these as different products. The push has to name which, and it cannot be guessed from the number."
+              />
+              <Field
+                label={isTill ? "Till number — money to" : "Shortcode — money to"}
+                name="MPESA_SHORTCODE"
+                value={form.MPESA_SHORTCODE}
+                onChange={handleChange}
+                placeholder="e.g. 174379"
+                hint="Where the payment lands. Sent as party_b."
+              />
+              {isTill && (
+                <Field
+                  label="Store number — business shortcode"
+                  name="MPESA_STORE_NUMBER"
+                  value={form.MPESA_STORE_NUMBER}
+                  onChange={handleChange}
+                  placeholder="usually the same as the till"
+                  hint="Signs the password and identifies the merchant. Leave blank if Safaricom issued you one number for both — most tills are. Putting the till here and the store above is accepted by this form and rejected by Safaricom, with no prompt on the customer's phone."
+                />
+              )}
+              <Field label="Passkey"         name="MPESA_PASSKEY"         value={form.MPESA_PASSKEY}         onChange={handleChange} hint="Issued against the business shortcode above, not the till." />
               <Field label="Consumer Key"    name="MPESA_CONSUMER_KEY"    value={form.MPESA_CONSUMER_KEY}    onChange={handleChange} />
               <Field label="Consumer Secret" name="MPESA_CONSUMER_SECRET" value={form.MPESA_CONSUMER_SECRET} onChange={handleChange} />
-              <Field label="Shortcode"       name="MPESA_SHORTCODE"       value={form.MPESA_SHORTCODE}       onChange={handleChange} placeholder="e.g. 174379" />
-              <Field label="Passkey"         name="MPESA_PASSKEY"         value={form.MPESA_PASSKEY}         onChange={handleChange} />
               <div className="sm:col-span-2">
                 <Field label="Callback URL"  name="MPESA_CALLBACK_URL"    value={form.MPESA_CALLBACK_URL}    onChange={handleChange} placeholder="https://yourdomain.com/api/mpesa/stk-callback/" />
               </div>
             </div>
+
+            {/* Computed by the backend, from the same function that builds a
+                real push — so what is shown here is what Safaricom receives,
+                rather than this page's own second opinion about it. Saved
+                values only: it does not follow unsaved edits, which is the
+                point of showing it. */}
+            {settings?.MPESA_RESOLVED && (
+              <div className="rounded-lg border border-white/10 bg-slate-950/40 p-4 space-y-3">
+                <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-[0.14em]">
+                  What Safaricom receives — saved values
+                </p>
+                <Readonly
+                  label="Business shortcode"
+                  value={settings.MPESA_RESOLVED.business_shortcode}
+                  mono
+                  hint="Signs the password. Wrong here and the push is rejected without a reason."
+                />
+                <Readonly
+                  label="Money to (party_b)"
+                  value={settings.MPESA_RESOLVED.party_b}
+                  mono
+                  hint="The account the customer's payment settles into."
+                />
+                <Readonly
+                  label="Transaction type"
+                  value={settings.MPESA_RESOLVED.transaction_type}
+                  mono
+                  hint="CustomerBuyGoodsOnline for a till, CustomerPayBillOnline for a PayBill."
+                />
+              </div>
+            )}
+
             <TestBtn label="Test M-Pesa" color="emerald" loading={testing === "mpesa"} onClick={() => runTest("mpesa")} />
           </Section>
 
@@ -519,7 +590,7 @@ function TemplateEditor({ name, spec, value, error, onChange }) {
   );
 }
 
-function Field({ label, name, value, onChange, placeholder = "" }) {
+function Field({ label, name, value, onChange, placeholder = "", hint = "" }) {
   return (
     <div>
       <label className="block text-sm font-medium text-slate-300 mb-1.5">{label}</label>
@@ -530,6 +601,26 @@ function Field({ label, name, value, onChange, placeholder = "" }) {
         placeholder={placeholder}
         className="w-full border border-white/15 bg-slate-950 text-slate-100 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
       />
+      {hint && <p className="mt-1.5 text-xs text-slate-500">{hint}</p>}
+    </div>
+  );
+}
+
+function Select({ label, name, value, onChange, options, hint = "" }) {
+  return (
+    <div>
+      <label className="block text-sm font-medium text-slate-300 mb-1.5">{label}</label>
+      <select
+        name={name}
+        value={value}
+        onChange={onChange}
+        className="w-full border border-white/15 bg-slate-950 text-slate-100 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+      >
+        {options.map(([v, text]) => (
+          <option key={v} value={v}>{text}</option>
+        ))}
+      </select>
+      {hint && <p className="mt-1.5 text-xs text-slate-500">{hint}</p>}
     </div>
   );
 }

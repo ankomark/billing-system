@@ -2333,7 +2333,9 @@ class SystemSettingsView(APIView):
         # Safaricom — both are needed to finish setup, so surface them here
         # rather than making an operator ask for them.
         if tenant is not None:
-            from billing.mpesa_client import callback_url_for, missing_mpesa_keys
+            from billing.mpesa_client import (
+                callback_url_for, missing_mpesa_keys, shortcode_config,
+            )
 
             data["TENANT_TOKEN"] = tenant.public_token
             data["BUSINESS_NAME"] = tenant.business_name or tenant.name
@@ -2348,6 +2350,24 @@ class SystemSettingsView(APIView):
             except Exception as exc:
                 data["MPESA_CALLBACK_URL_EFFECTIVE"] = ""
                 data["MPESA_CALLBACK_HINT"] = str(exc)
+
+            # What the two numbers actually become in a push, resolved by the
+            # same function that builds one. Sent rather than worked out again
+            # in the frontend, for the reason SMS_TEMPLATES is: the page and
+            # the code that talks to Safaricom must not be able to disagree.
+            #
+            # It is the *roles* that need showing. A Buy Goods till has two
+            # numbers, only one of which signs the password, and swapping them
+            # produces a push Safaricom rejects with no prompt on the phone and
+            # nothing in the operator's dashboard. Seen in production: two
+            # operators issued the same pair in opposite order, one working and
+            # one silently dead. See shortcode_config.
+            cfg = shortcode_config(tenant=tenant)
+            data["MPESA_RESOLVED"] = {
+                "business_shortcode": cfg["business_shortcode"],
+                "party_b": cfg["party_b"],
+                "transaction_type": cfg["transaction_type"],
+            }
 
         # What the page needs to offer an editor rather than a bare textarea:
         # the wording used when the operator has set none, and what each

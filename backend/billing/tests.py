@@ -1647,6 +1647,85 @@ class SettingsIsolationTests(TwoOperatorMixin, TestCase):
         self.assertEqual(get_setting("MPESA_CONSUMER_SECRET", tenant=self.t2), "secret-two")
 
 
+class MpesaShortcodeRolesOnSettingsPageTests(TwoOperatorMixin, TestCase):
+    """
+    The settings page has to say which number does which job.
+
+    A Buy Goods till carries two numbers — one signs the password, the other is
+    paid — and the operator page offered neither the type nor the store number
+    while the backend read both. An operator on a till therefore had their type
+    silently default to paybill and their pushes rejected, with no prompt on the
+    customer's phone and nothing in the dashboard to look at.
+
+    Seen in production: two operators issued the same pair of numbers in
+    opposite order, one working and one dead, with no way to tell from the UI.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+
+    def _configure_till(self):
+        with tenant_context(self.t1):
+            for key, value in {
+                "MPESA_SHORTCODE": "6959586",
+                "MPESA_SHORTCODE_TYPE": "till",
+                "MPESA_STORE_NUMBER": "3439137",
+            }.items():
+                SystemSetting.objects.update_or_create(
+                    tenant=self.t1, key=key, defaults={"value": value})
+        clear_settings_cache(tenant=self.t1)
+
+    def test_the_page_reports_what_safaricom_will_receive(self):
+        """
+        Resolved by the backend rather than worked out again in the frontend,
+        so the page and the code that builds a push cannot disagree.
+        """
+        self._configure_till()
+        data = self.auth(self.admin1).get("/api/system/settings/").data
+        self.assertEqual(data["MPESA_RESOLVED"], {
+            "business_shortcode": "3439137",   # signs
+            "party_b": "6959586",              # is paid
+            "transaction_type": "CustomerBuyGoodsOnline",
+        })
+
+    def test_the_two_numbers_are_not_reported_interchangeably(self):
+        """Swapping them is the failure; the page must show the difference."""
+        self._configure_till()
+        resolved = self.auth(self.admin1).get("/api/system/settings/").data["MPESA_RESOLVED"]
+        self.assertNotEqual(resolved["business_shortcode"], resolved["party_b"])
+
+    def test_saving_without_choosing_a_type_is_not_rejected(self):
+        """
+        The page submits every field it holds, including ones the operator has
+        never set. A blank choice used to fail validation and take every
+        unrelated setting on the form down with it.
+        """
+        resp = self.auth(self.admin1).put(
+            "/api/system/settings/",
+            {"MPESA_SHORTCODE_TYPE": "", "MPESA_ENV": "",
+             "MPESA_SHORTCODE": "400200"},
+            format="json")
+        self.assertIn(resp.status_code, (200, 202), resp.data)
+
+        from billing.mpesa_client import shortcode_config
+        clear_settings_cache(tenant=self.t1)
+        with tenant_context(self.t1):
+            cfg = shortcode_config(tenant=self.t1)
+        self.assertEqual(cfg["transaction_type"], "CustomerPayBillOnline")
+
+    def test_the_store_number_is_not_masked_as_a_secret(self):
+        """
+        It is a number printed on a till, and the operator has to be able to
+        read it back to notice it is in the wrong field. Masking it would hide
+        exactly the mistake this section exists to expose.
+        """
+        self._configure_till()
+        data = self.auth(self.admin1).get("/api/system/settings/").data
+        self.assertEqual(data["MPESA_STORE_NUMBER"], "3439137")
+        self.assertEqual(data["MPESA_SHORTCODE_TYPE"], "till")
+
+
 @skipUnless(connection.vendor == "postgresql", "RLS requires PostgreSQL")
 class RowLevelSecurityTests(TwoOperatorMixin, TestCase):
     """

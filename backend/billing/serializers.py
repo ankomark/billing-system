@@ -540,8 +540,14 @@ class SystemSettingSerializer(serializers.Serializer):
     # PayBill and Buy Goods are different Daraja products and the STK push has
     # to name which. Assuming PayBill for everyone made a till fail with
     # ResultCode 2029 and no prompt on the customer's phone.
+    # allow_blank because the settings page submits the whole form, including
+    # keys the operator has never set. Without it an operator who has not yet
+    # chosen a type sends "" and DRF rejects the entire save as an invalid
+    # choice — so a page that merely displays this field would stop every
+    # unrelated setting on it from being saved. Blank falls back to paybill in
+    # shortcode_config.
     MPESA_SHORTCODE_TYPE  = serializers.ChoiceField(
-        choices=["paybill", "till"], required=False
+        choices=["paybill", "till"], required=False, allow_blank=True
     )
     # Buy Goods only, and usually the same as the till. Left blank it falls
     # back to the till number, which is how most are issued.
@@ -549,7 +555,7 @@ class SystemSettingSerializer(serializers.Serializer):
     # Per operator: one may be live on production while another is still
     # testing on sandbox. Previously only a platform-wide env var.
     MPESA_ENV             = serializers.ChoiceField(
-        choices=["sandbox", "production"], required=False
+        choices=["sandbox", "production"], required=False, allow_blank=True
     )
     MPESA_PASSKEY         = serializers.CharField(required=False, allow_blank=True)
     MPESA_CALLBACK_URL    = serializers.CharField(required=False, allow_blank=True)
