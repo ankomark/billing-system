@@ -610,11 +610,15 @@ def customer_for(tenant_id, session):
     RouterOS reports uppercase, and what is stored is whatever was sent.
     """
     from billing.models import Customer, CustomerDevice
+    from billing.utils import mac_variants
 
+    # Separators as well as case now. This built its own case variants, which
+    # covered what RouterOS varies and not what an operator typing an address
+    # into the admin varies, and the two lookups below are exact matches.
     names = []
     for value in (session.get("user"), session.get("mac")):
         if value:
-            names.extend({value, value.upper(), value.lower()})
+            names.extend(n for n in mac_variants(value) if n not in names)
     if not names:
         return None
 

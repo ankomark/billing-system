@@ -3691,10 +3691,13 @@ class AdminAccessLookupView(APIView):
         # --------------------------------------------------
         # 1️⃣ Voucher lookup
         # --------------------------------------------------
+        # Case-insensitive: the operator running this search is reading the
+        # code off a customer's phone or hearing it down a line, and matching
+        # exactly only ever hid a code that exists.
         voucher = (
             Voucher.objects
             .select_related("subscription__customer", "subscription__package")
-            .filter(code=query)
+            .filter(code__iexact=query)
             .first()
         )
 

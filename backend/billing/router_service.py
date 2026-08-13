@@ -3,6 +3,7 @@ from django.utils import timezone
 from django.db.models import Q
 import socket
 from .router_profiles import ensure_pppoe_profile, ensure_hotspot_profile
+from .utils import normalize_mac
 from django.db import transaction
 import logging
 logger = logging.getLogger(__name__)
@@ -60,8 +61,16 @@ def enable_hotspot(api, router, mac_address, package, expiry_date):
 
     remaining_seconds = max(int((expiry_date - timezone.now()).total_seconds()), 60)
 
+    # Compared canonically, like every other address comparison against a
+    # router. active_hotspot_macs says in its own docstring that RouterOS is
+    # inconsistent about the case it reports addresses in, and this loop is
+    # what stops a second user being added under the same name: a miss here
+    # leaves the stale one behind and the add below either duplicates it or is
+    # refused, and a refusal is a customer who has paid and is not provisioned.
+    wanted = normalize_mac(mac_address)
+
     for u in users:
-        if u.get("name") == mac_address:
+        if normalize_mac(u.get("name")) == wanted:
             # Positional. librouteros' Path.remove takes ids as *args, so a
             # `.id` keyword raises TypeError — a Python error, not a router
             # error, so nothing that guards against a router being unreachable
@@ -99,12 +108,25 @@ def disable_hotspot(api, mac_address):
     if not mac_address:
         return
 
+    # Canonical on both sides. These were exact string comparisons against
+    # whatever RouterOS happened to report, and a miss here does not fail
+    # loudly — it silently does nothing:
+    #
+    #   * the session survives, so an expired customer stays online, and an
+    #     evicted device keeps a live session. That last one compounds: it then
+    #     shows in active_hotspot_macs forever, so it never reads as idle, is
+    #     never evictable again, and its owner's other phone is refused with
+    #     "this code is connected on another device" permanently.
+    #   * the user survives, so the account is never actually removed.
+    wanted = normalize_mac(mac_address)
+
     # The live session first, so there is no window where the user is gone but
     # the session survives to be re-established.
     try:
         actives = api.path("ip", "hotspot", "active")
         for session in list(actives):
-            if session.get("user") == mac_address or session.get("mac-address") == mac_address:
+            if wanted in (normalize_mac(session.get("user")),
+                          normalize_mac(session.get("mac-address"))):
                 actives.remove(session[".id"])
     except Exception:
         # An unreachable router is handled by the caller; losing the session
@@ -113,7 +135,7 @@ def disable_hotspot(api, mac_address):
 
     users = api.path("ip", "hotspot", "user")
     for u in users:
-        if u.get("name") == mac_address:
+        if normalize_mac(u.get("name")) == wanted:
             users.remove(u[".id"])
             return
 def enable_customer_access(customer):
@@ -252,7 +274,8 @@ def hotspot_macs_for(customer, *, include_blocked=True):
         (customer.hotspot_username or "").strip(),
     ]:
         mac = (mac or "").strip()
-        key = mac.upper()
+        # Keyed canonically so one phone written two ways is provisioned once.
+        key = normalize_mac(mac)
         if mac and key not in seen:
             seen.add(key)
             macs.append(mac)
@@ -730,8 +753,12 @@ def get_hotspot_live_usage(router, username):
     if not api:
         return None
     actives = api.path("ip", "hotspot", "active")
+    wanted = normalize_mac(username)
     for a in actives:
-        if a.get("user") == username:
+        # A hotspot user is named for the device address, so this is the same
+        # comparison as everywhere else here. Missing it reported a connected
+        # subscriber as offline, with no usage.
+        if normalize_mac(a.get("user")) == wanted:
             return {
                 "connected": True,
                 "rx_bytes": int(a.get("bytes-in", 0)),

@@ -9,10 +9,15 @@ def lookup_access_token(code: str):
     """
 
     # 1️⃣ Try Voucher
+    #
+    # Case-insensitive, like redemption and deactivation. This is the tool an
+    # operator opens while a customer reads a code down the phone, and codes
+    # are minted from an uppercase alphabet — so two cannot differ by case,
+    # and an exact match only ever turned a code that exists into "not found".
     voucher = (
         Voucher.objects
         .select_related("subscription", "subscription__customer", "subscription__package")
-        .filter(code=code)
+        .filter(code__iexact=code)
         .first()
     )
 
@@ -36,7 +41,7 @@ def lookup_access_token(code: str):
     payment = (
         Payment.objects
         .select_related("subscription", "subscription__customer", "subscription__package")
-        .filter(reference=code, method="mpesa")
+        .filter(reference__iexact=code, method="mpesa")
         .first()
     )
 

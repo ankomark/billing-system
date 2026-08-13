@@ -99,15 +99,24 @@ def device_token_for(mac_address: str) -> str:
 
     Derived rather than stored, like the poll token: an HMAC over the MAC needs
     no column, no cleanup, and cannot be read out of the database.
+
+    Taken over the canonical address, not over what the caller typed.
+    Upper-casing alone folded case but not separators, so the token issued at
+    redemption and the token checked at /hotspot/status/ agreed only while both
+    callers happened to write the address the same way — and the failure is
+    silent: the status endpoint simply withholds the voucher code from the
+    device that earned it.
     """
     import hashlib
     import hmac
 
     from django.conf import settings
 
+    from .utils import normalize_mac
+
     return hmac.new(
         settings.SECRET_KEY.encode(),
-        f"hotspot-device:{(mac_address or '').strip().upper()}".encode(),
+        f"hotspot-device:{normalize_mac(mac_address)}".encode(),
         hashlib.sha256,
     ).hexdigest()[:32]
 
