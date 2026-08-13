@@ -64,7 +64,14 @@ class CustomerSerializer(serializers.ModelSerializer):
         serializer field, so no validator is generated and the ValidationError
         raised by Customer.save()'s full_clean() would escape as a 500.
         """
-        mac = (value or "").strip()
+        # Stored canonical, and checked against every spelling already in the
+        # table. An operator typing the address off a label writes it in their
+        # own case with their own separators, and the constraint compares
+        # strings — so two rows for one phone passed validation here and the
+        # portal then refused that phone to whichever of them turned up.
+        from .utils import mac_variants, normalize_mac
+
+        mac = normalize_mac(value)
         if not mac:
             return value
 
@@ -76,7 +83,8 @@ class CustomerSerializer(serializers.ModelSerializer):
             from .models import default_tenant
             tenant_id = default_tenant()
 
-        clash = Customer.objects.filter(tenant_id=tenant_id, hotspot_username=mac)
+        clash = Customer.objects.filter(
+            tenant_id=tenant_id, hotspot_username__in=mac_variants(mac))
         if self.instance is not None:
             clash = clash.exclude(pk=self.instance.pk)
 
@@ -84,7 +92,7 @@ class CustomerSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 "This device is already registered to another customer."
             )
-        return value
+        return mac
 
     def update(self, instance, validated_data):
         # Omitting or blanking pppoe_password keeps the existing value.

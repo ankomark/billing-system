@@ -2,8 +2,9 @@ import secrets
 import string
 from decimal import Decimal
 from django.http import HttpResponse
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from celery import chain
+from .utils import mac_variants, normalize_mac
 from .auth_tokens import TenantTokenObtainPairView, TenantTokenObtainPairSerializer
 from rest_framework.filters import SearchFilter
 from .permissions import (
@@ -1107,10 +1108,9 @@ def _evict_idle_device(customer, devices):
     # Normalised here as well as in active_hotspot_macs. A comparison that
     # misses frees a slot that is genuinely in use, and that guarantee should
     # not depend on what a function two modules away happened to return.
-    online = {str(m).strip().upper() for m in online}
+    online = {normalize_mac(m) for m in online}
 
-    idle = [d for d in devices
-            if (d.mac_address or "").strip().upper() not in online]
+    idle = [d for d in devices if normalize_mac(d.mac_address) not in online]
     if not idle:
         return None
 
@@ -1135,7 +1135,7 @@ def _evict_idle_device(customer, devices):
     # This field is what the public status and reconnect endpoints resolve a
     # subscriber by, so it cannot be left pointing at a binding that no longer
     # exists.
-    if (customer.hotspot_username or "").strip().upper() == freed.strip().upper():
+    if normalize_mac(customer.hotspot_username) == normalize_mac(freed):
         customer.hotspot_username = ""
         customer.save(update_fields=["hotspot_username"])
 
@@ -1161,6 +1161,176 @@ def _evict_idle_device(customer, devices):
         freed, customer.pk,
     )
     return victim
+
+
+def _fold_duplicate_devices(devices):
+    """
+    Collapse rows that describe the same physical device.
+
+    Addresses are canonical on the way in now, but rows written before that
+    are in whatever case and separators the writer used, and a phone bound
+    twice occupies two of the places its owner paid for. The oldest row wins,
+    because that is the one `first_seen` orders the eviction queue by.
+
+    Read-only: nothing is deleted here. A count that is wrong should stop
+    being wrong immediately; tidying the table is the backfill's job, and a
+    customer waiting at a portal should not be the one to pay for it.
+
+    A blocked row wins over an unblocked one for the same device, whatever
+    their ages. Keeping the older row when the two disagree would mean a
+    blocked handset could connect by presenting the spelling that was never
+    blocked.
+    """
+    folded = {}
+    for device in devices:
+        key = normalize_mac(device.mac_address)
+        held = folded.get(key)
+        if held is None or (device.blocked and not held.blocked):
+            folded[key] = device
+    return list(folded.values())
+
+
+def _device_holders(customer, mac_address):
+    """
+    Everyone else on this operator with a claim on this address.
+
+    Both places a claim can live: `Customer.hotspot_username`, which holds a
+    subscriber's first device, and the `CustomerDevice` rows, which hold the
+    rest. Checking only the first is how a MAC held as somebody's *second*
+    phone stayed invisible all the way down to a unique constraint.
+    """
+    variants = mac_variants(mac_address)
+
+    holder_ids = set(
+        Customer.objects.all_tenants()
+        .filter(tenant_id=customer.tenant_id, hotspot_username__in=variants)
+        .exclude(pk=customer.pk)
+        .values_list("pk", flat=True)
+    )
+    holder_ids.update(
+        CustomerDevice.objects.all_tenants()
+        .filter(tenant_id=customer.tenant_id, mac_address__in=variants)
+        .exclude(customer_id=customer.pk)
+        .values_list("customer_id", flat=True)
+    )
+
+    if not holder_ids:
+        return []
+
+    # Locked, so two devices cannot both decide the other one has let go.
+    # Scoped to this subscriber's operator: this endpoint is public, no
+    # middleware has set a tenant context, and an unscoped manager here would
+    # let one operator's redemption release another operator's binding and
+    # audit-log it against their customer.
+    return list(
+        Customer.objects.all_tenants()
+        .select_for_update()
+        .filter(tenant_id=customer.tenant_id, pk__in=holder_ids)
+    )
+
+
+def _release_device_from_others(customer, mac_address):
+    """
+    Take this address off every other account that holds it.
+
+    Returns a Response to send instead, or None to carry on.
+
+    The rule used to be: if the other account has any live subscription,
+    refuse. That reads as protecting a paying customer, and mostly it refused
+    one. For another account to hold this exact address, this exact handset
+    must have presented a different valid code — which happens when the same
+    person buys again from a second M-Pesa number (a borrowed phone, a
+    mistyped one), and when a handset genuinely changes hands. Both of those
+    people have paid, and the first is the person the complaint came from.
+
+    So the question is the one the device limit already asks: is the device
+    *connected* on that account right now. A binding nobody is using is not
+    access anybody is losing. Anyone standing on a captive portal is by
+    definition not connected, so in practice this releases — which is the
+    point.
+
+    Where this deliberately differs from `_evict_idle_device`: an unreachable
+    router does not refuse here. There, granting on "I could not find out"
+    hands one customer unlimited devices, so silence has to mean no. Here the
+    claimant has already presented a paid, valid code of their own and is
+    asking for one device — nothing is given away by letting them have it, and
+    refusing costs an operator the phone call.
+    """
+    others = _device_holders(customer, mac_address)
+    if not others:
+        return None
+
+    now = timezone.now()
+
+    for other in others:
+        still_paying = other.subscriptions.filter(
+            status="active", expiry_date__gt=now,
+        ).exists()
+
+        if still_paying and _mac_is_online(other, mac_address):
+            # The only case worth defending: someone is using it as we speak.
+            return Response(
+                {"detail": "This device is connected on another account right "
+                           "now. Disconnect it and try again."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        released = CustomerDevice.objects.all_tenants().filter(
+            tenant_id=other.tenant_id,
+            customer=other,
+            mac_address__in=mac_variants(mac_address),
+        ).delete()[0]
+
+        # Clearing this and leaving the device row behind was the whole of the
+        # 500: the next statement created a row the constraint already had.
+        if normalize_mac(other.hotspot_username) == mac_address:
+            other.hotspot_username = ""
+            other.save(update_fields=["hotspot_username"])
+        elif not released:
+            continue
+
+        try:
+            AccessAuditLog.objects.create(
+                # Explicit: this endpoint is public, so nothing has set a
+                # tenant context for the model to infer one from.
+                tenant_id=other.tenant_id,
+                customer=other,
+                action="deactivate",
+                reason=(
+                    f"Hotspot device {mac_address} released to customer "
+                    f"{customer.id} ({customer.full_name}) on voucher validation"
+                ),
+            )
+        except Exception:
+            # An operator losing the note of why a device moved is worth a log
+            # line. It is not worth refusing the customer holding a paid code.
+            logger.exception(
+                "[hotspot] could not record %s moving from customer %s to %s",
+                mac_address, other.pk, customer.pk,
+            )
+
+    return None
+
+
+def _mac_is_online(customer, mac_address):
+    """
+    Whether this address has a live session on the customer's router.
+
+    False when the router says no, and false when there is no router to ask or
+    it cannot be reached — see `_release_device_from_others` for why silence
+    means "not connected" here and means the opposite in `_evict_idle_device`.
+    """
+    from billing.router_service import active_hotspot_macs
+
+    router = customer.router
+    if router is None:
+        return False
+
+    online = active_hotspot_macs(router)
+    if not online:
+        return False
+
+    return mac_address in {normalize_mac(m) for m in online}
 
 
 def _record_attempt(tenant, code, mac, outcome):
@@ -1189,7 +1359,11 @@ class HotspotVoucherValidateView(APIView):
 
     def post(self, request):
         code = request.data.get("code")
-        mac_address = request.data.get("mac_address")
+        # Canonical from here down. Every comparison below is a string
+        # comparison against something bound earlier, and a phone whose
+        # address arrives in a different case than it was bound in is a phone
+        # its owner is told belongs to somebody else.
+        mac_address = normalize_mac(request.data.get("mac_address"))
 
         if not code or not mac_address:
             return Response(
@@ -1241,46 +1415,11 @@ class HotspotVoucherValidateView(APIView):
         # status/reconnect endpoints resolved the subscriber with .first() and
         # returned an arbitrary one of them.
         with transaction.atomic():
-            # Scoped to this subscriber's operator. This endpoint is public, so
-            # no middleware has set a tenant context and the manager would run
-            # unscoped: one operator's voucher validation could then be refused
-            # because of another operator's unrelated customer, or release that
-            # customer's device binding and audit-log it against them.
-            previous = (
-                Customer.objects.all_tenants()
-                .select_for_update()
-                .filter(tenant_id=customer.tenant_id, hotspot_username=mac_address)
-                .exclude(pk=customer.pk)
-                .first()
-            )
-
-            if previous is not None:
-                still_paying = previous.subscriptions.filter(
-                    status="active",
-                    expiry_date__gt=timezone.now(),
-                ).exists()
-
-                if still_paying:
-                    # Releasing it here would cut off someone with time left on a
-                    # package they paid for. An admin can clear the binding on the
-                    # customer record if the device genuinely changed hands.
-                    return Response(
-                        {"detail": "This device is registered to another active account."},
-                        status=status.HTTP_409_CONFLICT,
-                    )
-
-                # Stale binding — the previous holder has no live subscription, so
-                # the device has moved on. Release it and record why.
-                previous.hotspot_username = ""
-                previous.save(update_fields=["hotspot_username"])
-                AccessAuditLog.objects.create(
-                    customer=previous,
-                    action="deactivate",
-                    reason=(
-                        f"Hotspot device {mac_address} released to customer "
-                        f"{customer.id} ({customer.full_name}) on voucher validation"
-                    ),
-                )
+            conflict = _release_device_from_others(customer, mac_address)
+            if conflict is not None:
+                _record_attempt(
+                    tenant, code, mac_address, ConnectionAttempt.DEVICE_LIMIT)
+                return conflict
 
             # How many devices this package is good for, and which ones are
             # already using it.
@@ -1297,16 +1436,42 @@ class HotspotVoucherValidateView(APIView):
             # voucher would silently be good for one more phone than it was
             # sold for. 0050 backfills these; this heals anything that slips
             # past, because the cost of missing one is free internet.
-            legacy = (customer.hotspot_username or "").strip()
-            if legacy and not any(d.mac_address == legacy for d in devices):
-                devices.append(
-                    CustomerDevice.objects.create(
-                        tenant_id=customer.tenant_id,
-                        customer=customer,
-                        mac_address=legacy,
+            legacy = normalize_mac(customer.hotspot_username)
+            if legacy and not any(
+                normalize_mac(d.mac_address) == legacy for d in devices
+            ):
+                try:
+                    with transaction.atomic():
+                        devices.append(
+                            CustomerDevice.objects.create(
+                                tenant_id=customer.tenant_id,
+                                customer=customer,
+                                mac_address=legacy,
+                            )
+                        )
+                except IntegrityError:
+                    # The address on this customer's row belongs to another
+                    # subscriber's device. That makes the row stale, not the
+                    # customer a device short — and it must not be a 500 on
+                    # the path somebody uses after auto-connect has failed.
+                    logger.warning(
+                        "[hotspot] customer %s names %s, which is held "
+                        "elsewhere — not counting it as theirs",
+                        customer.pk, legacy,
                     )
-                )
-            known = next((d for d in devices if d.mac_address == mac_address), None)
+
+            # One phone is one device however many spellings of its address
+            # got written. Two rows for it filled two places on a two-device
+            # package, and on a one-device package refused its owner outright:
+            # neither row is evictable, because the phone the router reports as
+            # online is both of them.
+            devices = _fold_duplicate_devices(devices)
+
+            known = next(
+                (d for d in devices
+                 if normalize_mac(d.mac_address) == mac_address),
+                None,
+            )
 
             if known is not None and known.blocked:
                 _record_attempt(tenant, code, mac_address, ConnectionAttempt.BLOCKED)
@@ -1360,11 +1525,34 @@ class HotspotVoucherValidateView(APIView):
                         )
                     devices = [d for d in devices if d.pk != evicted.pk]
 
-                CustomerDevice.objects.create(
-                    tenant_id=customer.tenant_id,
-                    customer=customer,
-                    mac_address=mac_address,
-                )
+                try:
+                    with transaction.atomic():
+                        CustomerDevice.objects.create(
+                            tenant_id=customer.tenant_id,
+                            customer=customer,
+                            mac_address=mac_address,
+                        )
+                except IntegrityError:
+                    # (tenant, mac_address) is unique, and everything that
+                    # could hold it has just been released above. Reaching
+                    # here means something took it between that check and this
+                    # write — two phones sharing a cloned address, or a second
+                    # request from this same customer racing the first.
+                    #
+                    # It must not be an IntegrityError escaping the atomic
+                    # block. That is a 500, the portal shows a 500 as "that
+                    # code did not match", and the customer retries the one
+                    # thing that cannot work. Say what happened instead.
+                    logger.warning(
+                        "[hotspot] %s was taken while customer %s was claiming it",
+                        mac_address, customer.pk,
+                    )
+                    return Response(
+                        {"detail": "This device is being registered on another "
+                                   "account right now. Wait a moment and try "
+                                   "again."},
+                        status=status.HTTP_409_CONFLICT,
+                    )
             else:
                 known.save(update_fields=["last_seen"])
 
@@ -1461,7 +1649,8 @@ class CustomerDeviceView(APIView):
 
             # The customer row points at one MAC, and if it is this one the
             # public lookups would still resolve through it.
-            if device.customer.hotspot_username == device.mac_address:
+            if (normalize_mac(device.customer.hotspot_username)
+                    == normalize_mac(device.mac_address)):
                 device.customer.hotspot_username = ""
                 device.customer.save(update_fields=["hotspot_username"])
 
@@ -1499,7 +1688,11 @@ class CustomerDeviceView(APIView):
 
         mac = device.mac_address
         customer = device.customer
-        if customer.hotspot_username == mac:
+        # Normalised, like the block above it: a device removed while the
+        # customer row still names it in another spelling leaves the public
+        # status and reconnect lookups resolving through a place that is
+        # supposed to be free.
+        if normalize_mac(customer.hotspot_username) == normalize_mac(mac):
             customer.hotspot_username = ""
             customer.save(update_fields=["hotspot_username"])
 
@@ -1525,8 +1718,12 @@ class DeactivateVoucherView(APIView):
     permission_classes = [IsTenantAdmin]
 
     def post(self, request, code):
+        # Case-insensitive, like redemption. Codes are minted from an uppercase
+        # alphabet so two cannot differ by case alone, and an operator killing
+        # a leaked code typed it or read it off a phone: "Voucher not found"
+        # over letter case leaves a code working that somebody meant to stop.
         voucher = (
-            Voucher.objects.filter(code=code)
+            Voucher.objects.filter(code__iexact=code)
             .select_related("subscription__customer")
             .first()
         )
@@ -1912,9 +2109,14 @@ def _hotspot_customer_for(request, mac, **extra):
     # A blocked device resolves to nobody. Leaving it resolvable would let it
     # keep reading status and calling reconnect on the account it was blocked
     # from.
+    # Every spelling the address might be stored in. A device bound in one
+    # case and asking in another resolved to nobody, which the portal shows as
+    # "not registered" to a subscriber who is.
+    variants = mac_variants(mac)
+
     qs = Customer.objects.all_tenants().filter(
-        Q(hotspot_username=mac)
-        | Q(devices__mac_address=mac, devices__blocked=False),
+        Q(hotspot_username__in=variants)
+        | Q(devices__mac_address__in=variants, devices__blocked=False),
         **extra
     ).distinct()
 

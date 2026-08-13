@@ -8,6 +8,7 @@ from django.utils import timezone
 from django.db import transaction
 
 from billing.models import Voucher, Payment, Subscription
+from billing.utils import normalize_mac
 
 logger = logging.getLogger(__name__)
 
@@ -201,16 +202,19 @@ def _mac_allowed(sub: Subscription, mac_address: Optional[str]) -> bool:
 
     from billing.models import CustomerDevice
 
-    incoming = mac_address.strip()
+    # Canonical on both sides. Comparing what the caller happened to send
+    # against what the writer happened to store is how the same phone reads as
+    # a stranger's.
+    incoming = normalize_mac(mac_address)
     if not incoming:
         return True
 
     known = set()
-    legacy = (customer.hotspot_username or "").strip()
+    legacy = normalize_mac(customer.hotspot_username)
     if legacy:
-        known.add(legacy.upper())
+        known.add(legacy)
     known.update(
-        m.strip().upper()
+        normalize_mac(m)
         for m in CustomerDevice.objects.all_tenants()
         .filter(tenant_id=customer.tenant_id, customer=customer, blocked=False)
         .values_list("mac_address", flat=True)
@@ -221,7 +225,7 @@ def _mac_allowed(sub: Subscription, mac_address: Optional[str]) -> bool:
     if not known:
         return True
 
-    return incoming.upper() in known
+    return incoming in known
 
 
 def mark_voucher_used(subscription, mac_address: Optional[str] = None) -> None:
@@ -246,7 +250,7 @@ def mark_voucher_used(subscription, mac_address: Optional[str] = None) -> None:
         ):
             voucher.first_used_at = stamped
             if mac_address and not (voucher.bound_mac or "").strip():
-                voucher.bound_mac = mac_address.strip()
+                voucher.bound_mac = normalize_mac(mac_address)
             voucher.save(update_fields=["first_used_at", "bound_mac"])
     except Exception:
         logger.exception(

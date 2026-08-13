@@ -1,5 +1,5 @@
 from django.conf import settings
-from django.db import models, transaction
+from django.db import IntegrityError, models, transaction
 from django.utils import timezone
 from django.contrib.auth.models import AbstractUser, UserManager
 from django.core.exceptions import ValidationError
@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 from billing import message_templates
 from billing.notifications import notify_customer
-from .utils import generate_invoice_number
+from .utils import generate_invoice_number, normalize_mac
 from .fields import EncryptedCharField
 from .tenancy import TenantManager, get_current_tenant_id
 
@@ -1230,6 +1230,52 @@ def generate_voucher_code():
     )
 
 
+# How many times a collision is worth working around. Six characters is about
+# 2.2 billion codes, so the first attempt is nearly always the last; five is
+# for the operator who has issued enough of them that "nearly always" has
+# started to mean something, not for a generator that has stopped generating.
+_MINT_ATTEMPTS = 5
+
+
+def mint_voucher(subscription, expires_at):
+    """
+    Create a voucher, and do not let a collision cost a customer their code.
+
+    `Voucher.code` is unique and the code was generated once, with no retry.
+    Two customers can never hold the same code — the constraint sees to
+    that — but the loser of the race did not get a *different* code, it got an
+    IntegrityError. That is raised inside the transaction in `Payment.save()`,
+    which runs inside the M-Pesa callback, so the failure lands on somebody
+    whose money has already left: no voucher, no SMS, and a callback Safaricom
+    will send again to be refused the same way.
+
+    Each attempt takes its own savepoint. Without one, the first IntegrityError
+    would poison the surrounding atomic block and the retry would fail on a
+    broken transaction rather than on the code.
+
+    The error is re-raised after `_MINT_ATTEMPTS`. Five consecutive collisions
+    is not bad luck, it is a generator that has stopped varying, and hiding
+    that behind an endless loop would turn one broken payment into a hung
+    worker.
+    """
+    last = None
+    for _ in range(_MINT_ATTEMPTS):
+        try:
+            with transaction.atomic():
+                return Voucher.objects.create(
+                    code=generate_voucher_code(),
+                    subscription=subscription,
+                    expires_at=expires_at,
+                )
+        except IntegrityError as exc:
+            last = exc
+            logger.warning(
+                "[voucher] code collision minting for subscription %s, retrying",
+                getattr(subscription, "pk", subscription),
+            )
+    raise last
+
+
 # =====================================================
 # VOUCHER
 # =====================================================
@@ -1301,6 +1347,17 @@ class CustomerDevice(TenantScopedModel):
         indexes = [
             models.Index(fields=["tenant", "customer"], name="device_tenant_customer_idx"),
         ]
+
+    def save(self, *args, **kwargs):
+        # The constraint above compares strings, so it only makes a device
+        # unique if every writer spells it the same way. Bound once as
+        # "3e:5e:.." and once as "3E:5E:..", one phone held two places on its
+        # owner's package and the second one refused them.
+        #
+        # Safe under update_fields: normalising is idempotent, so a caller
+        # saving last_seen alone writes nothing here either way.
+        self.mac_address = normalize_mac(self.mac_address)
+        return super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.mac_address} ({self.customer_id})"
@@ -1570,11 +1627,7 @@ class Payment(TenantScopedModel):
 
             # Voucher is a DB write — belongs inside the transaction
             if customer.connection_type == "hotspot":
-                voucher = Voucher.objects.create(
-                    code=generate_voucher_code(),
-                    subscription=subscription,
-                    expires_at=subscription.expiry_date,
-                )
+                voucher = mint_voucher(subscription, subscription.expiry_date)
                 voucher_code = voucher.code
 
         # Capture primitives for the closure (avoids stale ORM objects)

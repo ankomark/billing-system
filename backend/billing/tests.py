@@ -1120,16 +1120,30 @@ class HotspotMacCollisionTests(TestCase):
     # ---- the write path ---------------------------------------------------
 
     @patch("billing.views.enable_customer_access")
-    def test_device_held_by_an_active_customer_is_refused(self, _):
+    def test_device_connected_under_an_active_customer_is_refused(self, _):
+        """
+        The rule used to be "the holder still has time left, so refuse", and
+        it refused the wrong people: for another account to hold this exact
+        address, this exact handset must have redeemed a different valid code,
+        which is what happens when the same person buys again from a second
+        M-Pesa number. It now asks the question the device limit asks — is
+        anybody *using* it — and only defends a binding that is live.
+
+        The idle side of that rule, and the rest of this, is in
+        test_device_claim.py.
+        """
         holder, _, _ = self._make_holder("h1", "254700000011", 10)
         holder.hotspot_username = self.MAC
         holder.save(update_fields=["hotspot_username"])
 
         _, _, voucher = self._make_holder("c1", "254700000012", 10)
 
-        resp = self.client.post(
-            self.VALIDATE, {"code": voucher.code, "mac_address": self.MAC}, format="json",
-        )
+        with patch("billing.router_service.active_hotspot_macs",
+                   return_value={self.MAC}):
+            resp = self.client.post(
+                self.VALIDATE, {"code": voucher.code, "mac_address": self.MAC},
+                format="json",
+            )
         self.assertEqual(resp.status_code, 409)
 
         holder.refresh_from_db()
