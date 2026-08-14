@@ -155,8 +155,36 @@ class DeviceEvictionTests(TestCase):
         self.assertIn(LAPTOP, entry.reason)
         self.assertIn("no live session", entry.reason)
 
-    def test_a_customer_with_no_router_is_not_evicted_from_nothing(self):
+    def test_a_customer_with_no_router_is_asked_about_on_the_operators(self):
+        """
+        This used to refuse, on the reasoning that a subscriber with no router
+        has nothing to ask. What it actually did was answer "I could not find
+        out" — which is the answer that makes a place unfreeable — for the
+        tenth of hotspot subscribers whose `router` is null. Their first
+        address change then locked them out until their package expired.
+
+        The operator's own routers can answer the question. Nothing about a
+        null column makes the sessions on them unreadable.
+        """
         with tenant_context(self.tenant):
             self.customer.router = None
             self.customer.save(update_fields=["router"])
+
+        evicted = self._evict(online=set())
+
+        self.assertIsNotNone(evicted)
+        self.assertEqual(evicted.mac_address, LAPTOP)
+
+    def test_no_router_anywhere_is_still_not_an_answer(self):
+        """
+        The half of the old rule that was right, and is kept. With nothing to
+        ask, "nobody is online" has not been established — and granting on that
+        would hand every customer on an unreachable estate unlimited devices,
+        silently.
+        """
+        with tenant_context(self.tenant):
+            RouterDevice.objects.all_tenants().filter(
+                tenant=self.tenant).delete()
+            self.customer.refresh_from_db()
+
         self.assertIsNone(self._evict(online=set()))
