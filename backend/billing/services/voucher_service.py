@@ -316,6 +316,62 @@ def validate_voucher(
     return None
 
 
+# What a refusal was actually about. `validate_voucher` answers yes or no,
+# which is all the network needs and less than the person standing at the
+# portal needs.
+REFUSED_UNKNOWN = "unknown"
+REFUSED_EXPIRED = "expired"
+
+
+def describe_refusal(code: str, tenant=None) -> str:
+    """
+    Why a code that did not validate did not validate.
+
+    Every refusal above returns None, and the portal turns every None into
+    "Invalid or expired voucher" — one sentence covering two situations that
+    have nothing in common. A code that never existed is a typo, and retyping
+    it is the right thing to do. A code whose time ran out is a customer who
+    paid, got what they paid for, and now needs to buy again; telling them it
+    is invalid sends them to retype a code that will never work, and sends the
+    operator a complaint that their codes are broken.
+
+    Only the refusal path calls this, so the cost lands on the answer nobody
+    is waiting on rather than on every redemption.
+
+    Returns REFUSED_EXPIRED when the code is genuinely this operator's and the
+    only thing wrong with it is the clock, and REFUSED_UNKNOWN otherwise —
+    including for a code held back for any other reason, because a customer
+    should never be told a code has expired when it has not.
+    """
+    now = timezone.now()
+
+    for candidate in extract_codes(_normalize_code(code)):
+        vouchers = Voucher.objects.all_tenants().select_related(
+            "subscription").filter(code__iexact=candidate)
+        payments = Payment.objects.all_tenants().select_related(
+            "subscription").filter(reference__iexact=candidate, method="mpesa")
+        if tenant is not None:
+            vouchers = vouchers.filter(tenant=tenant)
+            payments = payments.filter(tenant=tenant)
+
+        voucher = vouchers.first()
+        if voucher is not None:
+            if voucher.expires_at and voucher.expires_at <= now:
+                return REFUSED_EXPIRED
+            sub = voucher.subscription
+            if sub and sub.expiry_date and sub.expiry_date <= now:
+                return REFUSED_EXPIRED
+            continue
+
+        payment = payments.order_by("-paid_at", "-id").first()
+        if payment is not None:
+            sub = payment.subscription
+            if sub and sub.expiry_date and sub.expiry_date <= now:
+                return REFUSED_EXPIRED
+
+    return REFUSED_UNKNOWN
+
+
 def _resolve_code(
     code: str,
     mac_address: Optional[str] = None,

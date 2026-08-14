@@ -1378,12 +1378,17 @@ class ConnectionAttempt(TenantScopedModel):
     """
 
     INVALID = "invalid"
+    EXPIRED = "expired"
     DEVICE_LIMIT = "device_limit"
     BLOCKED = "blocked"
     NO_PROVIDER = "no_provider"
 
     OUTCOMES = (
         (INVALID, "Code not recognised"),
+        # Split out of INVALID, which was counting both. An operator reading
+        # "invalid" cannot tell a batch of codes that never worked from a
+        # customer whose hour ran out — and those call for opposite responses.
+        (EXPIRED, "Code has run out of time"),
         (DEVICE_LIMIT, "Already on the most devices allowed"),
         (BLOCKED, "Device is blocked"),
         (NO_PROVIDER, "Portal could not be identified"),

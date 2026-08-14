@@ -27,7 +27,9 @@ from .security import (
     poll_token_for,
     poll_token_matches,
 )
-from billing.services.voucher_service import mark_voucher_used, validate_voucher
+from billing.services.voucher_service import (
+    REFUSED_EXPIRED, describe_refusal, mark_voucher_used, validate_voucher,
+)
 from billing.router_service import enable_customer_access
 from .mpesa_client import initiate_stk_push
 from billing.models import Customer,Subscription,PPPoEUsageRecord
@@ -1069,58 +1071,155 @@ class MpesaTransactionsView(APIView):
         )
 
 
-def _evict_idle_device(customer, devices):
+# How long a hotspot session may sit idle before it stops holding a device
+# place. A room genuinely passing one code around has every phone in use, so
+# their idle times are seconds; a session left behind by a phone that walked
+# out grows without bound.
+IDLE_SESSION_SECONDS = 10 * 60
+
+
+def _routers_to_ask(customer):
+    """
+    The routers worth asking about this subscriber's devices.
+
+    `customer.router` is the assigned one and is normally the only one that can
+    have a session for them. It is also nullable, and a tenth of the hotspot
+    subscribers on this system have it null — bound by a redemption that never
+    set it, or left behind by a router that was deleted.
+
+    That mattered more than it looks. Every caller below read `customer.router`
+    alone and treated None as "no answer", and "no answer" is what makes a
+    device place unfreeable. A subscriber with no assigned router could
+    therefore never release a stale binding, so the first time their phone
+    changed address they were refused until their package expired — with the
+    message that tells them to disconnect a device that is not connected.
+
+    Falling back to the operator's own routers is the same question asked of
+    the hardware that could actually answer it, and it stays inside the tenant.
+    """
+    from billing.router_service import _tenant_routers
+
+    router = getattr(customer, "router", None)
+    if router is not None:
+        return [router]
+
+    try:
+        return list(_tenant_routers(customer.tenant_id))
+    except Exception:
+        logger.warning(
+            "[hotspot] customer %s has no router and their operator's routers "
+            "could not be listed", customer.pk)
+        return []
+
+
+def _online_macs(customer, *, max_idle_seconds=None):
+    """
+    Every address with a live session on any router that could be reached.
+
+    Returns None when not one router answered, and that distinction is the
+    whole point: the callers must be able to tell "nobody is connected" from
+    "I could not find out". A partial answer counts as an answer — a router
+    that replied has told us the truth about its own sessions, and holding a
+    customer's place on the silence of a second router they are not on is the
+    failure this is here to end.
+    """
+    from billing.router_service import active_hotspot_macs
+
+    online = set()
+    answered = False
+    for router in _routers_to_ask(customer):
+        macs = active_hotspot_macs(router, max_idle_seconds=max_idle_seconds)
+        if macs is None:
+            continue
+        answered = True
+        online.update(normalize_mac(m) for m in macs)
+
+    return online if answered else None
+
+
+def _voucher_first_used_here(subscription, mac_address):
+    """
+    Whether this address is the one a code on this subscription was bought on.
+
+    `Voucher.bound_mac` is stamped on first redemption and never overwritten,
+    so it names the buyer's own handset and nothing else can forge it. Read
+    across the subscription's vouchers rather than the one presented, because a
+    renewal mints a new code against the same subscription and the customer is
+    still the same person on the same phone.
+    """
+    mac = normalize_mac(mac_address)
+    if not mac:
+        return False
+
+    return Voucher.objects.all_tenants().filter(
+        subscription=subscription,
+        bound_mac__in=mac_variants(mac),
+    ).exists()
+
+
+def _evict_idle_device(customer, devices, *, reclaiming=False):
     """
     Free the place held by a device that is not actually connected.
 
     Returns the CustomerDevice released, or None if the limit should stand.
 
-    None is returned in three cases, and they are all deliberate:
+    None is returned in two cases, and they are both deliberate:
 
-    * The router could not be asked. "Nobody is online" and "I could not find
-      out" must not lead to the same decision — an unreachable router would
+    * No router could be asked. "Nobody is online" and "I could not find out"
+      must not lead to the same decision — an unreachable router would
       otherwise hand every customer unlimited devices, silently.
-    * Every bound device is connected right now. That is the sharing this
-      limit was built for, and the refusal is correct.
-    * There is no router to ask.
+    * Every bound device is in use right now. That is the sharing this limit
+      was built for, and the refusal is correct.
+
+    "In use" is not "has a session". A hotspot session outlives the phone that
+    opened it, so a device that left hours ago still appears on the router and
+    used to hold its owner's only place until the package expired. A session
+    idle beyond IDLE_SESSION_SECONDS no longer counts.
+
+    `reclaiming` is the one case where a device in use can still lose its
+    place: the phone asking is the phone this code was first redeemed on, so
+    the devices holding it are that same buyer's later ones. Somebody's second
+    handset does not outrank the one that bought the code. Neither of the two
+    None cases above applies then — there is no router to consult about a
+    question the voucher has already answered, and nothing is given away,
+    because the total stays inside what the package allows.
 
     The oldest binding goes first. Between two idle devices the one last seen
     longest ago is the likelier to be the phone somebody replaced.
     """
     from billing.models import AccessAuditLog
-    from billing.router_service import (
-        active_hotspot_macs, disable_hotspot, safe_connect_router,
-    )
+    from billing.router_service import disable_hotspot, safe_connect_router
 
-    router = customer.router
-    if router is None:
+    if not devices:
         return None
 
-    online = active_hotspot_macs(router)
-    if online is None:
-        logger.warning(
-            "[hotspot] cannot check live sessions for customer %s, so the "
-            "device limit stands — a router we cannot read must not become a "
-            "router that grants everything.", customer.pk,
-        )
-        return None
+    if reclaiming:
+        candidates = devices
+    else:
+        online = _online_macs(customer, max_idle_seconds=IDLE_SESSION_SECONDS)
+        if online is None:
+            logger.warning(
+                "[hotspot] cannot check live sessions for customer %s, so the "
+                "device limit stands — a router we cannot read must not become "
+                "a router that grants everything.", customer.pk,
+            )
+            return None
 
-    # Normalised here as well as in active_hotspot_macs. A comparison that
-    # misses frees a slot that is genuinely in use, and that guarantee should
-    # not depend on what a function two modules away happened to return.
-    online = {normalize_mac(m) for m in online}
+        candidates = [
+            d for d in devices if normalize_mac(d.mac_address) not in online]
+        if not candidates:
+            return None
 
-    idle = [d for d in devices if normalize_mac(d.mac_address) not in online]
-    if not idle:
-        return None
-
-    victim = sorted(idle, key=lambda d: (d.last_seen or d.first_seen))[0]
+    victim = sorted(candidates, key=lambda d: (d.last_seen or d.first_seen))[0]
 
     # Take it off the router too. Leaving the hotspot user behind would let
     # the evicted device log straight back in and retake a place it no longer
-    # holds in the database.
-    api = safe_connect_router(router)
-    if api is not None:
+    # holds in the database — and, because a session nobody ends keeps showing
+    # up as active, would make it unevictable from then on.
+    for router in _routers_to_ask(customer):
+        api = safe_connect_router(router)
+        if api is None:
+            continue
         try:
             disable_hotspot(api, victim.mac_address)
         except Exception:
@@ -1139,14 +1238,18 @@ def _evict_idle_device(customer, devices):
         customer.hotspot_username = ""
         customer.save(update_fields=["hotspot_username"])
 
+    why = (
+        "the device the code was bought on came back"
+        if reclaiming else
+        "no live session, and the device limit was reached by another device "
+        "connecting"
+    )
+
     try:
         AccessAuditLog.objects.create(
             customer=customer,
             action="deactivate",
-            reason=(
-                f"Device {freed} released: no live session, and the device "
-                f"limit was reached by another device connecting"
-            ),
+            reason=f"Device {freed} released: {why}",
         )
     except Exception:
         # An operator losing the record of why a device was dropped is worth
@@ -1157,9 +1260,7 @@ def _evict_idle_device(customer, devices):
         )
 
     logger.info(
-        "[hotspot] released %s for customer %s — idle, and the limit was full",
-        freed, customer.pk,
-    )
+        "[hotspot] released %s for customer %s — %s", freed, customer.pk, why)
     return victim
 
 
@@ -1319,6 +1420,17 @@ def _mac_is_online(customer, mac_address):
     False when the router says no, and false when there is no router to ask or
     it cannot be reached — see `_release_device_from_others` for why silence
     means "not connected" here and means the opposite in `_evict_idle_device`.
+
+    Idle sessions do not count, for the same reason they do not count there:
+    the only binding worth defending against somebody holding a paid code is
+    one that somebody else is using as we speak.
+
+    Deliberately the customer's own router and not `_routers_to_ask`. Widening
+    who is asked frees places in `_evict_idle_device`, where more information
+    can only help the person standing at the portal. Here it would do the
+    opposite — every extra router is another chance to find a reason to refuse
+    them — and this function's whole design is that the claimant, who has
+    presented a paid code of their own, wins anything we are unsure about.
     """
     from billing.router_service import active_hotspot_macs
 
@@ -1326,7 +1438,8 @@ def _mac_is_online(customer, mac_address):
     if router is None:
         return False
 
-    online = active_hotspot_macs(router)
+    online = active_hotspot_macs(
+        router, max_idle_seconds=IDLE_SESSION_SECONDS)
     if not online:
         return False
 
@@ -1394,6 +1507,22 @@ class HotspotVoucherValidateView(APIView):
             # The commonest refusal, and the one an operator most wants to see:
             # a customer holding something that does not work, giving up, and
             # saying nothing.
+            #
+            # Two situations were being answered with one sentence. A code that
+            # ran out is not a code that does not exist, and "invalid" sends
+            # somebody who has simply finished their hour back to retype it —
+            # which is what a customer does thirty times before giving up.
+            reason = describe_refusal(code, tenant=tenant)
+            if reason == REFUSED_EXPIRED:
+                _record_attempt(
+                    tenant, code, mac_address, ConnectionAttempt.EXPIRED)
+                return Response(
+                    {"detail": "This code has run out of time. Buy another "
+                               "package to get back online.",
+                     "expired": True},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
             _record_attempt(tenant, code, mac_address, ConnectionAttempt.INVALID)
             return Response(
                 {"detail": "Invalid or expired voucher"},
@@ -1487,6 +1616,27 @@ class HotspotVoucherValidateView(APIView):
             devices = [d for d in devices if not d.blocked]
 
             if known is None:
+                # The device this very code was first redeemed on, coming back
+                # after its binding went away — evicted while it was off, or
+                # never rebound after its address rotated.
+                #
+                # `Voucher.bound_mac` is the strongest ownership evidence in
+                # the system: it was written the first time this code worked,
+                # by this address, and no other device can produce it. This
+                # phone is the buyer, and it was being made to queue behind
+                # whatever else had since taken its place — the complaint the
+                # operator reported, in the customer's own words: told the code
+                # is in use elsewhere, about the code they bought.
+                reclaiming = (
+                    len(devices) >= allowed
+                    and _voucher_first_used_here(subscription, mac_address)
+                )
+                if reclaiming:
+                    released = _evict_idle_device(
+                        customer, devices, reclaiming=True)
+                    if released is not None:
+                        devices = [d for d in devices if d.pk != released.pk]
+
                 if len(devices) >= allowed:
                     # Full — but full of what?
                     #

@@ -1,6 +1,7 @@
 from librouteros import connect
 from django.utils import timezone
 from django.db.models import Q
+import re
 import socket
 from .router_profiles import ensure_pppoe_profile, ensure_hotspot_profile
 from .utils import normalize_mac
@@ -209,7 +210,47 @@ def enable_customer_access(customer):
     return True
 
 
-def active_hotspot_macs(router):
+# RouterOS writes durations as "1d2h3m4s", dropping any unit that is zero.
+_ROS_DURATION_RE = re.compile(
+    r"(?:(\d+)w)?(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$")
+_ROS_DURATION_UNITS = (604800, 86400, 3600, 60, 1)
+
+
+def ros_duration_seconds(value):
+    """
+    A RouterOS duration as a number of seconds, or None if it is not one.
+
+    None rather than 0 for anything unparseable, because the caller treats
+    "idle for this long" as evidence and no evidence must not read as an idle
+    time of zero — that would be the safe answer inverted.
+    """
+    raw = (value or "").strip().lower()
+    if not raw:
+        return None
+
+    # Some builds report a plain integer of seconds, and some report h:mm:ss.
+    if raw.isdigit():
+        return int(raw)
+    if ":" in raw:
+        parts = raw.split(":")
+        if not all(p.isdigit() for p in parts) or len(parts) > 3:
+            return None
+        total = 0
+        for part in parts:
+            total = total * 60 + int(part)
+        return total
+
+    match = _ROS_DURATION_RE.fullmatch(raw)
+    if not match or not any(match.groups()):
+        return None
+    return sum(
+        int(group) * unit
+        for group, unit in zip(match.groups(), _ROS_DURATION_UNITS)
+        if group
+    )
+
+
+def active_hotspot_macs(router, max_idle_seconds=None):
     """
     Which addresses have a live hotspot session on this router right now.
 
@@ -220,6 +261,17 @@ def active_hotspot_macs(router):
 
     Upper-cased, because RouterOS is inconsistent about the case it reports
     addresses in and a comparison that misses is a slot freed by mistake.
+
+    `max_idle_seconds` drops sessions that have been idle at least that long.
+    A hotspot session is not ended by the phone walking away — RouterOS keeps
+    it until its own idle-timeout fires, and plenty of operators have that
+    turned off — so "has a session" and "is using the connection" are not the
+    same question. Counting the first as the second is how a customer who did
+    disconnect is told to disconnect: their own dead session holds the only
+    place their package allows, and it holds it until the package expires.
+
+    Left None, every session counts, which is what the callers that ask "is
+    this device reachable at all" want.
     """
     api = safe_connect_router(router)
     if api is None:
@@ -228,6 +280,12 @@ def active_hotspot_macs(router):
     macs = set()
     try:
         for session in api.path("ip", "hotspot", "active"):
+            if max_idle_seconds is not None:
+                idle = ros_duration_seconds(session.get("idle-time"))
+                # An unreadable idle time keeps the session — see
+                # ros_duration_seconds. Only a number we trust frees a place.
+                if idle is not None and idle >= max_idle_seconds:
+                    continue
             # Hotspot users here are named for the MAC, but the session also
             # carries the address it was seen from; take either.
             for key in ("user", "mac-address"):
