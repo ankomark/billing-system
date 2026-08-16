@@ -1,24 +1,39 @@
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { RefreshCw } from "lucide-react";
+import {
+  Activity, CreditCard, Clock, RefreshCw, Users, Wallet,
+} from "lucide-react";
 import AdminLayout from "../../components/admin/AdminLayout";
 import AdminUsageGraph from "../../components/usage/AdminUsageGraph";
 import AnalyticsPanels from "../../components/admin/AnalyticsPanels";
 import CustomerQuickSearch from "../../components/admin/CustomerQuickSearch";
 import IssueVoucherCard from "../../components/admin/IssueVoucherCard";
 import {
-  Card, CardHeader, Note, PageHeader, Section, StatTile, KES, num,
+  Card, CardHeader, Note, PageHeader, PulseBanner, Section, StatTile, KES, num,
 } from "../../components/admin/ui";
 import { fetchDashboardSummary } from "../../services/dashboard";
 
 /**
  * The operator's own overview.
  *
- * Colour here means state, not decoration. The stat cards used to be blue,
- * emerald, violet, amber and red assigned by position — "This Year" was violet,
- * which says nothing, while "Unpaid invoices" got no more emphasis than
- * anything else. Money figures are now neutral, and only the numbers that mean
- * something needs doing take a status colour.
+ * Colour does two jobs here, and they are kept apart.
+ *
+ * A VALUE takes colour only from state: emerald when a number is healthy, red
+ * when it needs doing something about. That rule is why the stat cards stopped
+ * being blue, emerald, violet, amber and red by position — "This year" was
+ * violet, which says nothing, while "Unpaid invoices" got no more emphasis than
+ * anything else. Money figures still carry no status colour, because there is
+ * no threshold at which revenue is wrong.
+ *
+ * A CHIP takes colour from identity: which metric this is. It paints the icon
+ * square and never the number, so it cannot be mistaken for a verdict, and it
+ * is tied to the metric rather than to the position — a tile keeps its hue when
+ * its neighbour is removed. Those hues come from the same CVD-validated set the
+ * charts draw from, and each was measured to carry a white icon.
+ *
+ * The headline revenue sits in a hero band rather than three more tiles: it is
+ * what the page is opened for, and it used to be the same size as the count of
+ * pending invoices.
  */
 export default function Dashboard() {
   const navigate = useNavigate();
@@ -73,19 +88,17 @@ export default function Dashboard() {
           </button>
         </PageHeader>
 
-        <Section title="Money in">
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            {isLoading ? (
-              <>{skeleton}{skeleton}{skeleton}</>
-            ) : (
-              <>
-                <StatTile label="Today" value={KES(rev?.today)} />
-                <StatTile label="This month" value={KES(rev?.this_month)} />
-                <StatTile label="This year" value={KES(rev?.this_year)} />
-              </>
-            )}
-          </div>
-        </Section>
+        {/* The three figures an operator opens this page for, in the hero form
+            rather than as three more tiles competing with the counts below. */}
+        <PulseBanner
+          title="Money in"
+          loading={isLoading}
+          items={[
+            { label: "Today", value: KES(rev?.today) },
+            { label: "This month", value: KES(rev?.this_month) },
+            { label: "This year", value: KES(rev?.this_year) },
+          ]}
+        />
 
         <Section title="Your customers">
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -93,15 +106,22 @@ export default function Dashboard() {
               <>{skeleton}{skeleton}{skeleton}{skeleton}</>
             ) : (
               <>
+                {/* Each chip names its metric, so a tile keeps its colour when
+                    it drops to a neutral tone. Where a tone is set the status
+                    colour takes the chip instead — see StatTile. */}
                 <StatTile
                   label="Active"
                   value={num(stats?.active_subscriptions)}
+                  chip="aqua"
+                  icon={Users}
                   tone="good"
                 />
                 <StatTile
                   label="Expired"
                   value={num(stats?.expired_subscriptions)}
                   sub="not paying"
+                  chip="orange"
+                  icon={Clock}
                   tone={stats?.expired_subscriptions > 0 ? "warning" : "neutral"}
                   onClick={() => navigate("/admin/customers")}
                 />
@@ -109,6 +129,8 @@ export default function Dashboard() {
                   label="Unpaid invoices"
                   value={num(stats?.unpaid_invoices)}
                   sub="money owed to you"
+                  chip="magenta"
+                  icon={CreditCard}
                   tone={stats?.unpaid_invoices > 0 ? "critical" : "neutral"}
                   onClick={() => navigate("/admin/invoices/unpaid")}
                 />
@@ -116,6 +138,8 @@ export default function Dashboard() {
                   label="Pending"
                   value={num(stats?.pending_invoices)}
                   sub="awaiting M-Pesa"
+                  chip="violet"
+                  icon={Wallet}
                   tone={stats?.pending_invoices > 0 ? "info" : "neutral"}
                 />
               </>
@@ -136,6 +160,8 @@ export default function Dashboard() {
           <CardHeader
             title="Network usage"
             subtitle="Across every router, last 7 days"
+            chip="blue"
+            icon={Activity}
           />
           <AdminUsageGraph />
         </Card>

@@ -42,6 +42,33 @@ export const SERIES = [
 
 export const seriesColor = (i) => SERIES[i % SERIES.length];
 
+/**
+ * Solid icon chips, for telling one metric from another at a glance.
+ *
+ * The same validated hues as SERIES, named so a caller asks for a colour by
+ * identity rather than by position in an array — a tile keeps its hue when the
+ * one above it is removed.
+ *
+ * These carry a WHITE icon. Measured against each fill, not assumed: blue 3.64,
+ * orange 3.88, aqua 3.41, magenta 3.94, green 4.95, red 3.23, violet 3.13.
+ * All clear the 3:1 that non-text graphics need. Yellow (#c98500) is left out
+ * at 3.07 — passing, but with nothing left over for a lighter screen.
+ *
+ * A chip is decoration with a job: it marks WHICH number this is, never how the
+ * number is doing. State stays with `tone` on the tile, which is why a tile
+ * that has a tone takes its chip from the status palette instead — one signal,
+ * not two competing ones.
+ */
+export const CHIP = {
+  blue: "#3987e5",
+  orange: "#d95926",
+  aqua: "#199e70",
+  magenta: "#d55181",
+  green: "#008300",
+  violet: "#9085e9",
+  red: "#e66767",
+};
+
 /** Empty on this surface — every slot clears 3:1 against #0f172a. */
 export const NEEDS_RELIEF = new Set();
 

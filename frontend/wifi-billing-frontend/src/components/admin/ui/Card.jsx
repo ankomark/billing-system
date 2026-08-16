@@ -1,5 +1,5 @@
 import { AlertTriangle, CheckCircle2, Info, AlertOctagon } from "lucide-react";
-import { statusStyle } from "./tokens";
+import { CHIP, statusStyle } from "./tokens";
 
 /**
  * Surfaces for the operator console.
@@ -25,12 +25,30 @@ export function Card({ children, className = "", padded = true }) {
   );
 }
 
-export function CardHeader({ title, subtitle, action }) {
+/**
+ * `chip` + `icon` mark which panel this is, the same way StatTile's chip marks
+ * which number. Optional throughout — a header without one is unchanged, so
+ * the pages that do not pass them look exactly as they did.
+ */
+export function CardHeader({ title, subtitle, action, chip, icon: Icon }) {
+  const chipColor = CHIP[chip] || null;
+
   return (
     <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
-      <div className="min-w-0">
-        <h2 className="text-sm font-semibold text-white">{title}</h2>
-        {subtitle && <p className="text-xs text-slate-400 mt-0.5">{subtitle}</p>}
+      <div className="flex items-start gap-3 min-w-0">
+        {Icon && chipColor && (
+          <span
+            className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg"
+            style={{ backgroundColor: chipColor }}
+            aria-hidden="true"
+          >
+            <Icon size={17} className="text-white" />
+          </span>
+        )}
+        <div className="min-w-0">
+          <h2 className="text-sm font-semibold text-white">{title}</h2>
+          {subtitle && <p className="text-xs text-slate-400 mt-0.5">{subtitle}</p>}
+        </div>
       </div>
       {action}
     </div>
