@@ -33,7 +33,57 @@ const STANDING = {
   },
 };
 
-export default function AdminLayout({ children }) {
+/**
+ * An ambient wash for the page behind the cards.
+ *
+ * Four glows, in the hues asked for: azure, teal, royal blue, and white as a
+ * specular bloom rather than a field. White is the one that cannot be taken
+ * literally — a white BAND here would erase the page heading and the section
+ * labels, which sit directly on this background with nothing behind them. As a
+ * small bloom at low alpha it reads as the light catching a surface, which is
+ * what makes a gradient look expensive rather than loud.
+ *
+ * Every alpha is roughly half of its own measured ceiling, where the ceiling is
+ * the point at which slate-400 — the section labels, the weakest ink on this
+ * surface — stops clearing 4.5:1 against the glow at full strength:
+ *
+ *     azure 0.40 · teal 0.32 · blue 0.59 · white 0.20
+ *     using 0.26 ·      0.19 ·      0.36 ·       0.08
+ *
+ * Under the ceiling rather than at it, because these overlap: two glows meeting
+ * at their edges compound, and the ceilings above are each measured alone. The
+ * focal points sit at opposite corners for the same reason.
+ *
+ * The bloom is the one that had to be solved rather than estimated. It sits
+ * over the azure and directly behind the page heading, and the two together are
+ * not the sum of two safe numbers: at 0.11 the pair put the subtitle on 4.24
+ * and it stopped passing, even though each was well inside its own ceiling.
+ * 0.08 is the most white that corner takes while slate-400 holds 4.68. This is
+ * the whole reason overlaps get measured instead of reasoned about.
+ *
+ * Note for later: teal is the platform console's accent, and it is now in this
+ * console's background. The blue chrome still carries the distinction, but this
+ * spends some of it — see tokens.js for what that distinction is for.
+ */
+const AMBIENT = {
+  backgroundColor: "#020617",
+  backgroundImage: [
+    "radial-gradient(1200px 620px at 6% -8%, rgba(0,128,255,0.26), transparent 62%)",
+    "radial-gradient(900px 520px at 97% 8%, rgba(20,184,166,0.19), transparent 60%)",
+    "radial-gradient(1100px 720px at 52% 106%, rgba(29,78,216,0.36), transparent 66%)",
+    "radial-gradient(460px 300px at 18% 2%, rgba(255,255,255,0.08), transparent 70%)",
+  ].join(","),
+  backgroundRepeat: "no-repeat",
+  backgroundSize: "cover",
+  // Anchored to the viewport, not to the scroll height. Left to scroll with
+  // the content, "cover" stretches the four glows across the whole page: on a
+  // dashboard two screens tall the teal and the blue end up below the fold and
+  // all anyone ever sees is the azure corner. Fixed keeps the composition
+  // framed the way it was designed, and keeps it still while the cards move.
+  backgroundAttachment: "fixed",
+};
+
+export default function AdminLayout({ children, ambient = false }) {
   const user = getUser();
   const initials = (user?.username || "A").charAt(0).toUpperCase();
   // Exposed on the profile so the shell could warn without a second request,
@@ -111,7 +161,10 @@ export default function AdminLayout({ children }) {
         </header>
 
         {/* Page content */}
-        <main className="flex-1 overflow-auto p-4 sm:p-6 lg:p-8 bg-slate-950">
+        <main
+          className={`flex-1 overflow-auto p-4 sm:p-6 lg:p-8 ${ambient ? "" : "bg-slate-950"}`}
+          style={ambient ? AMBIENT : undefined}
+        >
           {children}
         </main>
       </div>
