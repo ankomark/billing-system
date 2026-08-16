@@ -4,7 +4,7 @@ export { default as PulseBanner } from "./PulseBanner";
 export { default as DataTable } from "./DataTable";
 export { default as Chart } from "./Chart";
 export {
-  CHROME, SERIES, CHIP, STATUS_INK, STATUS_STYLES, NEEDS_RELIEF,
+  CHROME, SERIES, CHIP, GLASS, STATUS_INK, STATUS_STYLES, NEEDS_RELIEF,
   seriesColor, statusStyle,
   KES, compactKES, num, gb, shortDate, dateTime,
 } from "./tokens";

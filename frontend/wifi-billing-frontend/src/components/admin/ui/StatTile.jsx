@@ -1,5 +1,5 @@
 import { AlertTriangle, CheckCircle2, AlertOctagon, Info } from "lucide-react";
-import { CHIP } from "./tokens";
+import { CHIP, GLASS } from "./tokens";
 
 /**
  * One number and its label.
@@ -46,7 +46,7 @@ const TONES = {
 };
 
 export default function StatTile({
-  label, value, sub, tone = "neutral", chip, icon: ChipIcon, onClick, title,
+  label, value, sub, tone = "neutral", chip, icon: ChipIcon, glass, onClick, title,
 }) {
   const t = TONES[tone] || TONES.neutral;
   const ToneIcon = t.icon;
@@ -56,15 +56,32 @@ export default function StatTile({
   const chipColor = t.chip || CHIP[chip] || null;
   const showChip = ChipIcon && chipColor;
 
+  const g = GLASS[glass] || null;
+
   return (
     <Tag
       onClick={onClick}
       title={title}
-      className={`w-full text-left rounded-xl border bg-slate-900/80 p-4 shadow-sm transition-colors ${t.ring} ${t.wash} ${
-        onClick ? "hover:bg-white/5 cursor-pointer" : ""
-      }`}
+      className={`relative overflow-hidden w-full text-left rounded-xl border p-4 shadow-sm transition-colors ${
+        // Glass owns the surface when it is on; the tone still owns the value
+        // and its icon, so a lively card cannot quietly restate a status in a
+        // colour that disagrees with the number printed on it.
+        g ? "bg-slate-900/70" : `bg-slate-900/80 ${t.ring} ${t.wash}`
+      } ${onClick ? "hover:bg-white/5 cursor-pointer" : ""}`}
+      style={g ? { borderColor: g.ring } : undefined}
     >
-      <div className="flex items-start gap-3">
+      {/* The light the glass refracts. A real blur on a real source — a
+          backdrop-filter would have nothing behind it to work on, the page
+          being one flat colour. */}
+      {g && (
+        <span
+          className="pointer-events-none absolute -right-10 -top-14 h-40 w-40 rounded-full blur-3xl"
+          style={{ backgroundColor: g.tint, opacity: g.alpha }}
+          aria-hidden="true"
+        />
+      )}
+
+      <div className="relative flex items-start gap-3">
         {/* Hidden below sm, where these tiles sit two to a row and the chip's
             36px plus its gap would take a third of the column away from
             "Unpaid invoices". The chip says which metric this is; the label
@@ -88,12 +105,20 @@ export default function StatTile({
             {/* The status icon stays even when a chip is present: colour alone
                 never carries state, and the chip is not state. */}
             {ToneIcon && <ToneIcon size={13} className={t.value} aria-hidden="true" />}
-            <p className="text-xs font-medium text-slate-400 truncate">{label}</p>
+            {/* slate-300, not slate-400: a tinted card is lighter than a plain
+                one, and pearl is the lightest of them. Measured at the orb's
+                centre, slate-400 lands on 4.57 there — passing, with nothing
+                spare — so both text steps move up one. */}
+            <p className="text-xs font-medium text-slate-300 truncate">{label}</p>
           </div>
           {/* Proportional figures for a standalone number; tabular is for columns
               that must align down a table. */}
           <p className={`text-2xl font-bold mt-1 ${t.value}`}>{value}</p>
-          {sub && <p className="text-xs text-slate-500 mt-0.5 truncate">{sub}</p>}
+          {/* slate-400. At slate-500 this line was on 3.86 against the plain
+              card and 2.46 against pearl — under 4.5 either way, so it was
+              already failing before any of this and the glass would only have
+              buried it further. */}
+          {sub && <p className="text-xs text-slate-400 mt-0.5 truncate">{sub}</p>}
         </div>
       </div>
     </Tag>

@@ -59,6 +59,42 @@ export const seriesColor = (i) => SERIES[i % SERIES.length];
  * that has a tone takes its chip from the status palette instead — one signal,
  * not two competing ones.
  */
+/**
+ * Tinted glass for a card surface.
+ *
+ * A flat dark page gives `backdrop-filter` nothing to refract, so glass here is
+ * built the way it actually reads: a soft blurred orb of colour sitting inside
+ * a translucent card, with a hue-matched hairline. The blur is a real blur on a
+ * real light source, not a backdrop filter with nothing behind it.
+ *
+ * `alpha` is the orb at its centre — the card's lightest point, and therefore
+ * the only place worth measuring. Each was solved for rather than picked: the
+ * ceiling is the highest alpha at which BOTH text steps still clear 4.5:1 on
+ * bg-slate-900/70 over the slate-950 page, and each value sits a little under
+ * its own ceiling so rounding and antialiasing cannot tip it.
+ *
+ *   pearl  ceiling 0.16   using 0.14
+ *   azure  ceiling 0.34   using 0.30
+ *   ruby   ceiling 0.51   using 0.44
+ *
+ * They differ by that much because white lightens a dark card fastest and a
+ * deep red barely lightens it at all — the same alpha is a different amount of
+ * damage per hue, which is exactly why one global opacity would have been
+ * wrong. Pearl is the quiet one by nature, not by preference.
+ *
+ * The binding constraint is the small `sub` line, not the value or the label.
+ * Raise the sub ink and every ceiling here moves with it.
+ *
+ * These are decoration, deliberately NOT drawn from SERIES. A card's background
+ * is not a data mark, and taking a categorical slot for it would mean a chart
+ * and a card could claim the same hue for two unrelated reasons.
+ */
+export const GLASS = {
+  pearl: { tint: "#ffffff", alpha: 0.14, ring: "rgba(255,255,255,0.22)" },
+  azure: { tint: "#0080ff", alpha: 0.30, ring: "rgba(56,150,255,0.40)" },
+  ruby: { tint: "#c81e3a", alpha: 0.44, ring: "rgba(220,60,90,0.42)" },
+};
+
 export const CHIP = {
   blue: "#3987e5",
   orange: "#d95926",

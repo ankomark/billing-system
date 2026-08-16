@@ -114,6 +114,7 @@ export default function Dashboard() {
                   value={num(stats?.active_subscriptions)}
                   chip="aqua"
                   icon={Users}
+                  glass="azure"
                   tone="good"
                 />
                 <StatTile
@@ -122,6 +123,7 @@ export default function Dashboard() {
                   sub="not paying"
                   chip="orange"
                   icon={Clock}
+                  glass="ruby"
                   tone={stats?.expired_subscriptions > 0 ? "warning" : "neutral"}
                   onClick={() => navigate("/admin/customers")}
                 />
@@ -131,6 +133,7 @@ export default function Dashboard() {
                   sub="money owed to you"
                   chip="magenta"
                   icon={CreditCard}
+                  glass="pearl"
                   tone={stats?.unpaid_invoices > 0 ? "critical" : "neutral"}
                   onClick={() => navigate("/admin/invoices/unpaid")}
                 />
@@ -140,6 +143,7 @@ export default function Dashboard() {
                   sub="awaiting M-Pesa"
                   chip="violet"
                   icon={Wallet}
+                  glass="azure"
                   tone={stats?.pending_invoices > 0 ? "info" : "neutral"}
                 />
               </>
