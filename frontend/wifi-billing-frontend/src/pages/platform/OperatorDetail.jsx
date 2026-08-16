@@ -8,6 +8,7 @@ import ResetPasswordModal from "../../components/platform/ResetPasswordModal";
 import DeleteOperatorModal from "../../components/platform/DeleteOperatorModal";
 import AnalyticsPanel from "../../components/platform/AnalyticsPanel";
 import MpesaSetupPanel from "../../components/platform/MpesaSetupPanel";
+import OperatorDetailsPanel from "../../components/platform/OperatorDetailsPanel";
 import AuditTrail from "../../components/platform/AuditTrail";
 import OperatorPlanPanel from "../../components/platform/OperatorPlanPanel";
 import { Skeleton } from "../../components/ui/Skeleton";
@@ -179,6 +180,8 @@ export default function OperatorDetail() {
           <Card label="Routers" value={op.network.routers} />
           <Card label="Their revenue" value={KES(op.network.subscriber_revenue)} />
         </div>
+
+        <OperatorDetailsPanel operator={op} canEdit={isOwner} />
 
         <OperatorPlanPanel operator={op} canEdit={isOwner} />
 

@@ -3878,6 +3878,78 @@ class OperatorDetailUpdateTests(PlatformBillingMixin, TestCase):
         self.assertTrue(
             AdminActionLog.objects.filter(action=AdminActionLog.UPDATE_OPERATOR).exists())
 
+    def test_detail_carries_the_two_names_apart(self):
+        """
+        The top-level "name" is business_name or name, which is right for
+        showing and useless to an edit form — it collapses the two into one
+        string with nothing to say which it came from, so a form prefilled
+        from it would write the public brand over the internal name the first
+        time it saved.
+        """
+        self.t1.business_name = "Skylink Fibre"
+        self.t1.save(update_fields=["business_name"])
+
+        resp = self.auth(self.owner).get(self.url(self.t1))
+        self.assertEqual(resp.status_code, 200, resp.data)
+        # Collapsed for display: the brand wins.
+        self.assertEqual(resp.data["name"], "Skylink Fibre")
+        # Raw, for editing: both, still distinguishable.
+        self.assertEqual(resp.data["details"]["name"], self.t1.name)
+        self.assertEqual(resp.data["details"]["business_name"], "Skylink Fibre")
+
+    def test_detail_offers_every_field_the_patch_accepts(self):
+        """Anything editable but unreadable would be a form that cannot prefill."""
+        from billing.serializers import OperatorUpdateSerializer
+
+        resp = self.auth(self.owner).get(self.url(self.t1))
+        self.assertEqual(
+            set(OperatorUpdateSerializer.Meta.fields) - set(resp.data["details"]),
+            set(),
+        )
+
+    def test_a_rename_reaches_the_operators_own_dashboard(self):
+        """
+        The operator's console titles itself from their profile, so a name the
+        owner corrects has to show up there without them signing in again.
+        """
+        self.auth(self.owner).patch(
+            self.url(self.t1), {"business_name": "Corrected Name"}, format="json")
+
+        profile = self.auth(self.admin1).get("/api/auth/profile/")
+        self.assertEqual(profile.status_code, 200, profile.data)
+        self.assertEqual(profile.data["tenant_name"], "Corrected Name")
+
+    def test_the_internal_name_cannot_be_blanked(self):
+        """
+        It orders the operator list, it is the string typed back to confirm a
+        deletion, and Tenant.save copies it into a blank business_name — so an
+        operator with neither name would be nameless everywhere at once.
+        """
+        resp = self.auth(self.owner).patch(
+            self.url(self.t1), {"name": ""}, format="json")
+        self.assertEqual(resp.status_code, 400, resp.data)
+        self.t1.refresh_from_db()
+        self.assertTrue(self.t1.name)
+
+    def test_clearing_the_brand_puts_them_back_under_their_internal_name(self):
+        """
+        Accepted, and it does not leave them blank: Tenant.save copies the
+        internal name into an empty business_name, so the field the form reads
+        back is filled rather than the empty box that was submitted.
+        """
+        self.t1.business_name = "Skylink Fibre"
+        self.t1.save(update_fields=["business_name"])
+
+        resp = self.auth(self.owner).patch(
+            self.url(self.t1), {"business_name": ""}, format="json")
+        self.assertEqual(resp.status_code, 200, resp.data)
+
+        self.t1.refresh_from_db()
+        self.assertEqual(self.t1.business_name, self.t1.name)
+
+        detail = self.auth(self.owner).get(self.url(self.t1))
+        self.assertEqual(detail.data["details"]["business_name"], self.t1.name)
+
 
 # =====================================================
 # 19. Phase 2 — operator lifecycle: the audit gaps and warnings

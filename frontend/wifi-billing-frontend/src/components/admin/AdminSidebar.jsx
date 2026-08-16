@@ -1,4 +1,6 @@
 import { NavLink, useNavigate } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
+import { fetchProfile } from "../../services/account";
 import { getImpersonation, getUser, logout } from "../../services/auth";
 import {
   LayoutDashboard, Users, Package, FileText, AlertCircle,
@@ -11,17 +13,36 @@ import {
 export default function AdminSidebar({ open, onClose }) {
   const navigate = useNavigate();
 
-  // Staff read the business; admins change it. Hiding what they cannot reach
-  // is kinder than a 403 they could have been spared — and the routes enforce
-  // it too, so this is presentation, not security.
-  const role = getUser()?.role;
-  const isAdmin = role !== "tenant_staff";
-
   // Impersonation wins: while platform staff are viewing as an operator, the
   // console should name that operator, not the staff member's own tenant
   // (which is null for platform accounts anyway).
+  const impersonation = getImpersonation();
+  const cached = getUser();
+
+  // Staff read the business; admins change it. Hiding what they cannot reach
+  // is kinder than a 403 they could have been spared — and the routes enforce
+  // it too, so this is presentation, not security.
+  const isAdmin = cached?.role !== "tenant_staff";
+
+  /**
+   * Read live, not from the copy stored at sign-in.
+   *
+   * The cached user is written once at login and never again, so when the
+   * platform owner corrects an operator's business name the operator kept
+   * seeing the old one until they happened to sign out — on the sidebar of
+   * every page, which is the most visible place the name appears. The cached
+   * value seeds it so there is no flash of "Operator" while this loads, and no
+   * request at all while impersonating, where the name is already decided.
+   */
+  const { data: profile } = useQuery({
+    queryKey: ["profile"],
+    queryFn: fetchProfile,
+    enabled: !impersonation,
+    placeholderData: cached,
+  });
+
   const operatorName =
-    getImpersonation()?.name || getUser()?.tenant_name || "Operator";
+    impersonation?.name || profile?.tenant_name || cached?.tenant_name || "Operator";
 
   const handleLogout = () => {
     logout();

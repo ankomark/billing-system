@@ -5829,6 +5829,21 @@ class PlatformOperatorDetailView(APIView):
             "contact_email": tenant.contact_email,
             "contact_phone": tenant.contact_phone,
             "created_at": tenant.created_at,
+            # The editable record behind the display name above. "name" there
+            # collapses the two names into one string with nothing to say which
+            # it came from, which is right for showing and wrong for an edit
+            # form — prefilled from it, the first save would write the public
+            # brand over the internal name this platform files them under.
+            # These are the fields OperatorUpdateSerializer accepts, sent raw.
+            "details": {
+                "name": tenant.name,
+                "business_name": tenant.business_name,
+                "support_phone": tenant.support_phone,
+                "support_phone_2": tenant.support_phone_2,
+                "pppoe_prefix": tenant.pppoe_prefix,
+                "contact_email": tenant.contact_email,
+                "contact_phone": tenant.contact_phone,
+            },
             "payments_configured": not missing_mpesa_keys(tenant=tenant),
             "plan": TenantSubscriptionSerializer(subscription).data if subscription else None,
             "billing": {
