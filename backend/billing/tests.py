@@ -9926,11 +9926,22 @@ class UsageCollectionScaleTests(TwoOperatorMixin, TestCase):
             self.assertEqual(PPPoEUsageRecord.objects.count(), 12)
 
     def test_the_bytes_are_the_ones_the_router_reported(self):
+        """
+        And the right way round for the subscriber, which is the opposite way
+        round from the router.
+
+        rx is what the router received, so it is what the subscriber sent. Read
+        the obvious way — rx into download — every graph on the platform showed
+        the two labels exchanged, and nothing caught it because the totals were
+        still right and the caps still fired correctly. Migration 0064 has the
+        production numbers.
+        """
         self.run_collector()
         with tenant_context(self.t1):
             rec = PPPoEUsageRecord.objects.get(customer=self.customers[0])
-            self.assertEqual(rec.download_bytes, 1000)
-            self.assertEqual(rec.upload_bytes, 500)
+            # Fixture: rx_bytes=1000 (router received), tx_bytes=500 (sent).
+            self.assertEqual(rec.upload_bytes, 1000)
+            self.assertEqual(rec.download_bytes, 500)
 
     def test_a_second_run_records_only_the_difference(self):
         """State carries across runs, so a delta is not a total."""
@@ -9952,6 +9963,143 @@ class UsageCollectionScaleTests(TwoOperatorMixin, TestCase):
             collect_pppoe_usage_snapshots()
         with tenant_context(self.t1):
             self.assertEqual(PPPoEUsageRecord.objects.count(), 0)
+
+
+class UsageDirectionTests(TwoOperatorMixin, TestCase):
+    """
+    Download is download and upload is upload, on both collectors.
+
+    A router counts from its own side: what it receives (rx / bytes-in) is what
+    the subscriber sent. Both collectors read that the obvious way and stored
+    rx as download, so every figure on every graph was the other one — from the
+    first commit until migration 0064.
+
+    It survived years because nothing that decides anything reads the two
+    apart. usage_since() adds them together, so caps were always enforced on
+    the right total; only the labels were wrong. That is exactly why it needs a
+    test rather than a comment: there is no failure to notice.
+
+    Production at the time: 718GB of "upload" against 63GB of "download", with
+    the labelled upload the larger on 21,382 of 23,009 rows.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        with tenant_context(self.t1):
+            self.router = RouterDevice.objects.create(
+                tenant=self.t1, name="r-dir", ip_address="10.0.2.1",
+                username="admin", password="pw", is_active=True)
+            self.hotspot = Customer.objects.create(
+                tenant=self.t1, full_name="Hotspot One",
+                phone="254799000001", connection_type="hotspot",
+                hotspot_username="AA:BB:CC:DD:EE:01", status="active",
+                router=self.router)
+            self.pppoe = Customer.objects.create(
+                tenant=self.t1, full_name="PPPoE One",
+                phone="254799000002", connection_type="pppoe",
+                pppoe_username="dir-user", status="active",
+                router=self.router)
+
+    # A real subscriber's shape: far more pulled down than pushed up. The
+    # router reports that as a large tx and a small rx.
+    ROUTER_SENT = 900_000      # tx / bytes-out -> the subscriber's download
+    ROUTER_RECEIVED = 100_000  # rx / bytes-in  -> the subscriber's upload
+
+    def sessions(self, username):
+        return {
+            username: {
+                "connected": True,
+                "rx_bytes": self.ROUTER_RECEIVED,
+                "tx_bytes": self.ROUTER_SENT,
+            }
+        }
+
+    def collect(self, task_name, reader_name, username):
+        from billing.tasks import usage_tasks
+
+        def routers(tenant_id):
+            return [self.router] if tenant_id == self.t1.id else []
+
+        with patch("billing.router_service._tenant_routers", side_effect=routers), \
+             patch.object(usage_tasks, reader_name,
+                          lambda router: self.sessions(username)):
+            getattr(usage_tasks, task_name)()
+
+    def test_the_hotspot_collector_does_not_call_a_download_an_upload(self):
+        self.collect("collect_hotspot_usage_snapshots",
+                     "get_hotspot_sessions", self.hotspot.hotspot_username)
+
+        with tenant_context(self.t1):
+            rec = HotspotUsageRecord.objects.get(customer=self.hotspot)
+        self.assertEqual(rec.download_bytes, self.ROUTER_SENT)
+        self.assertEqual(rec.upload_bytes, self.ROUTER_RECEIVED)
+        self.assertGreater(
+            rec.download_bytes, rec.upload_bytes,
+            "a subscriber who downloaded 900k and uploaded 100k was recorded "
+            "the other way round")
+
+    def test_the_pppoe_collector_does_not_call_a_download_an_upload(self):
+        self.collect("collect_pppoe_usage_snapshots",
+                     "get_pppoe_sessions", self.pppoe.pppoe_username)
+
+        with tenant_context(self.t1):
+            rec = PPPoEUsageRecord.objects.get(customer=self.pppoe)
+        self.assertEqual(rec.download_bytes, self.ROUTER_SENT)
+        self.assertEqual(rec.upload_bytes, self.ROUTER_RECEIVED)
+
+    def test_the_daily_rollup_keeps_the_two_apart(self):
+        """
+        The rollup renames them back to rx/tx, which is where the confusion
+        started. It must fold download into rx and upload into tx and not
+        re-cross them on the way.
+        """
+        from billing.services.usage import roll_up_day
+
+        yesterday = timezone.localdate(timezone.now()) - timezone.timedelta(days=1)
+        moment = timezone.make_aware(
+            timezone.datetime.combine(yesterday, timezone.datetime.min.time()),
+            timezone.get_current_timezone()) + timezone.timedelta(hours=9)
+
+        with tenant_context(self.t1):
+            HotspotUsageRecord.objects.create(
+                tenant=self.t1, customer=self.hotspot,
+                period_start=moment, period_end=moment,
+                download_bytes=self.ROUTER_SENT,
+                upload_bytes=self.ROUTER_RECEIVED)
+
+        roll_up_day(yesterday)
+
+        with tenant_context(self.t1):
+            rolled = UsageRecord.objects.get(
+                customer=self.hotspot, date=yesterday, connection_type="hotspot")
+        self.assertEqual(rolled.rx_bytes, self.ROUTER_SENT)
+        self.assertEqual(rolled.tx_bytes, self.ROUTER_RECEIVED)
+
+    def test_the_total_is_unchanged_by_which_way_round_they_go(self):
+        """
+        Why this went unseen, stated as a test: every cap decision reads the
+        sum, and the sum is the same either way. Anyone tempted to "fix" a cap
+        after the swap should see here that there is nothing to fix.
+        """
+        from billing.services.usage import usage_since
+
+        start = timezone.now() - timezone.timedelta(hours=1)
+        with tenant_context(self.t1):
+            HotspotUsageRecord.objects.create(
+                tenant=self.t1, customer=self.hotspot,
+                period_start=timezone.now(), period_end=timezone.now(),
+                download_bytes=self.ROUTER_SENT,
+                upload_bytes=self.ROUTER_RECEIVED)
+            straight = usage_since(self.hotspot, start)
+
+            HotspotUsageRecord.objects.filter(customer=self.hotspot).update(
+                download_bytes=self.ROUTER_RECEIVED,
+                upload_bytes=self.ROUTER_SENT)
+            crossed = usage_since(self.hotspot, start)
+
+        self.assertEqual(straight, crossed)
+        self.assertEqual(straight, self.ROUTER_SENT + self.ROUTER_RECEIVED)
 
 
 class SessionTableTests(TwoOperatorMixin, TestCase):

@@ -136,8 +136,11 @@ export default function PPPoESessions() {
                       </td>
                       <td className="px-5 py-3.5 text-slate-300 font-mono text-xs">{s.ip_address}</td>
                       <td className="px-5 py-3.5 text-slate-300 font-medium">{fmtUptime(s.uptime)}</td>
-                      <td className="px-5 py-3.5 text-blue-300 font-medium">{fmtMB(s.rx_bytes)}</td>
-                      <td className="px-5 py-3.5 text-emerald-300 font-medium">{fmtMB(s.tx_bytes)}</td>
+                      {/* Crossed over: rx and tx come straight off the router
+                          and are counted from its side, so what it received is
+                          what the subscriber uploaded. */}
+                      <td className="px-5 py-3.5 text-blue-300 font-medium">{fmtMB(s.tx_bytes)}</td>
+                      <td className="px-5 py-3.5 text-emerald-300 font-medium">{fmtMB(s.rx_bytes)}</td>
                       <td className="px-5 py-3.5">
                         <span className="inline-flex items-center px-2.5 py-0.5 rounded-md text-xs font-medium bg-white/5 text-slate-300">
                           {s.router}

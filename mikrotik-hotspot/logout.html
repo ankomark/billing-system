@@ -85,13 +85,15 @@
         <span class="sum-key">Duration</span>
         <span class="sum-val">$(uptime)</span>
       </div>
+      <!-- Crossed over on purpose, as on status.html: bytes-in is what the
+           router received from this phone, which is the phone's upload. -->
       <div class="sum-row">
         <span class="sum-key">Downloaded</span>
-        <span class="sum-val" id="rxVal">$(bytes-in)</span>
+        <span class="sum-val" id="rxVal">$(bytes-out)</span>
       </div>
       <div class="sum-row">
         <span class="sum-key">Uploaded</span>
-        <span class="sum-val" id="txVal">$(bytes-out)</span>
+        <span class="sum-val" id="txVal">$(bytes-in)</span>
       </div>
     </div>
 

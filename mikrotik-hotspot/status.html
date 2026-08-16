@@ -113,14 +113,18 @@
           <div class="stat-value">$(session-time-left)</div>
           <div class="stat-label">Time Left</div>
         </div>
+        <!-- Crossed over on purpose. The router counts from its own side, so
+             bytes-in is what it received from this phone — the phone's upload.
+             Labelled the obvious way round until 2026-08-16, which showed
+             every subscriber a download figure that was really their upload. -->
         <div class="stat-box">
           <div class="stat-icon">⬇</div>
-          <div class="stat-value" id="rxVal">$(bytes-in)</div>
+          <div class="stat-value" id="rxVal">$(bytes-out)</div>
           <div class="stat-label">Downloaded</div>
         </div>
         <div class="stat-box">
           <div class="stat-icon">⬆</div>
-          <div class="stat-value" id="txVal">$(bytes-out)</div>
+          <div class="stat-value" id="txVal">$(bytes-in)</div>
           <div class="stat-label">Uploaded</div>
         </div>
       </div>

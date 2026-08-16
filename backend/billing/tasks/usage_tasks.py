@@ -79,6 +79,8 @@ def collect_pppoe_usage_snapshots(self):
             customer=customer, defaults={"tenant_id": customer.tenant_id}
         )
 
+        # Named for the router's point of view, which is the opposite of the
+        # subscriber's — see the note above download_bytes below.
         rx = int(usage.get("rx_bytes", 0))
         tx = int(usage.get("tx_bytes", 0))
 
@@ -102,8 +104,15 @@ def collect_pppoe_usage_snapshots(self):
             router=router,
             period_start=state.last_seen_at or now,
             period_end=now,
-            download_bytes=rx_delta,
-            upload_bytes=tx_delta,
+            # Crossed over, because the counters are the router's and the
+            # columns are the subscriber's. What the router *received* is what
+            # the subscriber sent, so rx is their upload and tx their download.
+            # These two were the wrong way round from the first commit until
+            # 0064: production had 718GB of "upload" against 63GB of
+            # "download", eleven times more sent than received by every
+            # subscriber on the platform at once.
+            download_bytes=tx_delta,
+            upload_bytes=rx_delta,
         )
 
         state.last_rx_bytes = rx
@@ -177,6 +186,7 @@ def collect_hotspot_usage_snapshots(self):
             customer=customer, defaults={"tenant_id": customer.tenant_id}
         )
 
+        # The router's point of view, as in the PPPoE collector above.
         rx = int(usage.get("rx_bytes", 0))
         tx = int(usage.get("tx_bytes", 0))
 
@@ -195,8 +205,11 @@ def collect_hotspot_usage_snapshots(self):
             router=router,
             period_start=state.last_seen_at or now,
             period_end=now,
-            download_bytes=rx - state.last_rx_bytes,
-            upload_bytes=tx - state.last_tx_bytes,
+            # Crossed over — see the PPPoE collector above for why. bytes-in on
+            # /ip/hotspot/active is what the router received from the phone,
+            # which is the phone's upload.
+            download_bytes=tx - state.last_tx_bytes,
+            upload_bytes=rx - state.last_rx_bytes,
         )
 
         state.last_rx_bytes = rx

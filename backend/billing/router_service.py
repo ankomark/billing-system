@@ -830,6 +830,18 @@ def _sessions_by_user(router, path, name_field, rx_field, tx_field):
     """
     Every live session on one router, keyed by the name it logged in with.
 
+    **rx and tx here are the router's, not the subscriber's.** A router counts
+    what it receives as rx (`bytes-in`) and what it sends as tx (`bytes-out`),
+    so for the person holding the phone they are the other way round:
+
+        rx_bytes  = the router received it  = the subscriber UPLOADED it
+        tx_bytes  = the router sent it      = the subscriber DOWNLOADED it
+
+    Said this loudly because reading it the obvious way is a bug that hides:
+    the totals still add up, caps still enforce correctly, and the only symptom
+    is two labels on a graph being the wrong way round. It went unnoticed from
+    the first commit until migration 0064.
+
     The per-customer helpers below ask a router for one username, and the only
     way to answer is to read the whole session table and discard the rest. Done
     in a loop over subscribers that is one connection each — and, when the
