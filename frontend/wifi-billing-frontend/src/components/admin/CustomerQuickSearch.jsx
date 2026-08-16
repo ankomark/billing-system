@@ -46,8 +46,11 @@ export default function CustomerQuickSearch() {
       ? c.voucher_code || c.hotspot_username || ""
       : c.pppoe_username || "";
 
+  // A pearl sheen across the corner rather than a second hue: the voucher card
+  // above already carries azure, and two lit cards in different colours read as
+  // two unrelated states.
   return (
-    <Card>
+    <Card sheen="pearl">
       <CompAccessModal
         open={!!gifting}
         customer={gifting}

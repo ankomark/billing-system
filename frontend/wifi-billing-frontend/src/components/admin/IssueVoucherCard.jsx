@@ -26,7 +26,9 @@ export default function IssueVoucherCard() {
   return (
     <>
       <IssueVoucherModal open={open} onClose={() => setOpen(false)} />
-      <Card>
+      {/* Azure arriving from the right, where the button sits. This card is
+          an action, not a readout — see CARD_SHEEN. */}
+      <Card sheen="azure">
         <div className="flex items-center gap-4">
           <button
             onClick={() => setOpen(true)}

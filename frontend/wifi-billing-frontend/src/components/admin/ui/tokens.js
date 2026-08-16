@@ -60,6 +60,22 @@ export const seriesColor = (i) => SERIES[i % SERIES.length];
  * not two competing ones.
  */
 /**
+ * A lit edge across a card, for the few cards that are actions rather than
+ * readouts. Sparingly: if every card has one, none of them stands out.
+ *
+ * Ceilings measured against the slate-400 subtitle on bg-slate-900/80 over the
+ * page — azure 0.33, white 0.15 — and each peak sits under its own. Azure
+ * arrives from the right because that is where the card's own action sits;
+ * pearl crosses the corner, which is what a sheen does on something polished.
+ */
+export const CARD_SHEEN = {
+  azure:
+    "linear-gradient(90deg, rgba(0,128,255,0) 30%, rgba(0,128,255,0.12) 62%, rgba(0,128,255,0.26) 100%)",
+  pearl:
+    "linear-gradient(115deg, rgba(255,255,255,0.10) 0%, rgba(255,255,255,0.03) 38%, rgba(255,255,255,0) 62%)",
+};
+
+/**
  * Tinted glass for a card surface.
  *
  * A flat dark page gives `backdrop-filter` nothing to refract, so glass here is

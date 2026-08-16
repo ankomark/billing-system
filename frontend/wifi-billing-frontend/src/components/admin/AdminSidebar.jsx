@@ -10,6 +10,36 @@ import {
   MailWarning,
 } from "lucide-react";
 
+/**
+ * Royal green down the panel, with white as a sheen across the top.
+ *
+ * White is a sheen and not a stop for the usual reason — twenty nav labels live
+ * on this surface — but the numbers here are the other way round from the page
+ * behind it. A deep green barely lightens slate-900 at all, so it takes 0.69
+ * before the section labels stop clearing 4.5:1 and the wash can be generous.
+ * White reaches its limit at 0.14 and has to stay a highlight.
+ *
+ * Which is also why the inks below moved up. The nav labels were slate-500 and
+ * the section labels slate-400 — both already under 4.5 on the flat panel,
+ * before any of this — and a wash would have buried them. At slate-300 they
+ * clear 7.08 even under the sheen at its brightest, which is what makes the
+ * green affordable.
+ *
+ * Green in the sidebar is the point where blue stops being this console's
+ * accent in any real sense. The active nav pill is still blue and so is the
+ * chrome, but the surface a person actually sees now reads green. Worth
+ * knowing, because the blue/teal split is what tells an operator's console from
+ * the platform's — see tokens.js.
+ */
+const ASIDE = {
+  backgroundColor: "#0f172a",
+  backgroundImage: [
+    "linear-gradient(180deg, rgba(255,255,255,0.10) 0%, rgba(255,255,255,0) 18%)",
+    "linear-gradient(180deg, rgba(20,83,45,0.55) 0%, rgba(6,95,70,0.42) 46%, rgba(15,23,42,0) 100%)",
+  ].join(","),
+  backgroundRepeat: "no-repeat",
+};
+
 export default function AdminSidebar({ open, onClose }) {
   const navigate = useNavigate();
 
@@ -61,8 +91,9 @@ export default function AdminSidebar({ open, onClose }) {
 
       {/* Sidebar */}
       <aside
+        style={ASIDE}
         className={`
-          fixed top-0 left-0 z-40 h-full w-64 bg-slate-900 border-r border-white/10 flex flex-col transform transition-transform duration-300 ease-in-out
+          fixed top-0 left-0 z-40 h-full w-64 border-r border-white/10 flex flex-col transform transition-transform duration-300 ease-in-out
           lg:static lg:translate-x-0 lg:z-auto lg:flex-shrink-0
           ${open ? "translate-x-0" : "-translate-x-full"}
         `}
@@ -81,7 +112,7 @@ export default function AdminSidebar({ open, onClose }) {
               <p className="text-white font-bold text-sm leading-tight">
                 {operatorName}
               </p>
-              <p className="text-slate-400 text-xs">Management Portal</p>
+              <p className="text-slate-300 text-xs">Management Portal</p>
             </div>
           </div>
           {/* Mobile close button */}
@@ -144,7 +175,7 @@ export default function AdminSidebar({ open, onClose }) {
         <div className="p-3 border-t border-white/10">
           <button
             onClick={handleLogout}
-            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-500 hover:text-white hover:bg-red-600/90 transition-colors text-sm font-medium"
+            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-300 hover:text-white hover:bg-red-600/90 transition-colors text-sm font-medium"
           >
             <LogOut size={15} />
             Sign Out
@@ -157,7 +188,7 @@ export default function AdminSidebar({ open, onClose }) {
 
 function SectionLabel({ label }) {
   return (
-    <p className="px-3 pt-5 pb-1.5 text-xs font-semibold text-slate-400 uppercase tracking-widest select-none">
+    <p className="px-3 pt-5 pb-1.5 text-xs font-semibold text-slate-300 uppercase tracking-widest select-none">
       {label}
     </p>
   );
@@ -172,7 +203,7 @@ function NavItem({ to, icon: Icon, label, onClick }) {
         `flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
           isActive
             ? "bg-blue-600 text-white shadow-sm"
-            : "text-slate-500 hover:text-white hover:bg-white/5"
+            : "text-slate-300 hover:text-white hover:bg-white/5"
         }`
       }
     >

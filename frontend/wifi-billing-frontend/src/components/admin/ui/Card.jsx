@@ -1,5 +1,5 @@
 import { AlertTriangle, CheckCircle2, Info, AlertOctagon } from "lucide-react";
-import { CHIP, statusStyle } from "./tokens";
+import { CARD_SHEEN, CHIP, statusStyle } from "./tokens";
 
 /**
  * Surfaces for the operator console.
@@ -13,12 +13,16 @@ import { CHIP, statusStyle } from "./tokens";
  * being light.
  */
 
-export function Card({ children, className = "", padded = true }) {
+export function Card({ children, className = "", padded = true, sheen }) {
+  const lit = CARD_SHEEN[sheen];
   return (
     <div
       className={`rounded-xl border border-white/10 bg-slate-900/80 shadow-lg shadow-black/20 ${
         padded ? "p-5" : ""
       } ${className}`}
+      // A background-image over the existing tint, so the card keeps its
+      // surface and only gains the light. See CARD_SHEEN for the ceilings.
+      style={lit ? { backgroundImage: lit } : undefined}
     >
       {children}
     </div>
