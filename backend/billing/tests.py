@@ -9126,8 +9126,13 @@ class DeviceBlockingTests(TwoOperatorMixin, TestCase):
             inv = self.sub.invoice
             inv.payment_status = "paid"
             inv.save(update_fields=["payment_status"])
+            # Against the subscription that paid for it, as the redemption
+            # endpoint binds one. A place belonging to no package is counted in
+            # no allowance, so leaving it off here would give this customer a
+            # free device rather than the two they bought.
             self.device = CustomerDevice.objects.create(
                 tenant=self.t1, customer=self.customer,
+                subscription=self.sub,
                 mac_address="AA:00:00:00:00:01")
 
     def redeem(self, mac):

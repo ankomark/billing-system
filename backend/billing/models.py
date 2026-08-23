@@ -1322,6 +1322,25 @@ class CustomerDevice(TenantScopedModel):
 
     customer = models.ForeignKey(
         Customer, on_delete=models.CASCADE, related_name="devices")
+
+    # Which package paid for this place.
+    #
+    # Places used to be counted against the customer while the allowance came
+    # from the subscription whose code was typed, and the two are not the same
+    # thing. One number can hold several packages at once — a subscriber who
+    # bought again because they could not get online, or one whose friend had
+    # no M-Pesa balance and put their number into the prompt. Every one of
+    # those payments bought its own allowance, and all of them were being made
+    # to share the first one's.
+    #
+    # Counting places against the subscription that granted them is what makes
+    # a second payment worth something. Null means a binding made before this
+    # was recorded; those are migrated to the subscription that was active when
+    # they were made.
+    subscription = models.ForeignKey(
+        "Subscription", null=True, blank=True,
+        on_delete=models.CASCADE, related_name="devices")
+
     mac_address = models.CharField(max_length=50)
     first_seen = models.DateTimeField(auto_now_add=True)
     last_seen = models.DateTimeField(auto_now=True)
@@ -1336,6 +1355,21 @@ class CustomerDevice(TenantScopedModel):
     blocked = models.BooleanField(default=False)
     blocked_reason = models.CharField(max_length=200, blank=True)
     blocked_at = models.DateTimeField(null=True, blank=True)
+
+    # Who decided this device should hold a place.
+    #
+    # The purchase flow redeems the code on the phone that paid, the moment
+    # M-Pesa confirms — nobody typed anything there, the portal did it. On a
+    # one-device package that phone then held the only place, and the
+    # television the code was bought for was refused "in use on another
+    # device". The customer had paid, and the device standing in their way was
+    # their own phone, put there by us.
+    #
+    # A device that presented the code itself asked to be here. One the
+    # purchase flow attached did not, and it yields to a device that did. The
+    # flag clears the moment this device is used deliberately, so a phone
+    # somebody is actually on stops being displaceable.
+    auto_bound = models.BooleanField(default=False)
 
     class Meta:
         constraints = [

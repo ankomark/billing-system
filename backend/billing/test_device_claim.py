@@ -88,10 +88,22 @@ class DeviceClaimTests(TestCase):
         Subscription.objects.all_tenants().filter(pk=sub.pk).update(
             status="expired", expiry_date=timezone.now() - timedelta(hours=1))
 
-    def _bind(self, customer, mac, *, primary=True):
+    def _bind(self, customer, mac, *, primary=True, subscription=None):
+        """
+        A device place as the redemption endpoint makes one — against the
+        subscription that paid for it. A binding belonging to no package counts
+        against no allowance, which is right for a device left over from one
+        that expired, and wrong as a fixture for a customer whose package is
+        live.
+        """
         with tenant_context(self.tenant):
+            if subscription is None:
+                subscription = (
+                    Subscription.objects.filter(customer=customer)
+                    .order_by("-id").first())
             CustomerDevice.objects.create(
-                tenant=self.tenant, customer=customer, mac_address=mac)
+                tenant=self.tenant, customer=customer,
+                subscription=subscription, mac_address=mac)
             if primary:
                 customer.hotspot_username = mac
                 customer.save(update_fields=["hotspot_username"])

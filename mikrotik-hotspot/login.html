@@ -674,8 +674,14 @@
             // takes a second while the router is told about them.
             waitShow(t('wait.connecting'));
             if (data.voucher_code) {
+              // `auto` says nobody typed this here -- the payment cleared and
+              // we connected this device on the buyer's behalf. It is why a
+              // code bought on a phone can still be entered on a television:
+              // the binding this makes yields to one somebody types, instead
+              // of holding the only place on the package for ever.
               api('POST', '/hotspot/validate/',
-                { code: data.voucher_code, mac_address: MAC, t: TENANT_TOKEN },
+                { code: data.voucher_code, mac_address: MAC, t: TENANT_TOKEN,
+                  auto: true },
                 function (ok) {
                   if (ok && ok.device_token) { saveDeviceToken(MAC, ok.device_token); }
                   waitDone(t('wait.connected'), logIn);

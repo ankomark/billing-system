@@ -164,10 +164,21 @@ class StaleDevicePlaceTests(TestCase):
                 expires_at=timezone.now() + timedelta(hours=max(hours, 1)))
         return customer, sub, voucher
 
-    def _bind(self, customer, mac):
+    def _bind(self, customer, mac, subscription=None):
+        """
+        A device place, as the redemption endpoint makes one — which is to say
+        against the subscription that paid for it. A binding belonging to no
+        package counts against no allowance, so leaving it off here would test
+        a row shape production no longer creates.
+        """
         with tenant_context(self.tenant):
+            if subscription is None:
+                subscription = (
+                    Subscription.objects.filter(customer=customer)
+                    .order_by("-id").first())
             CustomerDevice.objects.create(
-                tenant=self.tenant, customer=customer, mac_address=mac)
+                tenant=self.tenant, customer=customer,
+                subscription=subscription, mac_address=mac)
             customer.hotspot_username = mac
             customer.save(update_fields=["hotspot_username"])
 

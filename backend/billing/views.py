@@ -1157,7 +1157,7 @@ def _voucher_first_used_here(subscription, mac_address):
     ).exists()
 
 
-def _evict_idle_device(customer, devices, *, reclaiming=False):
+def _evict_idle_device(customer, devices, *, reclaiming=False, deliberate=False):
     """
     Free the place held by a device that is not actually connected.
 
@@ -1184,6 +1184,20 @@ def _evict_idle_device(customer, devices, *, reclaiming=False):
     question the voucher has already answered, and nothing is given away,
     because the total stays inside what the package allows.
 
+    `deliberate` says somebody typed the code on the device now asking, rather
+    than the purchase flow presenting it for them. Such a device may displace
+    one that is `auto_bound` — the payer's phone, connected automatically the
+    moment M-Pesa confirmed — even though that phone has a live session and is
+    therefore not idle by any measure. It has one seconds after the purchase
+    page loads, which is exactly when the customer is walking to the television
+    the code was bought for.
+
+    That is not a hole in the limit. The total still stays inside what the
+    package allows, the displaced phone can take its place back by entering the
+    code (which makes *it* the deliberate one), and a device already claimed
+    deliberately is never displaced — so a code passed around a room is refused
+    exactly as it is today.
+
     The oldest binding goes first. Between two idle devices the one last seen
     longest ago is the likelier to be the phone somebody replaced.
     """
@@ -1193,24 +1207,40 @@ def _evict_idle_device(customer, devices, *, reclaiming=False):
     if not devices:
         return None
 
+    # A place we gave away ourselves, to a device that never asked for it. The
+    # router has nothing to say about this — the flag is our own record of how
+    # the binding was made — so it is available even when no router answers.
+    ours_to_take_back = (
+        [d for d in devices if d.auto_bound] if deliberate else [])
+
     if reclaiming:
         candidates = devices
     else:
         online = _online_macs(customer, max_idle_seconds=IDLE_SESSION_SECONDS)
         if online is None:
-            logger.warning(
-                "[hotspot] cannot check live sessions for customer %s, so the "
-                "device limit stands — a router we cannot read must not become "
-                "a router that grants everything.", customer.pk,
-            )
-            return None
-
-        candidates = [
-            d for d in devices if normalize_mac(d.mac_address) not in online]
-        if not candidates:
-            return None
+            if not ours_to_take_back:
+                logger.warning(
+                    "[hotspot] cannot check live sessions for customer %s, so "
+                    "the device limit stands — a router we cannot read must "
+                    "not become a router that grants everything.", customer.pk,
+                )
+                return None
+            candidates = ours_to_take_back
+        else:
+            candidates = [
+                d for d in devices if normalize_mac(d.mac_address) not in online]
+            # Everything bound is genuinely online. That is the refusal this
+            # limit exists for — unless one of them is the phone the purchase
+            # flow connected, which is online precisely because we connected
+            # it, and which is the device standing between a paying customer
+            # and the television they bought the code for.
+            if not candidates:
+                candidates = ours_to_take_back
+            if not candidates:
+                return None
 
     victim = sorted(candidates, key=lambda d: (d.last_seen or d.first_seen))[0]
+    was_auto_bound = bool(victim.auto_bound)
 
     # Take it off the router too. Leaving the hotspot user behind would let
     # the evicted device log straight back in and retake a place it no longer
@@ -1238,12 +1268,18 @@ def _evict_idle_device(customer, devices, *, reclaiming=False):
         customer.hotspot_username = ""
         customer.save(update_fields=["hotspot_username"])
 
-    why = (
-        "the device the code was bought on came back"
-        if reclaiming else
-        "no live session, and the device limit was reached by another device "
-        "connecting"
-    )
+    if reclaiming:
+        why = "the device the code was bought on came back"
+    elif was_auto_bound:
+        # Worth saying plainly in the operator's log. This is the one eviction
+        # that can take a device off a live session, and an operator reading
+        # "no live session" against a phone that had one would rightly not
+        # believe the record.
+        why = ("connected automatically by the purchase, and the code was "
+               "then entered on another device")
+    else:
+        why = ("no live session, and the device limit was reached by another "
+               "device connecting")
 
     try:
         AccessAuditLog.objects.create(
@@ -1478,6 +1514,16 @@ class HotspotVoucherValidateView(APIView):
         # its owner is told belongs to somebody else.
         mac_address = normalize_mac(request.data.get("mac_address"))
 
+        # Did somebody type this code on this device, or did the purchase flow
+        # present it for them the moment the payment cleared?
+        #
+        # Only the portal's own post-payment call sets this, and the difference
+        # decides one thing: whether the binding it makes may later be taken
+        # back by a device whose owner typed the code themselves. Absent, false
+        # or junk all mean deliberate, which is the stricter reading — a caller
+        # cannot gain anything by omitting it or by sending nonsense.
+        auto_bound = request.data.get("auto") is True
+
         if not code or not mac_address:
             return Response(
                 {"detail": "code and mac_address are required"},
@@ -1552,13 +1598,51 @@ class HotspotVoucherValidateView(APIView):
 
             # How many devices this package is good for, and which ones are
             # already using it.
+            #
+            # Places belong to the subscription that paid for them, not to the
+            # number on the account. One number can be holding several packages
+            # at once — somebody who bought again because they could not get
+            # online, or whose friend had no M-Pesa balance and put this number
+            # into the prompt. Counted against the customer, the second payment
+            # bought nothing: the first package's device was already in the
+            # only place, and the code came back "in use on another device".
+            #
+            # A subscription's own devices are the only ones its allowance has
+            # anything to say about.
             allowed = max(1, getattr(subscription.package, "max_devices", 1) or 1)
             devices = list(
                 CustomerDevice.objects.all_tenants()
                 .select_for_update()
-                .filter(tenant_id=customer.tenant_id, customer=customer)
+                .filter(tenant_id=customer.tenant_id, customer=customer,
+                        subscription=subscription)
                 .order_by("first_seen")
             )
+
+            # The same handset coming back with a newer code. It is bound to a
+            # package it is no longer using, so the binding moves rather than
+            # colliding with (tenant, mac_address) — which would otherwise be
+            # the one device guaranteed to be refused: the customer's own.
+            # Excluded by primary key, not by `subscription`: 269 of the 316
+            # bindings in production carry no subscription at all, and
+            # `.exclude(subscription=...)` compares against NULL rather than
+            # matching it. Those rows are exactly the ones this needs to find.
+            #
+            # Every matching row, not the first of them. One handset can hold
+            # two rows spelled in different letter cases, and if one of those
+            # carries a block, taking either one on its own is a coin toss over
+            # whether the block is enforced. _fold_duplicate_devices below
+            # collapses them and keeps the answer that refuses — but only if it
+            # is given both.
+            moved = list(
+                CustomerDevice.objects.all_tenants()
+                .filter(tenant_id=customer.tenant_id, customer=customer,
+                        mac_address__in=mac_variants(mac_address))
+                .exclude(pk__in=[d.pk for d in devices])
+            )
+            for device in moved:
+                device.subscription = subscription
+                device.save(update_fields=["subscription"])
+            devices.extend(moved)
 
             # A subscriber bound before the device table existed has a MAC on
             # their row and no device row, and the count reads rows — so their
@@ -1575,6 +1659,7 @@ class HotspotVoucherValidateView(APIView):
                             CustomerDevice.objects.create(
                                 tenant_id=customer.tenant_id,
                                 customer=customer,
+                                subscription=subscription,
                                 mac_address=legacy,
                             )
                         )
@@ -1653,7 +1738,8 @@ class HotspotVoucherValidateView(APIView):
                     # device standing here. A room genuinely sharing a code
                     # has every device online at once, nothing is evictable,
                     # and the refusal below still happens.
-                    evicted = _evict_idle_device(customer, devices)
+                    evicted = _evict_idle_device(
+                        customer, devices, deliberate=not auto_bound)
                     if evicted is None:
                         _record_attempt(
                             tenant, code, mac_address,
@@ -1680,7 +1766,9 @@ class HotspotVoucherValidateView(APIView):
                         CustomerDevice.objects.create(
                             tenant_id=customer.tenant_id,
                             customer=customer,
+                            subscription=subscription,
                             mac_address=mac_address,
+                            auto_bound=auto_bound,
                         )
                 except IntegrityError:
                     # (tenant, mac_address) is unique, and everything that
@@ -1704,7 +1792,16 @@ class HotspotVoucherValidateView(APIView):
                         status=status.HTTP_409_CONFLICT,
                     )
             else:
-                known.save(update_fields=["last_seen"])
+                # Somebody has now typed the code on this device. Whatever put
+                # it here originally, it is here on purpose from this point on
+                # — so it stops being displaceable, and a phone its owner is
+                # actually using cannot be taken off by a code entered
+                # elsewhere.
+                fields = ["last_seen"]
+                if known.auto_bound and not auto_bound:
+                    known.auto_bound = False
+                    fields.append("auto_bound")
+                known.save(update_fields=fields)
 
             # The first device stays on the customer row: the public status and
             # reconnect endpoints resolve a subscriber by it, and a great deal
