@@ -105,9 +105,21 @@ def disable_hotspot(api, mac_address):
     them as expired and the operator saw them as cut off. The session has to be
     ended as well, which is what ip/hotspot/active is for. PPPoE has always
     done this; hotspot never did.
+
+    Returns True when the session pass completed, False when it did not.
+
+    That return value is the difference between "we reached a router" and "the
+    device is off it". The session removal below has always been wrapped in its
+    own try/except so that losing it cannot stop the account being removed —
+    correct, but it meant the one failure that leaves a handset online was the
+    one failure no caller could see. A block would report success on a router
+    where the session was still up, which is exactly the case the paragraph
+    above says this function exists to prevent.
+
+    Callers that only want the account gone can keep ignoring it.
     """
     if not mac_address:
-        return
+        return True
 
     # Canonical on both sides. These were exact string comparisons against
     # whatever RouterOS happened to report, and a miss here does not fail
@@ -123,12 +135,16 @@ def disable_hotspot(api, mac_address):
 
     # The live session first, so there is no window where the user is gone but
     # the session survives to be re-established.
+    session_ended = False
     try:
         actives = api.path("ip", "hotspot", "active")
         for session in list(actives):
             if wanted in (normalize_mac(session.get("user")),
                           normalize_mac(session.get("mac-address"))):
                 actives.remove(session[".id"])
+        # Nothing matching is the same answer as one removed: either way this
+        # address holds no session here.
+        session_ended = True
     except Exception:
         # An unreachable router is handled by the caller; losing the session
         # kick must not stop the account being removed.
@@ -138,7 +154,8 @@ def disable_hotspot(api, mac_address):
     for u in users:
         if normalize_mac(u.get("name")) == wanted:
             users.remove(u[".id"])
-            return
+            break
+    return session_ended
 def enable_customer_access(customer):
     """
     Put a paying customer onto working hardware.
@@ -320,7 +337,27 @@ def hotspot_macs_for(customer, *, include_blocked=True):
         CustomerDevice.objects.all_tenants()
         .filter(tenant_id=customer.tenant_id, customer=customer)
     )
+
+    # Addresses this customer is blocked on, kept whatever the filter above
+    # does to the rows.
+    #
+    # The filter alone was not enough, because `customer.hotspot_username` is
+    # appended below without passing through it. Whenever that field named a
+    # blocked handset, `include_blocked=False` still returned it and the grant
+    # put it back on the router — the one thing this argument exists to stop.
+    #
+    # The block endpoint clears the field for exactly this reason, which held
+    # the line at that one call site and nowhere else. A guarantee this
+    # function states in its own docstring belongs in this function, not in
+    # the remembering of every caller that writes the field.
+    blocked_keys = set()
     if not include_blocked:
+        blocked_keys = {
+            normalize_mac(m)
+            for m in devices.filter(blocked=True).values_list(
+                "mac_address", flat=True)
+        }
+        blocked_keys.discard("")
         devices = devices.filter(blocked=False)
 
     macs = []
@@ -334,7 +371,7 @@ def hotspot_macs_for(customer, *, include_blocked=True):
         mac = (mac or "").strip()
         # Keyed canonically so one phone written two ways is provisioned once.
         key = normalize_mac(mac)
-        if mac and key not in seen:
+        if mac and key not in seen and key not in blocked_keys:
             seen.add(key)
             macs.append(mac)
     return macs

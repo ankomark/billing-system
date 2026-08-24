@@ -1839,10 +1839,23 @@ def _kick_device(customer, mac_address):
     Blocking a device that stays connected has not blocked anything until its
     session ends, and a session can outlast a shift. An unreachable router must
     not stop the record being made, so this reports rather than raises.
+
+    Returns how many routers this address is confirmed off. Confirmed, not
+    contacted: disable_hotspot ends the session and then removes the account,
+    and it used to swallow a failure of the first while succeeding at the
+    second — so a router where the handset was still connected counted exactly
+    the same as one where it was gone, and the operator was told the block had
+    landed.
+
+    Anything left unfinished hands off to kick_device_task, which keeps trying
+    for about an hour. Without it a block placed while the link was down was
+    never retried at all, and an established hotspot session runs until
+    `limit-uptime`, which is whatever was left of the subscription.
     """
     from billing.router_service import _tenant_routers, connect_router, disable_hotspot
 
     reached = 0
+    unfinished = False
     try:
         routers = _tenant_routers(customer.tenant_id)
     except Exception:
@@ -1851,10 +1864,28 @@ def _kick_device(customer, mac_address):
     for router in routers:
         try:
             api = connect_router(router)
-            disable_hotspot(api, mac_address)
-            reached += 1
+            if disable_hotspot(api, mac_address):
+                reached += 1
+            else:
+                unfinished = True
         except Exception:
+            unfinished = True
             logger.warning("[device] could not reach %s to drop %s", router, mac_address)
+
+    if unfinished:
+        # Only when something was actually tried and did not finish. An
+        # operator with no active routers has nothing holding the device
+        # online, and queuing an hour of retries against that would be an
+        # hour of a worker proving it.
+        try:
+            from billing.tasks.router_tasks import kick_device_task
+            kick_device_task.delay(customer.pk, mac_address)
+        except Exception:
+            # No broker is not a reason to fail the block. The record stands
+            # and the operator has already been told what was reached.
+            logger.exception(
+                "[device] could not queue the retry for %s", mac_address)
+
     return reached
 
 
@@ -1914,6 +1945,16 @@ class CustomerDeviceView(APIView):
             })
 
         if action == "unblock":
+            # Unconditional, deliberately. Blocking is the operator's switch
+            # over one MAC address and unblocking is the same switch back —
+            # it does not consult the device limit, the voucher or the
+            # subscription, because none of those is what the operator is
+            # answering when they decide this handset may connect again.
+            #
+            # Known consequence: blocking frees the place (see the model), so
+            # another device may have taken it meanwhile, and unblocking can
+            # leave the customer one device over their allowance. That is a
+            # question about the device limit, not about this switch.
             device.blocked = False
             device.blocked_reason = ""
             device.blocked_at = None

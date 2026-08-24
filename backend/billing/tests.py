@@ -10378,6 +10378,10 @@ class ScheduledWorkTests(SimpleTestCase):
             "notify_admin_task", "initiate_stk_push_task",
             "dispatch_broadcast_task", "ensure_customer_access_task",
             "disconnect_pppoe_task",
+            # Queued by _kick_device when blocking or removing a device could
+            # not be confirmed on every router. There is nothing periodic to
+            # schedule: it exists to outlive the request that started it.
+            "kick_device_task",
         }
 
         # Off on purpose, with the reason written down. This is the difference

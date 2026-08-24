@@ -37,6 +37,7 @@ from .router_tasks import (
     disable_customer_task,
     disconnect_pppoe_task,
     enable_customer_task,
+    kick_device_task,
 )
 from .subscription_tasks import enforce_subscription_expiry
 from .tethering_tasks import detect_tethering, prune_tethering_cases
