@@ -2552,12 +2552,47 @@ class HotspotStatusView(APIView):
         }
 
         if device_token_matches(mac, request.GET.get("dt")):
+            # The code that reconnects *this phone*, which is what the page
+            # offering it says it is.
+            #
+            # This was the newest code on `subscription` — the customer's
+            # longest-running one, picked above because that is what the router
+            # actually grants on. For a subscriber holding more than one at
+            # once those are two different things, and the page handed over a
+            # code they had not just bought: 10/= for three hours, and the
+            # screen showed the voucher for a two-week package comped days
+            # earlier. Write that one down and it reconnects you until a date
+            # nobody sold you, then stops.
+            #
+            # bound_mac is written the first time a code is redeemed, by the
+            # device that redeemed it, so it answers "which of these is this
+            # phone's" exactly. Expiry is checked because a dead code is worse
+            # than the wrong one — it is the right answer to a question the
+            # customer is no longer asking.
             voucher = (
                 Voucher.objects.all_tenants()
-                .filter(tenant_id=customer.tenant_id, subscription=subscription)
+                .filter(
+                    tenant_id=customer.tenant_id,
+                    subscription__customer=customer,
+                    bound_mac__in=mac_variants(mac),
+                    is_active=True,
+                    subscription__expiry_date__gt=timezone.now(),
+                )
                 .order_by("-created_at")
                 .first()
             )
+            if voucher is None:
+                # Nothing bound to this address: a device let back on without
+                # redeeming, or a binding made before bound_mac was written.
+                # The reported subscription's own newest code is then the best
+                # answer available, which is what this always did.
+                voucher = (
+                    Voucher.objects.all_tenants()
+                    .filter(tenant_id=customer.tenant_id,
+                            subscription=subscription)
+                    .order_by("-created_at")
+                    .first()
+                )
             body["voucher_code"] = voucher.code if voucher else None
 
         return Response(body)
