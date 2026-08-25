@@ -4382,9 +4382,17 @@ class HotspotReconnectView(APIView):
                 status=403,
             )
 
+        # Paid, not merely active. A subscription is created `active` with an
+        # unpaid invoice the moment a purchase starts, so this endpoint used
+        # to hand access to anyone who began buying and never finished:
+        # abandon the M-Pesa prompt, come back here, be let on.
+        #
+        # HotspotStatusView has always checked the invoice and reported
+        # "pending" for exactly this state. This is the same question, and it
+        # was the one place giving a different answer.
         subscription = (
             customer.subscriptions
-            .filter(status="active")
+            .filter(status="active", invoice__payment_status="paid")
             .order_by("-expiry_date")
             .first()
         )

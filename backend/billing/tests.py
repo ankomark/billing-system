@@ -5543,6 +5543,16 @@ class ProvisioningRetryTests(TwoOperatorMixin, TestCase):
         cache.clear()
         self.build_operators()
         self.customer = self.data["t1"]["customer"]
+        # "the customer pays, the invoice is marked paid" — this class's own
+        # docstring. build_operators() never marked it, and nothing noticed
+        # until enable_customer_access started requiring payment before
+        # granting access. The subscription it makes is active and unpaid,
+        # which is exactly the state that was handing out free internet in
+        # production; a test for the after-payment path must not sit in it.
+        with tenant_context(self.t1):
+            inv = self.data["t1"]["invoice"]
+            inv.payment_status = "paid"
+            inv.save(update_fields=["payment_status"])
 
     def test_enable_reports_failure_rather_than_returning_nothing(self):
         """
@@ -5627,6 +5637,11 @@ class SilentRehomingTests(TwoOperatorMixin, TestCase):
         self.build_operators()
         self.customer = self.data["t1"]["customer"]
         with tenant_context(self.t1):
+            # A subscriber only gets re-homed if they are entitled to access
+            # at all, and entitlement is payment — see ProvisioningRetryTests.
+            inv = self.data["t1"]["invoice"]
+            inv.payment_status = "paid"
+            inv.save(update_fields=["payment_status"])
             self.spare = RouterDevice.objects.create(
                 tenant=self.t1, name="t1-spare", ip_address="10.0.9.9",
                 username="a", password="p", priority=2)

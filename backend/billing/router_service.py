@@ -169,8 +169,25 @@ def enable_customer_access(customer):
     and their subscription activated, receive an SMS saying their account was
     ready, and have no access at all, with nothing retrying and nobody told.
     """
+    # Paid, not merely active.
+    #
+    # Every subscription is born `active` with an unpaid invoice — the status
+    # default says active and Subscription.save() creates the invoice as
+    # unpaid — so "active" says nothing at all about whether money arrived.
+    # Payment.save() sets the same status it already had.
+    #
+    # This picked the longest-running active subscription, which meant an
+    # abandoned purchase outranked a real one whenever it was for a bigger
+    # package. Found live on 2026-08-25: 25 unpaid subscriptions still inside
+    # their window, 9 subscribers provisioned on one, including somebody who
+    # paid 10/- for three hours and held an unpaid 100/- weekly package, and
+    # somebody who paid 40/- for a day and held an unpaid 75/- two-day one.
+    # The rest had paid nothing whatsoever — abandon the M-Pesa prompt, come
+    # back through /hotspot/reconnect/, and the subscription was active enough
+    # to provision.
     subscription = (
-        customer.subscriptions.filter(status="active")
+        customer.subscriptions.filter(
+            status="active", invoice__payment_status="paid")
         .order_by("-expiry_date")
         .first()
     )
