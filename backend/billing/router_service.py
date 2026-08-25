@@ -17,15 +17,41 @@ def connect_router(router):
         port=router.api_port,
     )
 def create_pppoe_secret(api, router, customer, package):
+    """
+    Put this subscriber's PPPoE account on the router.
+
+    Returns True when the account is there afterwards, False when it is not.
+
+    It used to return None either way and say nothing, so a customer with no
+    generated credentials — the one case this refuses — was indistinguishable
+    from one provisioned correctly. enable_customer_access reported success on
+    both, which is the failure its own docstring exists to prevent: paid,
+    activated, told their account was ready, and nothing on the hardware.
+    """
     if not customer.pppoe_username or not customer.pppoe_password:
-        return
+        logger.warning(
+            "[pppoe] customer %s has no PPPoE credentials, so there is "
+            "nothing to put on %s", customer.pk, router,
+        )
+        return False
 
     profile = ensure_pppoe_profile(router, package)
     secrets = api.path("ppp", "secret")
 
     for s in secrets:
         if s.get("name") == customer.pppoe_username:
-            return
+            # Already there, but not necessarily still correct. The password
+            # can be regenerated and the package can change; returning early
+            # left the router authenticating against a stale secret while the
+            # dashboard showed the new one, which reads to everybody as the
+            # customer typing their password wrong.
+            secrets.update(**{
+                ".id": s[".id"],
+                "password": customer.pppoe_password,
+                "profile": profile,
+                "service": "pppoe",
+            })
+            return True
 
     secrets.add(
         name=customer.pppoe_username,
@@ -34,9 +60,18 @@ def create_pppoe_secret(api, router, customer, package):
         profile=profile,
         comment="AUTO | WIFI BILLING SYSTEM",
     )
+    return True
 def enable_pppoe(api, router, username, package):
+    """
+    Let this account log in, on the profile its package calls for.
+
+    Returns True when a secret was found and enabled, False when there was
+    none to enable. The false case is not hypothetical: this only ever updates
+    an existing secret, so if create_pppoe_secret refused — no credentials —
+    this quietly does nothing, and used to say so to nobody.
+    """
     if not username:
-        return
+        return False
 
     profile = ensure_pppoe_profile(router, package)
     secrets = api.path("ppp", "secret")
@@ -44,16 +79,30 @@ def enable_pppoe(api, router, username, package):
     for s in secrets:
         if s.get("name") == username:
             secrets.update(**{".id": s[".id"], "disabled": "no", "profile": profile})
-            return
+            return True
+
+    logger.warning(
+        "[pppoe] no secret named %s on %s, so nothing was enabled",
+        username, router,
+    )
+    return False
 def disable_pppoe(api, username):
+    """
+    Stop this account logging in again. Does NOT end a session it already has.
+
+    See disable_customer_access, which is where the two halves belong
+    together: disabling a secret is future tense, and a PPPoE session that is
+    already up stays up until something ends it.
+    """
     if not username:
-        return
+        return False
 
     secrets = api.path("ppp", "secret")
     for s in secrets:
         if s.get("name") == username:
             secrets.update(**{".id": s[".id"], "disabled": "yes"})
-            return
+            return True
+    return False
 def enable_hotspot(api, router, mac_address, package, expiry_date):
     if not mac_address:
         return
@@ -103,8 +152,14 @@ def disable_hotspot(api, mac_address):
     session running until it times out of its own accord, so an expired
     customer stayed online — sometimes for hours — while the system recorded
     them as expired and the operator saw them as cut off. The session has to be
-    ended as well, which is what ip/hotspot/active is for. PPPoE has always
-    done this; hotspot never did.
+    ended as well, which is what ip/hotspot/active is for.
+
+    This paragraph used to end "PPPoE has always done this; hotspot never
+    did." That was wrong, and it read as reassurance for long enough to be
+    worth saying so: PPPoE disabled the secret at expiry and never touched
+    ip/ppp/active, so a PPPoE subscriber whose time ran out stayed connected
+    until they rebooted their own router. Both halves now happen in
+    disable_customer_access, for both connection types.
 
     Returns True when the session pass completed, False when it did not.
 
@@ -235,8 +290,19 @@ def enable_customer_access(customer):
     package = subscription.package
 
     if customer.connection_type == "pppoe":
-        create_pppoe_secret(api, router, customer, package)
-        enable_pppoe(api, router, customer.pppoe_username, package)
+        # Reported, not assumed. Both of these decline silently when there is
+        # nothing to work with — no generated credentials, or no secret to
+        # enable — and this returned True regardless, so the retry that exists
+        # to catch a failed provision never fired for a PPPoE subscriber.
+        created = create_pppoe_secret(api, router, customer, package)
+        enabled = enable_pppoe(api, router, customer.pppoe_username, package)
+        if not (created and enabled):
+            logger.warning(
+                "[pppoe] customer %s was not provisioned on %s "
+                "(secret=%s, enabled=%s)",
+                customer.pk, router, created, enabled,
+            )
+            return False
 
     elif customer.connection_type == "hotspot":
         _grant_hotspot(api, router, customer, package, subscription.expiry_date)
@@ -417,7 +483,36 @@ def disable_customer_access(customer):
         return
 
     if customer.connection_type == "pppoe":
+        # Both halves, in this order.
+        #
+        # Disabling the secret is future tense: it refuses the next
+        # authentication and leaves an established session running. PPP has no
+        # `limit-uptime` set on it the way a hotspot user does, and a PPPoE
+        # session has no reason to end on its own — so an expired subscriber
+        # stayed online until they happened to reboot their own router. Days,
+        # in practice. The dashboard said expired the whole time.
+        #
+        # disconnect_pppoe_session has existed all along and is called by the
+        # admin disconnect, by router migration and by disconnect_pppoe_task.
+        # The one path that never called it was the one that runs on its own
+        # when somebody's time runs out.
+        #
+        # Secret first, then the session: the other order leaves a window
+        # where the session is gone and the credentials still work, and a
+        # client that reconnects in under a second is the normal case.
         disable_pppoe(api, customer.pppoe_username)
+        try:
+            disconnect_pppoe_session(api, customer.pppoe_username)
+        except Exception as exc:
+            # Raised, not swallowed. The hotspot branch below raises for the
+            # same reason: disable_customer_task marks the router offline and
+            # re-raises, which is what gets this looked at rather than left in
+            # a log nobody reads. A subscriber still online after expiry is
+            # exactly the state worth retrying.
+            raise RuntimeError(
+                f"disabled {customer.pppoe_username} on {customer.router} but "
+                f"could not end its session: {exc}"
+            )
         return
 
     if customer.connection_type == "hotspot":
