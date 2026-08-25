@@ -155,6 +155,54 @@ class DeviceEvictionTests(TestCase):
         self.assertIn(LAPTOP, entry.reason)
         self.assertIn("no live session", entry.reason)
 
+    def test_the_eviction_is_recorded_without_a_tenant_context(self):
+        """
+        The same record as the test above, written the way production writes it.
+
+        `_evict` wraps everything in tenant_context(), which lets the model
+        infer a tenant from the ambient context. Redemption is a *public*
+        endpoint and sets no such context — the holder-release a few lines
+        further down says so in its own comment and passes tenant_id
+        explicitly. This call did not, so it raised KeyError('tenant') on
+        every eviction in production while passing here.
+
+        The except around it is deliberate and correct: a customer who has
+        paid must not be refused over a missing audit row. That is what made
+        it silent. No eviction was recorded for any operator, on the one
+        action a subscriber is most likely to ring up about.
+
+        The second tenant below is what makes this test bite. `default_tenant`
+        falls back to the only operator when exactly one exists, so on a
+        single-operator test database the missing argument is guessed
+        correctly and nothing fails. Every real install this runs on has more
+        than one, and there it refuses rather than guess — which is the whole
+        point of that fallback, and the reason this went unnoticed.
+        """
+        from billing.views import _evict_idle_device
+
+        Tenant.objects.create(name="Second Operator", slug="second-operator")
+
+        with tenant_context(self.tenant):
+            devices = list(
+                CustomerDevice.objects.filter(customer=self.customer))
+
+        # Deliberately outside tenant_context, as the captive portal calls it.
+        with patch("billing.router_service.active_hotspot_macs",
+                   return_value=set()), \
+             patch("billing.router_service.safe_connect_router",
+                   return_value=None):
+            evicted = _evict_idle_device(self.customer, devices)
+
+        self.assertIsNotNone(evicted, "nothing was evicted")
+
+        entry = (AccessAuditLog.objects.all_tenants()
+                 .filter(customer=self.customer, action="deactivate")
+                 .order_by("-id").first())
+        self.assertIsNotNone(
+            entry, "the eviction was not recorded on the public path")
+        self.assertEqual(entry.tenant_id, self.tenant.id)
+        self.assertIn(LAPTOP, entry.reason)
+
     def test_a_customer_with_no_router_is_asked_about_on_the_operators(self):
         """
         This used to refuse, on the reasoning that a subscriber with no router

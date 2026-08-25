@@ -1283,6 +1283,23 @@ def _evict_idle_device(customer, devices, *, reclaiming=False, deliberate=False)
 
     try:
         AccessAuditLog.objects.create(
+            # Explicit, for the same reason the holder-release below says so:
+            # redemption is a public endpoint, so nothing has set a tenant
+            # context for the model to infer one from.
+            #
+            # Without it `default_tenant` refused — "No tenant in context and
+            # N tenants exist, so the owner of this row is ambiguous" — and
+            # the except below swallowed that, exactly as intended, so no
+            # customer was ever refused over it. The cost was silent and
+            # total: on any install with more than one operator, no eviction
+            # was ever recorded. An operator asked why a subscriber's phone
+            # stopped working had the one record that answers it missing, on
+            # the single action most likely to prompt the question.
+            #
+            # It survived because `default_tenant` falls back to the only
+            # operator when exactly one exists, so it works on a
+            # single-operator database and fails on every real one.
+            tenant_id=customer.tenant_id,
             customer=customer,
             action="deactivate",
             reason=f"Device {freed} released: {why}",
