@@ -16,7 +16,7 @@ def connect_router(router):
         password=router.password,
         port=router.api_port,
     )
-def create_pppoe_secret(api, router, customer, package):
+def create_pppoe_secret(api, router, customer, package, expiry_date=None):
     """
     Put this subscriber's PPPoE account on the router.
 
@@ -38,28 +38,49 @@ def create_pppoe_secret(api, router, customer, package):
     profile = ensure_pppoe_profile(router, package)
     secrets = api.path("ppp", "secret")
 
-    for s in secrets:
+    for s in list(secrets):
         if s.get("name") == customer.pppoe_username:
-            # Already there, but not necessarily still correct. The password
-            # can be regenerated and the package can change; returning early
-            # left the router authenticating against a stale secret while the
-            # dashboard showed the new one, which reads to everybody as the
-            # customer typing their password wrong.
-            secrets.update(**{
-                ".id": s[".id"],
-                "password": customer.pppoe_password,
-                "profile": profile,
-                "service": "pppoe",
-            })
-            return True
+            # Removed and rebuilt, not updated in place — the same thing
+            # enable_hotspot does to a hotspot user, for the same reason.
+            #
+            # `limit-uptime` is compared against the secret's *cumulative*
+            # uptime, which nothing resets. Writing a fresh limit onto an old
+            # secret would have a renewing customer measured against time they
+            # used last month, so a monthly subscriber would be cut off the
+            # moment they reconnected. Removing the row resets the counter.
+            #
+            # It also picks up a regenerated password and a changed package
+            # for free, which is what this used to get wrong by returning
+            # early on a name match.
+            #
+            # Positional, like every other removal here: librouteros' remove
+            # takes ids as *args, and a `.id` keyword raises TypeError — a
+            # Python error, not a router one, so nothing guarding against an
+            # unreachable router would catch it.
+            secrets.remove(s[".id"])
 
-    secrets.add(
-        name=customer.pppoe_username,
-        password=customer.pppoe_password,
-        service="pppoe",
-        profile=profile,
-        comment="AUTO | WIFI BILLING SYSTEM",
-    )
+    fields = {
+        "name": customer.pppoe_username,
+        "password": customer.pppoe_password,
+        "service": "pppoe",
+        "profile": profile,
+        "comment": "AUTO | WIFI BILLING SYSTEM",
+    }
+
+    if expiry_date is not None:
+        # The router's own copy of when this runs out.
+        #
+        # Until now nothing on the PPPoE side enforced expiry except our sweep
+        # — and if that sweep could not reach the router, or did not run, a
+        # subscriber stayed connected indefinitely. A hotspot user has carried
+        # this since the day the same problem was found there.
+        #
+        # Hyphenated. As `limit_uptime` it goes on the wire as a word RouterOS
+        # does not know, and the whole guarantee silently does not exist.
+        remaining = max(int((expiry_date - timezone.now()).total_seconds()), 60)
+        fields["limit-uptime"] = f"{remaining}s"
+
+    secrets.add(**fields)
     return True
 def enable_pppoe(api, router, username, package):
     """
@@ -294,7 +315,8 @@ def enable_customer_access(customer):
         # nothing to work with — no generated credentials, or no secret to
         # enable — and this returned True regardless, so the retry that exists
         # to catch a failed provision never fired for a PPPoE subscriber.
-        created = create_pppoe_secret(api, router, customer, package)
+        created = create_pppoe_secret(
+            api, router, customer, package, subscription.expiry_date)
         enabled = enable_pppoe(api, router, customer.pppoe_username, package)
         if not (created and enabled):
             logger.warning(
@@ -803,7 +825,8 @@ def provision_customer_on_router(api, router, customer, subscription):
     package = subscription.package
 
     if customer.connection_type == "pppoe":
-        create_pppoe_secret(api, router, customer, package)
+        create_pppoe_secret(
+            api, router, customer, package, subscription.expiry_date)
         enable_pppoe(api, router, customer.pppoe_username, package)
 
     elif customer.connection_type == "hotspot":
@@ -893,7 +916,8 @@ def migrate_customer_router(customer, reason="manual_migration"):
     package = subscription.package
 
     if customer.connection_type == "pppoe":
-        create_pppoe_secret(new_api, new_router, customer, package)
+        create_pppoe_secret(
+            new_api, new_router, customer, package, subscription.expiry_date)
         enable_pppoe(new_api, new_router, customer.pppoe_username, package)
 
     elif customer.connection_type == "hotspot":

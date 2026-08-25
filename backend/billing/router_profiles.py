@@ -46,9 +46,40 @@ def _rate_limit(package):
 # PPPoE PROFILES
 # ======================================================
 
+def _pppoe_addresses(profiles):
+    """
+    Where PPPoE clients get their addresses from, as the operator set it up.
+
+    RouterOS takes address assignment from the profile named on the *secret*,
+    not from the PPPoE server's default-profile. A generated profile carrying
+    only a rate limit therefore authenticates the client and gives it no IP:
+    the session comes up, the credentials are correct, and there is no
+    internet. That is a support call nobody can diagnose from the dashboard,
+    because every record says the customer is provisioned.
+
+    Copied from `default` rather than hardcoded. The pool and the router's own
+    tunnel-side address differ per operator, and `default` is where the
+    documented setup puts them — so an operator configures this once per
+    router and every package profile follows.
+    """
+    for p in profiles:
+        if p.get("name") == "default":
+            return {
+                key: p[key]
+                for key in ("local-address", "remote-address")
+                if p.get(key)
+            }
+    return {}
+
+
 def ensure_pppoe_profile(router, package):
     """
-    Create or reuse a PPPoE profile for a package
+    Create or reuse a PPPoE profile for a package.
+
+    Repairs an existing one rather than trusting it. These are rebuilt from
+    the package every time a subscriber is provisioned, and a profile made
+    before the addresses were configured — or left behind by a package whose
+    speed has since changed — is indistinguishable by name from a correct one.
     """
 
     api = connect_router(router)
@@ -57,18 +88,28 @@ def ensure_pppoe_profile(router, package):
     # ✅ Better readable profile name
     profile_name = f"PPPOE_PKG_{package.id}"
 
-    for p in profiles:
-        if p.get("name") == profile_name:
-            return profile_name
-
-    profiles.add(**{
-        "name": profile_name,
+    wanted = {
         "rate-limit": _rate_limit(package),
         # One session per account. Without it a household shares one PPPoE
         # login across every device and every neighbour they lend it to.
+        #
+        # This is not the package's device limit, and must not be wired to it.
+        # A PPPoE subscriber's devices sit behind their own router, sharing
+        # this one session and the rate limit on it — which is exactly how the
+        # speed a customer buys ends up shared across their household.
         "only-one": "yes",
         "comment": f"Auto: {package.name}",
-    })
+    }
+    wanted.update(_pppoe_addresses(profiles))
+
+    for p in profiles:
+        if p.get("name") == profile_name:
+            stale = {k: v for k, v in wanted.items() if p.get(k) != v}
+            if stale:
+                profiles.update(**{".id": p[".id"], **stale})
+            return profile_name
+
+    profiles.add(name=profile_name, **wanted)
 
     return profile_name
 
