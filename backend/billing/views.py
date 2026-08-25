@@ -1833,6 +1833,18 @@ class HotspotVoucherValidateView(APIView):
             # use that was then rolled back.
             mark_voucher_used(subscription, mac_address)
 
+        # Where this code was presented, which is where the access has to be
+        # built. A subscriber who bought at one of an operator's sites and
+        # walked into another had their still-valid code accepted here and was
+        # then provisioned back onto the router they had left — so the code
+        # worked, the record said active, and no hotspot account existed on the
+        # hardware in front of them.
+        #
+        # Done before provisioning rather than after, so the grant below builds
+        # the account in the right place the first time instead of leaving one
+        # behind on the old router to be cleaned up later.
+        _home_customer_to(customer, _portal_router(request, tenant))
+
         enable_customer_access(customer)
 
         return Response(
@@ -4397,6 +4409,69 @@ def _public_tenant(request):
     return None
 
 
+def _portal_router(request, tenant):
+    """
+    Which of this operator's routers the portal asking is standing on.
+
+    Returns None when the portal did not say, which is every portal deployed
+    before config.js carried a router token. That case must keep behaving
+    exactly as it did — selection by load and priority — or upgrading the
+    platform would strand every existing site until someone re-uploaded files
+    to it by hand.
+
+    Scoped to the operator resolved from `t`. A router token is unguessable,
+    but checking the tenant too means a leaked one cannot be used to point a
+    subscriber at another operator's hardware.
+
+    Inactive routers are excluded. An operator who has taken a box out of
+    service should not have subscribers provisioned onto it by a portal still
+    running on it.
+    """
+    if tenant is None:
+        return None
+
+    token = request.GET.get("r")
+    if not token:
+        data = getattr(request, "data", None)
+        if isinstance(data, dict):
+            token = data.get("r")
+    if not token:
+        return None
+
+    from billing.models import RouterDevice
+
+    return (
+        RouterDevice.objects.all_tenants()
+        .filter(tenant_id=tenant.id, public_token=token, is_active=True)
+        .first()
+    )
+
+
+def _home_customer_to(customer, router):
+    """
+    Put a subscriber on the router they are demonstrably standing at.
+
+    Not a failover decision, which is the one this must not be confused with:
+    _tenant_routers warns that moving a subscriber to a router with no physical
+    path to them takes them offline while reporting success. Here the evidence
+    is the opposite and is the strongest available — the request arrived
+    through this router's own portal, so the subscriber is on its network.
+
+    Returns True when something changed, so the caller can tell a re-home from
+    a no-op without comparing ids itself.
+    """
+    if router is None or customer.router_id == router.id:
+        return False
+
+    customer.router = router
+    customer.save(update_fields=["router"])
+    logger.info(
+        "[hotspot] customer %s is at %s — provisioning there",
+        customer.pk, router.name,
+    )
+    return True
+
+
 def _normalise_msisdn(phone):
     """
     Kenyan mobile number in the 2547XXXXXXXX form Daraja expects.
@@ -4540,6 +4615,18 @@ class HotspotPurchaseView(APIView):
                     phone=phone,
                     connection_type="hotspot",
                 )
+
+            # The router this purchase is being made on, recorded now.
+            #
+            # Payment.save() picks one only when the customer has none, and it
+            # picks by PPPoE load then priority — which on a hotspot estate is
+            # a tie at zero and an arbitrary winner. Setting it here means the
+            # payment provisions the subscriber where they are standing rather
+            # than wherever that tie happened to land.
+            #
+            # Applied to a returning subscriber too: buying again at a
+            # different site is the same evidence as redeeming there.
+            _home_customer_to(customer, _portal_router(request, tenant))
 
             subscription = Subscription.objects.create(
                 tenant=tenant, customer=customer, package=package,

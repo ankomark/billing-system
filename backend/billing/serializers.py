@@ -716,13 +716,19 @@ class RouterSerializer(serializers.ModelSerializer):
             "api_port", "priority", "is_active",
             "is_online", "last_seen", "last_error",
             "max_pppoe_sessions", "station", "station_name",
-            "identity", "serial_number",
+            "identity", "serial_number", "public_token",
         ]
         read_only_fields = [
             # Written by the health sweep and the credential test, from what the
             # router itself said. An operator cannot type their way to a router
             # being online.
             "is_online", "last_seen", "last_error", "identity", "serial_number",
+            # Generated on save, and what the operator copies into this
+            # router's config.js. Read-only because a token an operator can
+            # edit is a token that can be made to collide with another
+            # router's, and the portal would then provision subscribers at
+            # the wrong site.
+            "public_token",
         ]
 
     def get_has_password(self, obj):

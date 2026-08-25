@@ -623,6 +623,25 @@ class RouterDevice(TenantScopedModel):
     identity = models.CharField(max_length=100, blank=True, default="")
     serial_number = models.CharField(max_length=60, blank=True, default="")
 
+    # Identifies this box to its own captive portal.
+    #
+    # A portal request carries the operator's token and nothing else, so the
+    # server could not tell which of an operator's routers a walk-up was
+    # standing next to. It guessed — least PPPoE sessions, then priority —
+    # which on a hotspot-only estate means every router ties at zero and the
+    # winner is arbitrary. A subscriber at one site was provisioned onto the
+    # router at another, and paid for a connection that could not reach them.
+    #
+    # config.js is uploaded per router and already carries the operator token,
+    # so this rides along with it. Unguessable for the same reason the tenant's
+    # is: a portal must not be able to claim to be somewhere it is not by
+    # editing a file.
+    #
+    # Nullable because rows predate it, and because a portal that does not send
+    # one must keep working exactly as it did — see _portal_router().
+    public_token = models.CharField(
+        max_length=32, unique=True, null=True, blank=True, db_index=True)
+
     class Meta:
         constraints = [
             # One row per address per operator. Adding the same router twice is
@@ -638,6 +657,19 @@ class RouterDevice(TenantScopedModel):
 
     def __str__(self):
         return self.name
+
+    def save(self, *args, **kwargs):
+        if not self.public_token:
+            self.public_token = secrets.token_urlsafe(24)[:32]
+            # record_health() and record_identity() both save with
+            # update_fields, and a named save drops everything not named. The
+            # token would be generated on every probe and written on none of
+            # them, so a router polled every two minutes would never acquire
+            # one.
+            named = kwargs.get("update_fields")
+            if named is not None:
+                kwargs["update_fields"] = list(named) + ["public_token"]
+        return super().save(*args, **kwargs)
 
     def record_identity(self, *, identity="", serial=""):
         """

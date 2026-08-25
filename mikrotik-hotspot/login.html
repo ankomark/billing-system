@@ -468,7 +468,7 @@
     msg.className = 'msg';
     waitShow(t('wait.checking'));
 
-    api('POST', '/hotspot/validate/', { code: code, mac_address: MAC, t: TENANT_TOKEN },
+    api('POST', '/hotspot/validate/', { code: code, mac_address: MAC, t: TENANT_TOKEN, r: ROUTER_TOKEN },
       function (data) {
         // Keep the proof. The connected page needs it to be shown the code
         // again, and only a device that has redeemed one gets it.
@@ -610,7 +610,7 @@
     setStatus(status, t('pay.sending'), 'waiting');
     waitShow(t('pay.sending'));
 
-    api('POST', '/hotspot/purchase/', { t: TENANT_TOKEN, package_id: pkg.id, phone: phone },
+    api('POST', '/hotspot/purchase/', { t: TENANT_TOKEN, package_id: pkg.id, phone: phone, r: ROUTER_TOKEN },
       function (data) {
         // Out of the way now. What follows is the customer finding their
         // phone and typing a PIN, which takes as long as it takes — and the
@@ -681,7 +681,7 @@
               // of holding the only place on the package for ever.
               api('POST', '/hotspot/validate/',
                 { code: data.voucher_code, mac_address: MAC, t: TENANT_TOKEN,
-                  auto: true },
+                  r: ROUTER_TOKEN, auto: true },
                 function (ok) {
                   if (ok && ok.device_token) { saveDeviceToken(MAC, ok.device_token); }
                   waitDone(t('wait.connected'), logIn);

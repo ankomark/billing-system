@@ -23,6 +23,27 @@ var API_BASE = 'https://your-backend.com/api';
    your branding is edited here. */
 var TENANT_TOKEN = 'YOUR-OPERATOR-TOKEN';
 
+/* This router's token, from Admin → Routers → the row for this box.
+
+   THIS ONE IS DIFFERENT ON EVERY ROUTER. The operator token above is the
+   same on all of them; this is not, and copying a whole config.js from one
+   router to another without changing it is the mistake to watch for.
+
+   It answers "which of this operator's routers is the subscriber standing
+   at". Without it the backend has only the operator token to go on and must
+   guess — and on a hotspot estate every router ties on load, so the guess is
+   arbitrary. A subscriber at one site gets their connection built at another
+   and pays for internet that cannot reach them.
+
+   It is also what lets a subscriber move between an operator's sites: their
+   code presented here re-homes them here, so a valid subscription keeps
+   working across the whole estate.
+
+   Safe to leave as-is on a single-router operator, and safe to leave as-is
+   while you roll this out — a portal that does not send it behaves exactly
+   as it did before. */
+var ROUTER_TOKEN = 'YOUR-ROUTER-TOKEN';
+
 /* ═══════════════════════════════════════════════════════════════════════ */
 
 /**
