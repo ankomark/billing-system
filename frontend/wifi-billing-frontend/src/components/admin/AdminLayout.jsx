@@ -36,6 +36,12 @@ const STANDING = {
 /**
  * An ambient wash for the page behind the cards.
  *
+ * NOT CURRENTLY IN USE. The dashboard was the only page that took it, and the
+ * operator console is now one flat #020617 throughout — the same ground every
+ * other page already stood on. Kept, with its measurements, because the option
+ * is a word on one JSX tag and the numbers below are the expensive part. Pass
+ * `ambient` to bring it back.
+ *
  * Four glows, in the hues asked for: azure, teal, royal blue, and white as a
  * specular bloom rather than a field. White is the one that cannot be taken
  * literally — a white BAND here would erase the page heading and the section

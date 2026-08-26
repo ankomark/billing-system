@@ -70,12 +70,13 @@ export default function Dashboard() {
   );
 
   return (
-    <AdminLayout ambient>
+    <AdminLayout>
       <div className="space-y-8 max-w-6xl">
         <PageHeader title="Dashboard" subtitle="How your business is doing today">
-          {/* slate-400, not slate-500: this line sits on the ambient wash
-              rather than on a card, and against the lit corner slate-500
-              measures 2.28. It was already thin at 3.86 on the flat page. */}
+          {/* slate-400, not slate-500: this line sits on the page rather than
+              on a card, and slate-500 measures 3.86 there — under 4.5 before
+              anything is laid over it. It was thinner still while this page
+              carried the ambient wash, at 2.28 against the lit corner. */}
           {dataUpdatedAt > 0 && (
             <span className="hidden sm:block text-xs text-slate-400">
               Updated {new Date(dataUpdatedAt).toLocaleTimeString("en-KE")}
