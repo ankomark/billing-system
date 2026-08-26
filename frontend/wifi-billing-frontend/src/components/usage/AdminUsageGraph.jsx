@@ -14,7 +14,13 @@ import { fetchAdminUsageDaily } from "../../services/dashboard";
  * Gigabytes throughout. The previous version multiplied into megabytes for the
  * plot while labelling the tiles beside it in gigabytes, so the axis and the
  * figures under it disagreed by a factor of a thousand.
+ *
+ * On the `jade` surface, which carries its own grid, ink and marks — see
+ * SURFACES in the ui tokens for why none of those could be inherited from the
+ * default slate card, and what each one was measured at.
  */
+
+const SURFACE = "jade";
 
 const DAYS = 7;
 
@@ -53,6 +59,7 @@ export default function AdminUsageGraph() {
     <div className="space-y-4">
       <Chart
         kind="area"
+        surface={SURFACE}
         data={series}
         xKey="day"
         series={[
@@ -70,12 +77,13 @@ export default function AdminUsageGraph() {
           readable without leaning on colour alone. */}
       {series.length > 0 && (
         <div className="grid grid-cols-3 gap-3">
-          <StatTile label="Downloaded" value={gb(totalDown)} />
-          <StatTile label="Uploaded" value={gb(totalUp)} />
+          <StatTile label="Downloaded" value={gb(totalDown)} surface={SURFACE} />
+          <StatTile label="Uploaded" value={gb(totalUp)} surface={SURFACE} />
           <StatTile
             label="Total"
             value={gb(totalDown + totalUp)}
             sub={`over ${num(series.length)} days`}
+            surface={SURFACE}
           />
         </div>
       )}

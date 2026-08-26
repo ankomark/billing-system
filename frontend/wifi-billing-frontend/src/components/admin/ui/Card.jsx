@@ -1,5 +1,5 @@
 import { AlertTriangle, CheckCircle2, Info, AlertOctagon } from "lucide-react";
-import { CARD_SHEEN, CHIP, statusStyle } from "./tokens";
+import { CARD_SHEEN, CHIP, SURFACES, statusStyle } from "./tokens";
 
 /**
  * Surfaces for the operator console.
@@ -13,8 +13,42 @@ import { CARD_SHEEN, CHIP, statusStyle } from "./tokens";
  * being light.
  */
 
-export function Card({ children, className = "", padded = true, sheen }) {
+export function Card({ children, className = "", padded = true, sheen, surface }) {
   const lit = CARD_SHEEN[sheen];
+  const theme = SURFACES[surface] || null;
+
+  if (theme) {
+    const g = theme.glass;
+    return (
+      <div
+        className={`relative overflow-hidden rounded-xl border shadow-lg shadow-black/20 ${
+          padded ? "p-5" : ""
+        } ${className}`}
+        style={{ backgroundColor: theme.surface, borderColor: g?.ring }}
+      >
+        {/* The light the glass refracts, built the way StatTile builds it: a
+            real blur on a real source, because a flat page gives
+            `backdrop-filter` nothing behind it to work on.
+
+            Cornered rather than centred, and deliberately so — the plot fills
+            this card, and the orb's centre is the one place where a mark comes
+            closest to its own background. Off in the corner it lifts the header
+            and the card's edge, which is where a sheen belongs, and leaves the
+            middle of the plot on the flat ground the marks were measured
+            against. Its alpha is bounded by the marks regardless — see the
+            note on SURFACES.jade.glass. */}
+        {g && (
+          <span
+            className="pointer-events-none absolute -right-16 -top-24 h-64 w-64 rounded-full blur-3xl"
+            style={{ backgroundColor: g.tint, opacity: g.alpha }}
+            aria-hidden="true"
+          />
+        )}
+        <div className="relative">{children}</div>
+      </div>
+    );
+  }
+
   return (
     <div
       className={`rounded-xl border border-white/10 bg-slate-900/80 shadow-lg shadow-black/20 ${
@@ -34,8 +68,9 @@ export function Card({ children, className = "", padded = true, sheen }) {
  * which number. Optional throughout — a header without one is unchanged, so
  * the pages that do not pass them look exactly as they did.
  */
-export function CardHeader({ title, subtitle, action, chip, icon: Icon }) {
+export function CardHeader({ title, subtitle, action, chip, icon: Icon, surface }) {
   const chipColor = CHIP[chip] || null;
+  const onSurface = SURFACES[surface] || null;
 
   return (
     <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
@@ -51,7 +86,13 @@ export function CardHeader({ title, subtitle, action, chip, icon: Icon }) {
         )}
         <div className="min-w-0">
           <h2 className="text-sm font-semibold text-white">{title}</h2>
-          {subtitle && <p className="text-xs text-slate-400 mt-0.5">{subtitle}</p>}
+          {/* Raised on a named surface: slate-400 measures 4.48:1 on jade,
+              which is under 4.5 before anything is laid over it. */}
+          {subtitle && (
+            <p className="text-xs text-slate-400 mt-0.5" style={onSurface ? { color: onSurface.ink } : undefined}>
+              {subtitle}
+            </p>
+          )}
         </div>
       </div>
       {action}

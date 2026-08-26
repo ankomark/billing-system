@@ -163,12 +163,17 @@ export default function Dashboard() {
             customer list and searching again there. */}
         <CustomerQuickSearch />
 
-        <Card>
+        {/* The one panel on its own surface. Deep jade with a cornered glass
+            orb — the graph an operator reads every day, given the weight to
+            match. Its grid, ink and marks all come from that surface rather
+            than the console default; see SURFACES in the ui tokens. */}
+        <Card surface="jade">
           <CardHeader
             title="Network usage"
             subtitle="Across every router, last 7 days"
-            chip="blue"
+            chip="aqua"
             icon={Activity}
+            surface="jade"
           />
           <AdminUsageGraph />
         </Card>

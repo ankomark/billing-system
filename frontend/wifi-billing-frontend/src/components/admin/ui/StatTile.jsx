@@ -1,5 +1,5 @@
 import { AlertTriangle, CheckCircle2, AlertOctagon, Info } from "lucide-react";
-import { CHIP, GLASS } from "./tokens";
+import { CHIP, GLASS, SURFACES } from "./tokens";
 
 /**
  * One number and its label.
@@ -47,6 +47,10 @@ const TONES = {
 
 export default function StatTile({
   label, value, sub, tone = "neutral", chip, icon: ChipIcon, glass, onClick, title,
+  // A tile sitting on one of the named SURFACES. It takes a white lift off that
+  // card rather than its own slate fill, which goes muddy over a coloured
+  // ground, and its ink moves up with the surface's.
+  surface,
 }) {
   const t = TONES[tone] || TONES.neutral;
   const ToneIcon = t.icon;
@@ -57,6 +61,7 @@ export default function StatTile({
   const showChip = ChipIcon && chipColor;
 
   const g = GLASS[glass] || null;
+  const onSurface = SURFACES[surface] || null;
 
   return (
     <Tag
@@ -66,9 +71,15 @@ export default function StatTile({
         // Glass owns the surface when it is on; the tone still owns the value
         // and its icon, so a lively card cannot quietly restate a status in a
         // colour that disagrees with the number printed on it.
-        g ? "bg-slate-900/70" : `bg-slate-900/80 ${t.ring} ${t.wash}`
+        onSurface ? "" : g ? "bg-slate-900/70" : `bg-slate-900/80 ${t.ring} ${t.wash}`
       } ${onClick ? "hover:bg-white/5 cursor-pointer" : ""}`}
-      style={g ? { borderColor: g.ring } : undefined}
+      style={
+        onSurface
+          ? { backgroundColor: onSurface.raise, borderColor: onSurface.glass?.ring }
+          : g
+          ? { borderColor: g.ring }
+          : undefined
+      }
     >
       {/* The light the glass refracts. A real blur on a real source — a
           backdrop-filter would have nothing behind it to work on, the page
@@ -109,7 +120,7 @@ export default function StatTile({
                 one, and pearl is the lightest of them. Measured at the orb's
                 centre, slate-400 lands on 4.57 there — passing, with nothing
                 spare — so both text steps move up one. */}
-            <p className="text-xs font-medium text-slate-300 truncate">{label}</p>
+            <p className="text-xs font-medium text-slate-300 truncate" style={onSurface ? { color: onSurface.ink } : undefined}>{label}</p>
           </div>
           {/* Proportional figures for a standalone number; tabular is for columns
               that must align down a table. */}
@@ -118,7 +129,12 @@ export default function StatTile({
               card and 2.46 against pearl — under 4.5 either way, so it was
               already failing before any of this and the glass would only have
               buried it further. */}
-          {sub && <p className="text-xs text-slate-400 mt-0.5 truncate">{sub}</p>}
+          {/* On a named surface this moves up with the rest of the ink: the
+              ground is lighter there and slate-400 measures under 4.5:1 on it
+              before anything is laid over the top. */}
+          {sub && (
+            <p className="text-xs text-slate-400 mt-0.5 truncate" style={onSurface ? { color: onSurface.ink } : undefined}>{sub}</p>
+          )}
         </div>
       </div>
     </Tag>

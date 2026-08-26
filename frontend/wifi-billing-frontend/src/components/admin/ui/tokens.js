@@ -111,6 +111,74 @@ export const GLASS = {
   ruby: { tint: "#c81e3a", alpha: 0.44, ring: "rgba(220,60,90,0.42)" },
 };
 
+/**
+ * Named chart surfaces.
+ *
+ * A card that is not the default #0f172a cannot borrow the default chrome: the
+ * grid, the tick ink and the series were each measured against that colour, and
+ * every one of them moves when the surface does. This keeps such a surface
+ * together as one object — its own grid, its own ink, its own marks — so a card
+ * either takes all of it or none of it, and the rest of the console is not
+ * touched by a change made for one panel.
+ *
+ * ── jade ────────────────────────────────────────────────────────────────────
+ * #0C4137 is a far lighter ground than the default: relative luminance 0.0413
+ * against 0.0090, four and a half times as bright. Three things follow, none of
+ * them optional, all of them measured rather than judged:
+ *
+ * 1. THE MARKS. A mark needs 3:1 against its surface. On this ground a literal
+ *    dark green does not get there — the palette's own #008300 lands at 2.32.
+ *    Nor can two greens carry two series: every pair inside the L 0.48–0.67
+ *    band tops out around ΔE 14.9 in normal vision, under the 15 floor, and
+ *    that floor is the one secondary encoding does not excuse. So download is
+ *    green and upload is the palette's existing gold. Green and gold on deep
+ *    forest is also the register this card was asked for.
+ *        #00a578 3.64:1 · #c98500 3.74:1 · pair ΔE 20.1 normal, 9.5 worst CVD.
+ *
+ * 2. THE GRID. #1e293b is LIGHTER than the default surface and DARKER than this
+ *    one, so carrying it over would flip a faint hairline into a dark scratch
+ *    across the plot. The jade grid is a step up from its ground, as a recessive
+ *    gridline is everywhere else.
+ *
+ * 3. THE INK. Axis ticks at #94a3b8 measure 4.48:1 here — under 4.5 before a
+ *    single pixel of glass is added. Both text steps move up one, exactly as
+ *    the note on GLASS predicts: "raise the sub ink and every ceiling moves
+ *    with it." That is what buys the glass any room at all.
+ */
+export const SURFACES = {
+  jade: {
+    surface: "#0C4137",
+    // A step up from the ground, not the slate grid, which would be darker
+    // than it. 1.35:1 — present when looked for, gone when not.
+    grid: "#17564a",
+    baseline: "#20705f",
+    // Raised one step. #94a3b8 is 4.48:1 here; this is 7.74:1.
+    ink: "#cbd5e1",
+    inkStrong: "#e2e8f0",
+    // Fixed order, as everywhere: slot 0 download, slot 1 upload.
+    series: ["#00a578", "#c98500"],
+    /**
+     * The orb, and the one number here that is NOT bounded by text.
+     *
+     * On a stat tile the binding constraint is the small `sub` line, because
+     * text is most of what a tile contains. On a chart card the plot covers the
+     * surface, so the binding constraint is the MARKS — and they bind much
+     * harder. With a mint tint the text ceiling is 0.220 and the mark ceiling
+     * is 0.080, so the marks decide it and the usual reasoning about ink would
+     * have picked a value nearly three times too strong.
+     *
+     * At 0.07, a little under that ceiling: the marks hold 3.08:1 and 3.17:1
+     * at the orb's brightest point, and the raised sub ink sits at 6.55:1.
+     * Above roughly 0.08 the green line starts to dissolve into its own
+     * background exactly where the glass is prettiest.
+     */
+    glass: { tint: "#5eead4", alpha: 0.07, ring: "rgba(94,234,212,0.34)" },
+    // Tiles sitting ON this card. A white lift rather than a slate fill, which
+    // would go muddy over green.
+    raise: "rgba(255,255,255,0.06)",
+  },
+};
+
 export const CHIP = {
   blue: "#3987e5",
   orange: "#d95926",
