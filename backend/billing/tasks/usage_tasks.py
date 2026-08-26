@@ -1,5 +1,8 @@
 import logging
+import os
+
 from celery import shared_task
+from django.db import transaction
 from django.db.models import Sum
 from django.utils import timezone
 
@@ -18,9 +21,20 @@ from billing.router_service import (
     tenant_sessions,
 )
 from billing.services.usage import roll_up_day, usage_since
-from billing.tenancy import tenant_context
+from billing.tenancy import all_tenants, tenant_context
 
 logger = logging.getLogger(__name__)
+
+
+# How long a dispatched per-operator collection stays worth running.
+#
+# Matches the expires on the beat entries that fan these out. A collection
+# reads counters and stores the delta since the last read, so one that has sat
+# in the queue longer than the gap between runs would attribute several
+# intervals of traffic to a single period and then leave the next run with
+# nothing to measure. Dropping it loses one interval; running it late corrupts
+# two.
+COLLECT_EXPIRES_SECONDS = 240
 
 
 @shared_task(
@@ -32,7 +46,52 @@ logger = logging.getLogger(__name__)
 )
 def collect_pppoe_usage_snapshots(self):
     """
-    Poll routers and store PPPoE usage deltas.
+    Dispatch one PPPoE collection per operator, to run in parallel.
+
+    Reading each router's session table once per operator instead of once per
+    subscriber fixed the inner loop, but left the outer one serial: every
+    operator on the platform had to be polled in turn, inside the five minutes
+    between runs. That is the same shape the per-subscriber version had, one
+    level up, and it fails the same way — the beat entry carries expires=240,
+    so a run that overruns is dropped rather than delayed and collection stops
+    without saying so.
+
+    The cost per operator is a network wait against hardware behind CGNAT, not
+    work, so operators are the axis to parallelise. Fanned out, the sweep takes
+    as long as the slowest operator rather than the sum of all of them, and one
+    operator whose routers have gone dark no longer spends everybody else's
+    budget on timeouts.
+    """
+    tenant_ids = list(
+        Customer.objects.all_tenants()
+        .filter(
+            status="active",
+            connection_type="pppoe",
+            pppoe_username__isnull=False,
+        )
+        .values_list("tenant_id", flat=True)
+        .distinct()
+    )
+
+    for tenant_id in tenant_ids:
+        collect_pppoe_usage_for_tenant.apply_async(
+            (tenant_id,), expires=COLLECT_EXPIRES_SECONDS)
+
+    logger.info("[usage] PPPoE collection dispatched for %s operator(s)",
+                len(tenant_ids))
+    return len(tenant_ids)
+
+
+@shared_task(
+    bind=True,
+    autoretry_for=(Exception,),
+    retry_backoff=60,
+    retry_kwargs={"max_retries": 3},
+    retry_jitter=True,
+)
+def collect_pppoe_usage_for_tenant(self, tenant_id):
+    """
+    Poll one operator's routers and store PPPoE usage deltas.
     Safe for reconnects & counter resets.
     """
 
@@ -43,31 +102,26 @@ def collect_pppoe_usage_snapshots(self):
         Customer.objects.all_tenants()
         .select_related("router", "tenant")
         .filter(
+            tenant_id=tenant_id,
             status="active",
             connection_type="pppoe",
             pppoe_username__isnull=False,
         )
-        .order_by("tenant_id")
     )
 
-    # One read of each router's session table per operator, rather than one
-    # connection per subscriber. See _sessions_by_user() for why: the old shape
-    # could not finish inside the five minutes between runs once an operator
-    # had a few hundred subscribers, and a task that does not finish in time is
-    # dropped, not delayed — so collection stopped without saying so.
-    sessions = {}
+    # One read of each router's session table for this operator, rather than
+    # one connection per subscriber. See _sessions_by_user() for why: the old
+    # shape could not finish inside the five minutes between runs once an
+    # operator had a few hundred subscribers, and a task that does not finish
+    # in time is dropped, not delayed — so collection stopped without saying so.
+    try:
+        sessions = tenant_sessions(tenant_id, get_pppoe_sessions)
+    except Exception as e:
+        logger.warning(f"[usage] Router error for operator {tenant_id}: {e}")
+        return 0
 
     for customer in customers:
-        if customer.tenant_id not in sessions:
-            try:
-                sessions[customer.tenant_id] = tenant_sessions(
-                    customer.tenant_id, get_pppoe_sessions)
-            except Exception as e:
-                logger.warning(
-                    f"[usage] Router error for operator {customer.tenant_id}: {e}")
-                sessions[customer.tenant_id] = {}
-
-        router, usage = sessions[customer.tenant_id].get(
+        router, usage = sessions.get(
             customer.pppoe_username, (None, None))
 
         if not usage or not usage.get("connected"):
@@ -148,6 +202,38 @@ def collect_hotspot_usage_snapshots(self):
     a hotspot byte: every hotspot data cap compared against zero, and the usage
     figure a subscriber is shown on the connected page was empty for everybody.
     Written, tested, and never switched on.
+
+    Fanned out per operator, for the reason given on its PPPoE twin. This one
+    benefits more: hotspot operators carry far more subscribers each, so a
+    serial sweep here ran out of its five minutes sooner.
+    """
+    tenant_ids = list(
+        Customer.objects.all_tenants()
+        .filter(status="active", connection_type="hotspot")
+        .exclude(hotspot_username="")
+        .values_list("tenant_id", flat=True)
+        .distinct()
+    )
+
+    for tenant_id in tenant_ids:
+        collect_hotspot_usage_for_tenant.apply_async(
+            (tenant_id,), expires=COLLECT_EXPIRES_SECONDS)
+
+    logger.info("[usage] Hotspot collection dispatched for %s operator(s)",
+                len(tenant_ids))
+    return len(tenant_ids)
+
+
+@shared_task(
+    bind=True,
+    autoretry_for=(Exception,),
+    retry_backoff=60,
+    retry_kwargs={"max_retries": 3},
+    retry_jitter=True,
+)
+def collect_hotspot_usage_for_tenant(self, tenant_id):
+    """
+    Poll one operator's routers and store hotspot usage deltas.
     """
     now = timezone.now()
     processed = 0
@@ -155,28 +241,22 @@ def collect_hotspot_usage_snapshots(self):
     customers = (
         Customer.objects.all_tenants()
         .select_related("router", "tenant")
-        .filter(status="active", connection_type="hotspot")
+        .filter(tenant_id=tenant_id, status="active", connection_type="hotspot")
         .exclude(hotspot_username="")
-        .order_by("tenant_id")
     )
 
-    # Read each router's table once per operator, as above. This one matters
-    # more: a hotspot operator has far more subscribers than a PPPoE one, and
-    # they are the whole product.
-    sessions = {}
+    # Read each router's table once for this operator, as above. This one
+    # matters more: a hotspot operator has far more subscribers than a PPPoE
+    # one, and they are the whole product.
+    try:
+        sessions = tenant_sessions(tenant_id, get_hotspot_sessions)
+    except Exception as e:
+        logger.warning(
+            f"[usage] Hotspot router error for operator {tenant_id}: {e}")
+        return 0
 
     for customer in customers:
-        if customer.tenant_id not in sessions:
-            try:
-                sessions[customer.tenant_id] = tenant_sessions(
-                    customer.tenant_id, get_hotspot_sessions)
-            except Exception as e:
-                logger.warning(
-                    f"[usage] Hotspot router error for operator "
-                    f"{customer.tenant_id}: {e}")
-                sessions[customer.tenant_id] = {}
-
-        router, usage = sessions[customer.tenant_id].get(
+        router, usage = sessions.get(
             customer.hotspot_username, (None, None))
 
         if not usage or not usage.get("connected"):
@@ -320,3 +400,136 @@ def roll_up_usage_daily(self, days_back=2):
 
     logger.info(f"[usage] Daily rollup wrote {written} rows")
     return written
+
+
+# How long raw five-minute deltas are kept after a day has been rolled up.
+#
+# Ninety days is deliberately generous, and doubles as the "watch it for a
+# while" period the rollup was written to wait for: nothing is deleted until
+# the rollups have been agreeing with the raw rows for a full quarter, and by
+# then a disagreement has had every chance to surface on the portal or in a cap.
+#
+# The floor is set by usage_since(), not by disk. It reads whole days from the
+# rollup but always reads the *part-day at the start of a window* from the raw
+# rows — a subscription bought at 14:30 cannot take that day from a daily total
+# without charging somebody for traffic from before they paid. So raw rows must
+# outlive the longest window anybody asks about:
+#
+#   enforce_usage_caps   → month_start, which is exactly midnight, so the whole
+#                          window comes from rollups. Unaffected by any value.
+#   views.py:2388        → subscription.start_date, which is not. A monthly
+#                          package sits comfortably inside 90 days; a yearly one
+#                          does not, and loses its first part-day once pruned.
+#
+# That loss is bounded at one day of one subscriber's traffic, and it
+# under-counts rather than over-counts — the subscriber gets marginally more
+# than their cap rather than being cut off early, which is the right direction
+# to fail in. Lower this to 45 once the rollups have been trusted for a while;
+# do not go below the longest package duration sold without accepting that
+# trade for its first day.
+USAGE_RAW_RETENTION_DAYS = int(os.getenv("USAGE_RAW_RETENTION_DAYS", "90"))
+
+# Rows per DELETE. At ten thousand subscribers a single day holds 2.88 million
+# raw rows, and deleting a day in one statement means one transaction holding
+# locks over all of them while autovacuum reclaims nothing behind it. Chunking
+# keeps each transaction short enough that the collectors writing to the same
+# table every five minutes are not waiting on it.
+USAGE_PRUNE_CHUNK = 10_000
+
+
+def _day_bounds(day):
+    """The aware datetimes a local calendar day spans, as roll_up_day cuts it."""
+    start = timezone.make_aware(
+        timezone.datetime.combine(day, timezone.datetime.min.time()),
+        timezone.get_current_timezone(),
+    )
+    return start, start + timezone.timedelta(days=1)
+
+
+@shared_task
+def prune_usage_records(days=None):
+    """
+    Drop raw five-minute deltas for days the rollup has already covered.
+
+    This is the half of the rollup that was never switched on. Collection
+    writes one row per active subscriber per five minutes and nothing ever
+    removed one: 2.88 million rows a day at ten thousand subscribers, a billion
+    a year, on the same disk as the database itself. A full disk on this box is
+    not a slow platform, it is a stopped one.
+
+    **Only deletes a day that has been rolled up.** A day with no UsageRecord
+    rows is skipped and logged, never deleted — if the rollup has been failing,
+    the raw rows are the only copy of that traffic, and throwing them away is
+    how a month of billing data disappears without anybody noticing. The check
+    is per day rather than per subscriber, which is coarse: it proves the
+    rollup ran that day, not that it caught every subscriber. That is the right
+    trade, because roll_up_day() recomputes a day from the raw rows rather than
+    appending to it, so a day it has run over is a day it has fully covered.
+    """
+    from billing.models import HotspotUsageRecord, PPPoEUsageRecord, UsageRecord
+
+    days = USAGE_RAW_RETENTION_DAYS if days is None else days
+    cutoff_day = timezone.localdate(timezone.now()) - timezone.timedelta(days=days)
+    cutoff_start, _ = _day_bounds(cutoff_day)
+
+    deleted_total = 0
+    skipped = 0
+
+    # Every block below pairs .all_tenants() with the context manager of the
+    # same name, inside a transaction. The manager method lifts this app's ORM
+    # filter; only the context manager clears the row-level security that
+    # Postgres applies underneath it, and only inside a transaction, because it
+    # clears the setting with set_config(..., local=true). Without both, this
+    # walks one operator's rows while reading as though it walked everybody's —
+    # and the failure mode of a *prune* that sees a subset is not lost data but
+    # a table that never shrinks and no error to say why.
+    for model, kind in ((PPPoEUsageRecord, "pppoe"), (HotspotUsageRecord, "hotspot")):
+        # Distinct days, resolved in SQL rather than by reading every row's
+        # timestamp back into Python — at this table's size that difference is
+        # the whole cost of the task.
+        with transaction.atomic(), all_tenants():
+            stale_days = list(
+                model.objects.all_tenants()
+                .filter(period_start__lt=cutoff_start)
+                .dates("period_start", "day")
+            )
+
+        for day in stale_days:
+            with transaction.atomic(), all_tenants():
+                rolled = UsageRecord.objects.all_tenants().filter(
+                    date=day, connection_type=kind).exists()
+
+            if not rolled:
+                # No rollup for this day: the raw rows are the only record of
+                # it. Leave them and say so — a run of these means the rollup
+                # is broken and wants looking at, not that the prune is stuck.
+                skipped += 1
+                logger.warning(
+                    "[usage-prune] %s %s has no rollup — keeping its raw rows",
+                    kind, day)
+                continue
+
+            start, end = _day_bounds(day)
+            while True:
+                # One short transaction per chunk rather than one long one per
+                # day. A day is millions of rows at scale, and holding them all
+                # in a single transaction blocks the collectors writing to this
+                # same table every five minutes and stops autovacuum reclaiming
+                # anything behind it.
+                with transaction.atomic(), all_tenants():
+                    ids = list(
+                        model.objects.all_tenants()
+                        .filter(period_start__gte=start, period_start__lt=end)
+                        .values_list("id", flat=True)[:USAGE_PRUNE_CHUNK]
+                    )
+                    if ids:
+                        model.objects.all_tenants().filter(id__in=ids).delete()
+                if not ids:
+                    break
+                deleted_total += len(ids)
+
+    logger.info(
+        "[usage-prune] deleted %s raw usage row(s) older than %s days%s",
+        deleted_total, days,
+        f", skipped {skipped} unrolled day(s)" if skipped else "")
+    return deleted_total

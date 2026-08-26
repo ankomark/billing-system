@@ -9918,8 +9918,13 @@ class UsageCollectionScaleTests(TwoOperatorMixin, TestCase):
         faked, so this exercises tenant_sessions() rather than standing in for
         it. The other operator owns no routers here, which is also what keeps
         the count attributable to this one.
+
+        Calls the per-operator half directly. collect_pppoe_usage_snapshots is
+        now the dispatcher that fans these out, and what it dispatches only
+        runs on a worker — see test_the_dispatcher_fans_out_one_task_per_operator
+        for that half.
         """
-        from billing.tasks.usage_tasks import collect_pppoe_usage_snapshots
+        from billing.tasks.usage_tasks import collect_pppoe_usage_for_tenant
 
         calls = []
 
@@ -9932,8 +9937,43 @@ class UsageCollectionScaleTests(TwoOperatorMixin, TestCase):
 
         with patch("billing.router_service._tenant_routers", side_effect=routers), \
              patch("billing.tasks.usage_tasks.get_pppoe_sessions", reader):
-            collect_pppoe_usage_snapshots()
+            collect_pppoe_usage_for_tenant(self.t1.id)
         return calls
+
+    def test_the_dispatcher_fans_out_one_task_per_operator(self):
+        """
+        The serial walk over operators was the wall this replaced: each one
+        costs a router dialled over a tunnel, so fifty of them in a row do not
+        fit in the five minutes between runs and Celery drops the overrun.
+        """
+        from billing.tasks.usage_tasks import collect_pppoe_usage_snapshots
+
+        with patch("billing.tasks.usage_tasks."
+                   "collect_pppoe_usage_for_tenant.apply_async") as fan:
+            collect_pppoe_usage_snapshots()
+
+        dispatched = [call.args[0][0] for call in fan.call_args_list]
+
+        # One task per operator, not per subscriber. This operator has twelve
+        # of them, which is the number that must NOT appear here — that was the
+        # whole shape of the bug one level down.
+        self.assertEqual(dispatched.count(self.t1.id), 1)
+        self.assertEqual(len(dispatched), len(set(dispatched)),
+                         "an operator was dispatched more than once")
+
+    def test_the_dispatcher_dials_no_router_itself(self):
+        """
+        It must only enumerate. A dispatcher that also polls is the serial walk
+        again with extra steps.
+        """
+        from billing.tasks.usage_tasks import collect_pppoe_usage_snapshots
+
+        with patch("billing.router_service.safe_connect_router") as connect, \
+             patch("billing.tasks.usage_tasks."
+                   "collect_pppoe_usage_for_tenant.apply_async"):
+            collect_pppoe_usage_snapshots()
+
+        self.assertFalse(connect.called)
 
     def test_one_read_per_router_not_one_per_subscriber(self):
         """The whole point. Twelve subscribers, one router, one connection."""
@@ -9977,10 +10017,10 @@ class UsageCollectionScaleTests(TwoOperatorMixin, TestCase):
             self.assertEqual(recs.last().download_bytes, 0)
 
     def test_a_subscriber_with_no_live_session_records_nothing(self):
-        from billing.tasks.usage_tasks import collect_pppoe_usage_snapshots
+        from billing.tasks.usage_tasks import collect_pppoe_usage_for_tenant
 
         with patch("billing.tasks.usage_tasks.tenant_sessions", return_value={}):
-            collect_pppoe_usage_snapshots()
+            collect_pppoe_usage_for_tenant(self.t1.id)
         with tenant_context(self.t1):
             self.assertEqual(PPPoEUsageRecord.objects.count(), 0)
 
@@ -10036,6 +10076,10 @@ class UsageDirectionTests(TwoOperatorMixin, TestCase):
         }
 
     def collect(self, task_name, reader_name, username):
+        """
+        Run one operator's collection. The task named is the per-operator half;
+        its dispatcher is covered where the fan-out is.
+        """
         from billing.tasks import usage_tasks
 
         def routers(tenant_id):
@@ -10044,10 +10088,10 @@ class UsageDirectionTests(TwoOperatorMixin, TestCase):
         with patch("billing.router_service._tenant_routers", side_effect=routers), \
              patch.object(usage_tasks, reader_name,
                           lambda router: self.sessions(username)):
-            getattr(usage_tasks, task_name)()
+            getattr(usage_tasks, task_name)(self.t1.id)
 
     def test_the_hotspot_collector_does_not_call_a_download_an_upload(self):
-        self.collect("collect_hotspot_usage_snapshots",
+        self.collect("collect_hotspot_usage_for_tenant",
                      "get_hotspot_sessions", self.hotspot.hotspot_username)
 
         with tenant_context(self.t1):
@@ -10060,7 +10104,7 @@ class UsageDirectionTests(TwoOperatorMixin, TestCase):
             "the other way round")
 
     def test_the_pppoe_collector_does_not_call_a_download_an_upload(self):
-        self.collect("collect_pppoe_usage_snapshots",
+        self.collect("collect_pppoe_usage_for_tenant",
                      "get_pppoe_sessions", self.pppoe.pppoe_username)
 
         with tenant_context(self.t1):
@@ -10278,8 +10322,15 @@ class RouterFlapTests(TwoOperatorMixin, TestCase):
 
         self.fail(2)
 
-        with patch("billing.tasks.auto_failover.migrate_single_customer_task") as move:
+        # Asserted on the dispatcher, because below the threshold the router is
+        # never declared offline and so is never even re-checked — no task is
+        # dispatched for it, which is one step earlier than nobody being moved.
+        with patch("billing.tasks.auto_failover."
+                   "recheck_offline_router_task.apply_async") as recheck, \
+             patch("billing.tasks.auto_failover.migrate_single_customer_task") as move:
             run_auto_failover_task()
+
+        recheck.assert_not_called()
         move.delay.assert_not_called()
 
     def test_failover_asks_the_router_before_moving_anyone(self):
@@ -10288,7 +10339,7 @@ class RouterFlapTests(TwoOperatorMixin, TestCase):
         check costs far less than reconfiguring two routers for a customer who
         was never cut off.
         """
-        from billing.tasks.auto_failover import run_auto_failover_task
+        from billing.tasks.auto_failover import recheck_offline_router_task
 
         with tenant_context(self.t1):
             Customer.objects.create(
@@ -10300,7 +10351,7 @@ class RouterFlapTests(TwoOperatorMixin, TestCase):
 
         with patch("billing.router_service.is_router_reachable", return_value=True), \
              patch("billing.tasks.auto_failover.migrate_single_customer_task") as move:
-            run_auto_failover_task()
+            recheck_offline_router_task(self.router.id)
 
         move.delay.assert_not_called()
         self.router.refresh_from_db()
@@ -10308,7 +10359,10 @@ class RouterFlapTests(TwoOperatorMixin, TestCase):
 
     def test_a_router_that_is_genuinely_gone_still_fails_over(self):
         """The threshold must not have quietly disabled failover."""
-        from billing.tasks.auto_failover import run_auto_failover_task
+        from billing.tasks.auto_failover import (
+            recheck_offline_router_task,
+            run_auto_failover_task,
+        )
 
         with tenant_context(self.t1):
             Customer.objects.create(
@@ -10318,9 +10372,19 @@ class RouterFlapTests(TwoOperatorMixin, TestCase):
 
         self.fail(3)
 
+        # Both halves, because failover only happens if the dispatcher picks
+        # the router up *and* the re-check confirms it. Testing one without the
+        # other would pass with the chain broken in the middle.
+        with patch("billing.tasks.auto_failover."
+                   "recheck_offline_router_task.apply_async") as dispatched:
+            run_auto_failover_task()
+        self.assertEqual(
+            [call.args[0][0] for call in dispatched.call_args_list],
+            [self.router.id])
+
         with patch("billing.router_service.is_router_reachable", return_value=False), \
              patch("billing.tasks.auto_failover.migrate_single_customer_task") as move:
-            run_auto_failover_task()
+            recheck_offline_router_task(self.router.id)
 
         self.assertEqual(move.delay.call_count, 1)
 
@@ -10397,6 +10461,17 @@ class ScheduledWorkTests(SimpleTestCase):
             # not be confirmed on every router. There is nothing periodic to
             # schedule: it exists to outlive the request that started it.
             "kick_device_task",
+            # The per-unit halves of the sweeps above them. Each one is fanned
+            # out by a task that IS on the clock — one per router, or one per
+            # operator — so scheduling these directly would run them a second
+            # time over the whole estate. The sweeps were serial loops until
+            # the estate grew enough that they stopped fitting between runs,
+            # and Celery drops a late task rather than finishing it.
+            "check_single_router_health",
+            "collect_pppoe_usage_for_tenant",
+            "collect_hotspot_usage_for_tenant",
+            "detect_tethering_for_tenant",
+            "recheck_offline_router_task",
         }
 
         # Off on purpose, with the reason written down. This is the difference
@@ -11410,13 +11485,14 @@ class TetheringTaskTests(TwoOperatorMixin, TestCase):
         Off by default means a default install must not open a single
         connection — otherwise "off" still costs every operator a sweep.
         """
-        from billing.tasks.tethering_tasks import detect_tethering
+        from billing.tasks.tethering_tasks import detect_tethering_for_tenant
 
         with patch("billing.router_service.safe_connect_router") as connect:
-            result = detect_tethering()
+            results = [detect_tethering_for_tenant(t.id)
+                       for t in (self.t1, self.t2)]
 
         self.assertFalse(connect.called)
-        self.assertEqual(result["routers"], 0)
+        self.assertEqual([r["routers"] for r in results], [0, 0])
 
     def test_one_connection_per_router_per_sweep(self):
         """
@@ -11424,7 +11500,10 @@ class TetheringTaskTests(TwoOperatorMixin, TestCase):
         stops fitting between runs, and Celery drops a late task rather than
         finishing it.
         """
-        from billing.tasks.tethering_tasks import detect_tethering
+        from billing.tasks.tethering_tasks import (
+            detect_tethering,
+            detect_tethering_for_tenant,
+        )
 
         for tenant in (self.t1, self.t2):
             with tenant_context(tenant):
@@ -11435,10 +11514,22 @@ class TetheringTaskTests(TwoOperatorMixin, TestCase):
         api = FakeMikrotik()
         with patch("billing.router_service.safe_connect_router",
                    return_value=api) as connect:
-            detect_tethering()
+            for tenant in (self.t1, self.t2):
+                detect_tethering_for_tenant(tenant.id)
 
         # One router each, two operators.
         self.assertEqual(connect.call_count, 2)
+
+        # And the dispatcher reaches both of them. The per-operator half above
+        # only proves a sweep is cheap once it is running; this is what proves
+        # every operator still gets one now that they are fanned out.
+        with patch("billing.tasks.tethering_tasks."
+                   "detect_tethering_for_tenant.apply_async") as fan:
+            detect_tethering()
+
+        self.assertEqual(
+            sorted(call.args[0][0] for call in fan.call_args_list),
+            sorted([self.t1.id, self.t2.id]))
 
     def test_pruning_keeps_open_cases(self):
         from billing.tasks.tethering_tasks import prune_tethering_cases
@@ -11786,7 +11877,7 @@ class TetheringBlockTests(TwoOperatorMixin, TestCase):
         is a subscriber with no internet, permanently, with no policy in force
         that would explain it.
         """
-        from billing.tasks.tethering_tasks import detect_tethering
+        from billing.tasks.tethering_tasks import detect_tethering_for_tenant
 
         self.set_policy("block")
         self.sweep()
@@ -11795,7 +11886,7 @@ class TetheringBlockTests(TwoOperatorMixin, TestCase):
         self.set_policy("off")
         with patch("billing.router_service.safe_connect_router",
                    return_value=self.api):
-            detect_tethering()
+            detect_tethering_for_tenant(self.t1.id)
 
         self.assertEqual(self.filters(), [],
                          "switched off with the blocks still on the router")
@@ -11806,7 +11897,7 @@ class TetheringBlockTests(TwoOperatorMixin, TestCase):
         who ran `block`, caught nobody and switched off leaves a box that will
         cut off the first person to tether, with no sweep to notice.
         """
-        from billing.tasks.tethering_tasks import detect_tethering
+        from billing.tasks.tethering_tasks import detect_tethering_for_tenant
 
         self.api.rows("ip", "firewall", "address-list").clear()
         self.set_policy("block")
@@ -11818,7 +11909,7 @@ class TetheringBlockTests(TwoOperatorMixin, TestCase):
         self.set_policy("off")
         with patch("billing.router_service.safe_connect_router",
                    return_value=self.api):
-            detect_tethering()
+            detect_tethering_for_tenant(self.t1.id)
 
         self.assertEqual(self.filters(), [])
 
@@ -11828,7 +11919,7 @@ class TetheringBlockTests(TwoOperatorMixin, TestCase):
         the one outcome there is no way back from — nothing would return to it.
         """
         from billing.services import tethering
-        from billing.tasks.tethering_tasks import detect_tethering
+        from billing.tasks.tethering_tasks import detect_tethering_for_tenant
 
         self.set_policy("block")
         self.sweep()
@@ -11836,14 +11927,14 @@ class TetheringBlockTests(TwoOperatorMixin, TestCase):
 
         with patch("billing.router_service.safe_connect_router",
                    return_value=None):
-            detect_tethering()
+            detect_tethering_for_tenant(self.t1.id)
         with tenant_context(self.t1):
             self.assertTrue(tethering.blocks_may_be_installed(self.t1.id))
 
         cache.clear()
         with patch("billing.router_service.safe_connect_router",
                    return_value=self.api):
-            detect_tethering()
+            detect_tethering_for_tenant(self.t1.id)
         self.assertEqual(self.filters(), [])
         with tenant_context(self.t1):
             self.assertFalse(tethering.blocks_may_be_installed(self.t1.id))
@@ -12119,7 +12210,7 @@ class TetheringAttributionTests(TwoOperatorMixin, TestCase):
         moment is permanent — switched off, out of the logs, and impossible to
         explain from the router alone.
         """
-        from billing.tasks.tethering_tasks import detect_tethering
+        from billing.tasks.tethering_tasks import detect_tethering_for_tenant
 
         self.api.session("10.5.50.14", "AA:BB:CC:DD:EE:01")
         self.api.suspect("10.5.50.14")
@@ -12133,7 +12224,7 @@ class TetheringAttributionTests(TwoOperatorMixin, TestCase):
 
         with patch("billing.router_service.safe_connect_router",
                    return_value=self.api):
-            detect_tethering()
+            detect_tethering_for_tenant(self.t1.id)
 
         self.assertEqual(self.api.queues(), [], "a throttle outlived the feature")
         self.assertEqual(self.case_for(self.sharer).status,
@@ -12685,3 +12776,249 @@ class RouterProbePolicyTests(SimpleTestCase):
         result = probe_credentials("127.0.0.1", "admin", "pw")
         self.assertFalse(result["authenticated"])
         self.assertTrue(result["error"])
+
+
+# =====================================================
+# 58. Throwing away what the rollup has replaced
+# =====================================================
+class UsagePruneTests(TwoOperatorMixin, TestCase):
+    """
+    The half of the rollup that was never switched on.
+
+    Collection writes a row per active subscriber per five minutes and nothing
+    removed one: 2.88 million a day at ten thousand subscribers, on the same
+    disk as the database. What makes pruning safe is not the retention window
+    but the refusal to delete a day the rollup has not covered — if the rollup
+    has been failing, the raw rows are the only copy of that traffic.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        with tenant_context(self.t1):
+            self.router = RouterDevice.objects.create(
+                tenant=self.t1, name="pr1", ip_address="10.6.0.1",
+                username="a", password="p", is_active=True)
+            self.customer = Customer.objects.create(
+                tenant=self.t1, full_name="Pruned", phone="254733111000",
+                connection_type="pppoe", pppoe_username="pruned",
+                status="active", router=self.router)
+
+    def raw_on(self, day, count=3):
+        """`count` raw deltas on a given local day."""
+        start = timezone.make_aware(
+            timezone.datetime.combine(day, timezone.datetime.min.time()),
+            timezone.get_current_timezone())
+        with tenant_context(self.t1):
+            for i in range(count):
+                PPPoEUsageRecord.objects.create(
+                    tenant=self.t1, customer=self.customer, router=self.router,
+                    period_start=start + timezone.timedelta(minutes=5 * i),
+                    period_end=start + timezone.timedelta(minutes=5 * (i + 1)),
+                    download_bytes=100, upload_bytes=50)
+
+    def rolled(self, day):
+        with tenant_context(self.t1):
+            UsageRecord.objects.create(
+                tenant=self.t1, customer=self.customer, date=day,
+                connection_type="pppoe", rx_bytes=300, tx_bytes=150)
+
+    def raw_count(self):
+        with tenant_context(self.t1):
+            return PPPoEUsageRecord.objects.count()
+
+    def test_a_rolled_up_day_past_the_window_is_deleted(self):
+        from billing.tasks.usage_tasks import prune_usage_records
+
+        old = timezone.localdate(timezone.now()) - timezone.timedelta(days=200)
+        self.raw_on(old)
+        self.rolled(old)
+        self.assertEqual(self.raw_count(), 3)
+
+        prune_usage_records()
+        self.assertEqual(self.raw_count(), 0)
+
+    def test_a_day_with_no_rollup_is_never_deleted(self):
+        """
+        The guard that matters. A rollup that has been failing means these rows
+        are the only record of that traffic, and a prune that trusts the
+        calendar instead of the rollup deletes a month of billing data with
+        nothing in the logs to say it did.
+        """
+        from billing.tasks.usage_tasks import prune_usage_records
+
+        old = timezone.localdate(timezone.now()) - timezone.timedelta(days=200)
+        self.raw_on(old)  # deliberately not rolled up
+
+        prune_usage_records()
+        self.assertEqual(
+            self.raw_count(), 3,
+            "raw rows were deleted for a day the rollup never covered")
+
+    def test_a_day_inside_the_window_is_left_alone(self):
+        """Rolled up is not the same as safe to delete — recent days are read."""
+        from billing.tasks.usage_tasks import prune_usage_records
+
+        recent = timezone.localdate(timezone.now()) - timezone.timedelta(days=2)
+        self.raw_on(recent)
+        self.rolled(recent)
+
+        prune_usage_records()
+        self.assertEqual(self.raw_count(), 3)
+
+    def test_the_window_is_honoured_as_given(self):
+        from billing.tasks.usage_tasks import prune_usage_records
+
+        day = timezone.localdate(timezone.now()) - timezone.timedelta(days=10)
+        self.raw_on(day)
+        self.rolled(day)
+
+        prune_usage_records(days=30)
+        self.assertEqual(self.raw_count(), 3, "deleted inside a 30-day window")
+
+        prune_usage_records(days=5)
+        self.assertEqual(self.raw_count(), 0, "kept outside a 5-day window")
+
+    def test_the_rolled_up_total_still_reads_after_the_raw_rows_are_gone(self):
+        """
+        The point of the whole exercise: the number a subscriber is shown, and
+        the number a cap is compared against, must survive the prune. A month
+        window starts at midnight, so it comes entirely from the rollup.
+        """
+        from billing.services.usage import usage_since
+        from billing.tasks.usage_tasks import prune_usage_records
+
+        day = timezone.localdate(timezone.now()) - timezone.timedelta(days=100)
+        self.raw_on(day)
+        self.rolled(day)
+
+        window_start = timezone.make_aware(
+            timezone.datetime.combine(
+                day - timezone.timedelta(days=1), timezone.datetime.min.time()),
+            timezone.get_current_timezone())
+
+        with tenant_context(self.t1):
+            before = usage_since(self.customer, window_start)
+        prune_usage_records()
+        with tenant_context(self.t1):
+            after = usage_since(self.customer, window_start)
+
+        self.assertEqual(before, 450)
+        self.assertEqual(after, before,
+                         "pruning changed what the subscriber is billed for")
+
+
+# =====================================================
+# 59. Sweeps that stop being one long queue
+# =====================================================
+class RouterHealthFanOutTests(TwoOperatorMixin, TestCase):
+    """
+    The health sweep probed every router on the platform in one serial loop,
+    every two minutes, with a three-second timeout for each one that did not
+    answer. Fifty operators is enough routers that the sweep stops fitting in
+    its window — and it carries expires=90, so the overrun is discarded rather
+    than delayed and is_online quietly goes stale. auto-failover moves
+    subscribers on the strength of that field.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+
+    def active_router_count(self):
+        with all_tenants():
+            return RouterDevice.objects.all_tenants().filter(
+                is_active=True).count()
+
+    def test_one_probe_is_dispatched_per_router(self):
+        from billing.tasks.router_health import check_router_health_task
+
+        with tenant_context(self.t1):
+            for i in range(4):
+                RouterDevice.objects.create(
+                    tenant=self.t1, name=f"h{i}", ip_address=f"10.8.0.{i + 1}",
+                    username="a", password="p", is_active=True)
+
+        expected = self.active_router_count()
+
+        with patch("billing.tasks.router_health."
+                   "check_single_router_health.apply_async") as fan:
+            dispatched = check_router_health_task()
+
+        self.assertEqual(fan.call_count, expected)
+        self.assertEqual(dispatched, expected)
+
+    def test_the_dispatcher_dials_nothing_itself(self):
+        """
+        A dispatcher that also probes is the serial loop again with extra
+        steps — the whole point is that no router is waited on here.
+        """
+        from billing.tasks.router_health import check_router_health_task
+
+        with patch("billing.router_service.is_router_reachable") as reach, \
+             patch("billing.tasks.router_health."
+                   "check_single_router_health.apply_async"):
+            check_router_health_task()
+
+        self.assertFalse(reach.called)
+
+    def test_an_inactive_router_is_not_probed(self):
+        from billing.tasks.router_health import check_router_health_task
+
+        with tenant_context(self.t1):
+            RouterDevice.objects.filter(tenant=self.t1).update(is_active=False)
+
+        expected = self.active_router_count()
+
+        with patch("billing.tasks.router_health."
+                   "check_single_router_health.apply_async") as fan:
+            check_router_health_task()
+
+        self.assertEqual(fan.call_count, expected)
+
+    def test_a_probe_records_health_for_its_own_router(self):
+        from billing.tasks.router_health import check_single_router_health
+
+        with tenant_context(self.t1):
+            router = RouterDevice.objects.create(
+                tenant=self.t1, name="solo", ip_address="10.8.9.1",
+                username="a", password="p", is_active=True)
+
+        # Patched at its source: router_health imports it inside the function,
+        # so there is no module-level name to replace.
+        with patch("billing.router_service.safe_connect_router",
+                   return_value=None) as connect:
+            result = check_single_router_health(router.id)
+
+        self.assertFalse(result)
+        self.assertEqual(connect.call_count, 1)
+        self.assertEqual(connect.call_args.args[0].id, router.id)
+
+    def test_a_probe_for_a_deleted_router_is_not_an_error(self):
+        """
+        Dispatch and pickup are separated by a queue now, so a router can be
+        removed in between. That is ordinary, not a failure.
+        """
+        from billing.tasks.router_health import check_single_router_health
+
+        self.assertIsNone(check_single_router_health(999_999))
+
+    def test_a_reachable_router_does_not_leak_its_connection(self):
+        """
+        The old loop never closed these. One per reachable router every two
+        minutes is a RouterOS session table full of dead entries at a hundred
+        routers — MikroTik holds them until its own idle timeout fires.
+        """
+        from billing.tasks.router_health import check_single_router_health
+
+        with tenant_context(self.t1):
+            router = RouterDevice.objects.create(
+                tenant=self.t1, name="live", ip_address="10.8.9.2",
+                username="a", password="p", is_active=True)
+
+        api = MagicMock()
+        with patch("billing.router_service.safe_connect_router",
+                   return_value=api):
+            check_single_router_health(router.id)
+
+        api.close.assert_called_once()

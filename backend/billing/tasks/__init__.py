@@ -15,7 +15,11 @@ Add any new task module to this list.
 """
 
 from .alert_tasks import notify_admin_task
-from .auto_failover import migrate_single_customer_task, run_auto_failover_task
+from .auto_failover import (
+    migrate_single_customer_task,
+    recheck_offline_router_task,
+    run_auto_failover_task,
+)
 from .mpesa_tasks import initiate_stk_push_task
 from .provisioning import ensure_customer_access_task
 from .platform_billing_tasks import (
@@ -32,7 +36,7 @@ from .notification_tasks import (
     send_whatsapp_task,
 )
 from .reminder_tasks import send_expiry_reminders
-from .router_health import check_router_health_task
+from .router_health import check_router_health_task, check_single_router_health
 from .router_tasks import (
     disable_customer_task,
     disconnect_pppoe_task,
@@ -40,11 +44,19 @@ from .router_tasks import (
     kick_device_task,
 )
 from .subscription_tasks import enforce_subscription_expiry
-from .tethering_tasks import detect_tethering, prune_tethering_cases
+from .tethering_tasks import (
+    detect_tethering,
+    detect_tethering_for_tenant,
+    prune_tethering_cases,
+)
 from .usage_tasks import (
+    collect_hotspot_usage_for_tenant,
     collect_hotspot_usage_snapshots,
+    collect_pppoe_usage_for_tenant,
     collect_pppoe_usage_snapshots,
     enforce_usage_caps,
+    prune_usage_records,
+    roll_up_usage_daily,
 )
 
 __all__ = [
@@ -54,6 +66,7 @@ __all__ = [
     "send_platform_billing_reminders",
     "notify_admin_task",
     "migrate_single_customer_task",
+    "recheck_offline_router_task",
     "run_auto_failover_task",
     "initiate_stk_push_task",
     "ensure_customer_access_task",
@@ -64,15 +77,21 @@ __all__ = [
     "send_whatsapp_task",
     "send_expiry_reminders",
     "check_router_health_task",
+    "check_single_router_health",
     "disable_customer_task",
     "disconnect_pppoe_task",
     "enable_customer_task",
     "enforce_subscription_expiry",
     "detect_tethering",
+    "detect_tethering_for_tenant",
     "prune_tethering_cases",
+    "collect_hotspot_usage_for_tenant",
     "collect_hotspot_usage_snapshots",
+    "collect_pppoe_usage_for_tenant",
     "collect_pppoe_usage_snapshots",
     "enforce_usage_caps",
+    "prune_usage_records",
+    "roll_up_usage_daily",
     "run_failover_cycle",
 ]
 

@@ -576,6 +576,23 @@ CELERY_BEAT_SCHEDULE = {
         "task": "billing.tasks.usage_tasks.roll_up_usage_daily",
         "schedule": crontab(hour=1, minute=20),
     },
+    # Throw away the raw five-minute deltas the rollup above has replaced.
+    #
+    # The other half of that rollup, and the one that decides whether this box
+    # runs out of disk: collection writes one row per active subscriber per
+    # five minutes, 2.88 million a day at ten thousand subscribers, and until
+    # now nothing ever deleted one. The database and the app share a disk here,
+    # so that table filling it is an outage, not a slowdown.
+    #
+    # Well after the rollup at 01:20 and the platform invoicing at 02:00, so
+    # nothing is deleted on a day whose totals have not been folded up and
+    # billed against yet. It refuses to delete an unrolled day anyway — see the
+    # task — but ordering it here means that guard is a backstop rather than
+    # the only thing standing between a late rollup and lost traffic.
+    "prune-usage-records": {
+        "task": "billing.tasks.usage_tasks.prune_usage_records",
+        "schedule": crontab(hour=5, minute=40),
+    },
     # Platform billing — charges operators, not subscribers.
     "generate-platform-invoices": {
         "task": "billing.tasks.platform_billing_tasks.generate_tenant_invoices",
