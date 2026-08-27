@@ -177,6 +177,68 @@ export const SURFACES = {
     // would go muddy over green.
     raise: "rgba(255,255,255,0.06)",
   },
+
+  /**
+   * ── ledger ────────────────────────────────────────────────────────────────
+   * The money surface: a navy-tinted card under a solid navy header band,
+   * carrying azure marks. Worn by the two revenue panels — daily revenue, and
+   * what sells — so they read as one set the way the usage graph reads as its
+   * own.
+   *
+   * Drawn from the "Financial Stability" palette the operator chose:
+   *     #0A3C6E navy · #FFFFFF white · #1783C1 azure · #333333 charcoal.
+   *
+   * A BAND, NOT AN ORB. Jade lifts its header with a blurred glass orb.
+   * This one states it with a filled strip, and the difference is the whole
+   * point of the direction: glass is atmosphere, a band is structure. A card
+   * whose header is a solid rule reads as a statement rather than a dashboard
+   * tile, which is what a page of money is. So there is no `glass` key here at
+   * all, and Card skips the orb for any surface that omits it.
+   *
+   * What the palette decided, measured rather than judged:
+   *
+   * 1. THE AZURE NEEDS NO LIFTING. On white this palette collapses — #1783C1
+   *    on #0A3C6E is 2.68:1 and fails the 3:1 a mark needs, so a light version
+   *    of this card could not use the operator's own two colours together. On
+   *    a dark ground they separate freely: #1783C1 measures 4.16:1 here, so
+   *    the mark is the palette hex, untouched.
+   *
+   * 2. THE GROUND IS TINTED, NOT SWAPPED. #0D1B2E is relative luminance 0.0107
+   *    against the default #0f172a's 0.0088 — near enough that this still reads
+   *    as a console card, far enough that it is navy rather than slate. The band
+   *    then sits 1.55:1 above it, which is a strip you see without being told.
+   *
+   * 3. THE INK DOES NOT MOVE. #94a3b8 measures 6.75:1 on this ground, so the
+   *    default tick ink stays. Only the grid changed, and only to re-tint:
+   *    #1e293b would have worked at 1.18:1 but is slate-toned against a navy
+   *    card. #1A3049 is the same hairline weight in the right hue.
+   *
+   * On the band itself the white title holds 11.14:1 and the subtitle #B9D4E8
+   * holds 7.24:1.
+   */
+  ledger: {
+    surface: "#0D1B2E",
+    // The header strip. Solid palette navy, full-bleed across the card top.
+    band: "#0A3C6E",
+    bandInk: "#FFFFFF",
+    bandInkSub: "#B9D4E8",
+    grid: "#1A3049",
+    baseline: "#24405C",
+    ink: "#94a3b8",
+    inkStrong: "#e2e8f0",
+    // One mark. Both panels show a single measure, and a second hue would be a
+    // second meaning that does not exist.
+    series: ["#1783C1"],
+    raise: "rgba(255,255,255,0.06)",
+    /**
+     * The azure, lit along its own length.
+     *
+     * Decoration, not encoding: every bar carries the identical gradient, so it
+     * says nothing one bar to the next — the same reason the area charts
+     * already fade their fills.
+     */
+    markSheen: "linear-gradient(90deg, #12699b 0%, #1783C1 55%, #4BA3D9 100%)",
+  },
 };
 
 export const CHIP = {

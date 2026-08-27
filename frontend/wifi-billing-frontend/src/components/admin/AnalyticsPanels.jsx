@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Clock, TrendingDown, TrendingUp, Users } from "lucide-react";
 import {
   Card, CardHeader, Chart, DataTable, StatTile,
-  KES, compactKES, num, seriesColor,
+  KES, compactKES, num, seriesColor, SURFACES,
 } from "./ui";
 import { fetchAnalytics } from "../../services/dashboard";
 import { fetchStations } from "../../services/routers";
@@ -125,36 +125,50 @@ export default function AnalyticsPanels({ compact = false, defaultDays = 30 }) {
             </>
           )}
 
-          <Card>
+          {/* The two revenue panels wear the ledger surface — see SURFACES.ledger.
+              Everything else on this page stays on the default ground, which is
+              what makes the pair read as a set rather than as decoration.
+
+              padded={false}: the header band is full-bleed, so the card cannot
+              carry the padding — each region pads itself. */}
+          <Card surface="ledger" padded={false}>
             <CardHeader
+              surface="ledger"
               title="Daily revenue"
               subtitle={`${data.range.days} days · ${num(data.totals.transactions)} transactions · ${KES(data.totals.revenue)}`}
             />
-            <Chart
-              kind="bar"
-              data={data.series}
-              xKey="day"
-              series={[{ key: "revenue", label: "Revenue" }]}
-              xTickFormatter={(v, i) => (i % tickEvery === 0 ? shortDay(v) : "")}
-              yTickFormatter={compactKES}
-              valueFormatter={(v) => KES(v)}
-              labelFormatter={shortDay}
-              empty="No payments in this period"
-            />
+            <div className="px-5 pb-5 pt-4">
+              <Chart
+                surface="ledger"
+                kind="bar"
+                data={data.series}
+                xKey="day"
+                series={[{ key: "revenue", label: "Revenue" }]}
+                xTickFormatter={(v, i) => (i % tickEvery === 0 ? shortDay(v) : "")}
+                yTickFormatter={compactKES}
+                valueFormatter={(v) => KES(v)}
+                labelFormatter={shortDay}
+                empty="No payments in this period"
+              />
+            </div>
           </Card>
 
           <div className="grid gap-4 lg:grid-cols-2">
-            <Card>
+            <Card surface="ledger" padded={false}>
               <CardHeader
+                surface="ledger"
                 title="What sells"
                 subtitle="Packages by revenue, with the volume behind each"
               />
-              <RankedBars
-                rows={data.by_package}
-                labelKey="name"
-                valueKey="revenue"
-                meta={(r) => `${num(r.purchases)} purchases · ${num(r.customers)} customers`}
-              />
+              <div className="px-5 pb-5 pt-4">
+                <RankedBars
+                  surface="ledger"
+                  rows={data.by_package}
+                  labelKey="name"
+                  valueKey="revenue"
+                  meta={(r) => `${num(r.purchases)} purchases · ${num(r.customers)} customers`}
+                />
+              </div>
             </Card>
 
             <Card>
@@ -324,10 +338,32 @@ function Pulse({ label, amount, delta, against, big }) {
  * Chosen over a pie: comparing lengths against a shared baseline is something
  * people do accurately, and comparing angles is not — and the figure is right
  * there either way.
+ *
+ * ONE HUE on a named surface, not eight.
+ *
+ * Off a surface this still walks the categorical palette by row, which is what
+ * it has always done. On a surface it does not, and the difference is not
+ * taste. These rows are sorted by the value the bar length already shows, so a
+ * hue per row spends the identity channel re-encoding the one thing the reader
+ * can already see — and worse, identity here would be attached to RANK rather
+ * than to the package: change the range from 30d to 7d, the order shifts, and
+ * a package the operator had learned as "the orange one" is now green while
+ * orange belongs to something else. A colour that moves when nothing about the
+ * thing moved is a colour that was never carrying meaning.
+ *
+ * So every bar is the surface's azure, lit along its length by the same
+ * gradient — see SURFACES.ledger.markSheen for why that is decoration and not
+ * a second encoding.
  */
-function RankedBars({ rows, labelKey, valueKey, meta }) {
+function RankedBars({ rows, labelKey, valueKey, meta, surface }) {
+  const theme = SURFACES[surface] || null;
+
   if (!rows?.length) {
-    return <p className="py-6 text-sm text-slate-500">Nothing in this period.</p>;
+    return (
+      <p className="py-6 text-sm text-slate-500" style={theme ? { color: theme.ink } : undefined}>
+        Nothing in this period.
+      </p>
+    );
   }
   const max = Math.max(...rows.map((r) => r[valueKey])) || 1;
 
@@ -336,21 +372,38 @@ function RankedBars({ rows, labelKey, valueKey, meta }) {
       {rows.slice(0, 8).map((r, i) => (
         <li key={r[labelKey] ?? i}>
           <div className="flex items-baseline justify-between gap-3">
-            <span className="text-sm text-slate-200 capitalize truncate">{r[labelKey]}</span>
+            <span
+              className="text-sm text-slate-200 capitalize truncate"
+              style={theme ? { color: theme.inkStrong } : undefined}
+            >
+              {r[labelKey]}
+            </span>
             <span className="text-sm font-semibold text-white tabular-nums whitespace-nowrap">
               {KES(r[valueKey])}
             </span>
           </div>
-          <div className="mt-1.5 h-1.5 rounded-full bg-white/5 overflow-hidden">
+          {/* A white lift for the track, not a slate fill, which goes muddy
+              over a coloured ground. */}
+          <div
+            className="mt-1.5 h-1.5 rounded-full bg-white/5 overflow-hidden"
+            style={theme ? { backgroundColor: theme.raise } : undefined}
+          >
             <div
               className="h-full rounded-full"
               style={{
                 width: `${Math.max((r[valueKey] / max) * 100, 1)}%`,
-                background: seriesColor(i),
+                background: theme ? theme.markSheen : seriesColor(i),
               }}
             />
           </div>
-          {meta && <p className="text-xs text-slate-500 mt-1">{meta(r)}</p>}
+          {meta && (
+            <p
+              className="text-xs text-slate-500 mt-1"
+              style={theme ? { color: theme.ink } : undefined}
+            >
+              {meta(r)}
+            </p>
+          )}
         </li>
       ))}
     </ul>

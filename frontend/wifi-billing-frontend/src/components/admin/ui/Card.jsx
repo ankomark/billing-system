@@ -24,7 +24,7 @@ export function Card({ children, className = "", padded = true, sheen, surface }
         className={`relative overflow-hidden rounded-xl border shadow-lg shadow-black/20 ${
           padded ? "p-5" : ""
         } ${className}`}
-        style={{ backgroundColor: theme.surface, borderColor: g?.ring }}
+        style={{ backgroundColor: theme.surface, borderColor: g?.ring ?? theme.band }}
       >
         {/* The light the glass refracts, built the way StatTile builds it: a
             real blur on a real source, because a flat page gives
@@ -36,7 +36,11 @@ export function Card({ children, className = "", padded = true, sheen, surface }
             and the card's edge, which is where a sheen belongs, and leaves the
             middle of the plot on the flat ground the marks were measured
             against. Its alpha is bounded by the marks regardless — see the
-            note on SURFACES.jade.glass. */}
+            note on SURFACES.jade.glass.
+
+            Only for a surface that declares glass. A banded surface (see
+            SURFACES.ledger) states its header with a filled strip instead, and
+            an orb behind a band is two treatments arguing. */}
         {g && (
           <span
             className="pointer-events-none absolute -right-16 -top-24 h-64 w-64 rounded-full blur-3xl"
@@ -71,6 +75,48 @@ export function Card({ children, className = "", padded = true, sheen, surface }
 export function CardHeader({ title, subtitle, action, chip, icon: Icon, surface }) {
   const chipColor = CHIP[chip] || null;
   const onSurface = SURFACES[surface] || null;
+
+  /**
+   * A banded header.
+   *
+   * Full-bleed, so the card it sits in must be `padded={false}` and pad its own
+   * body — a band inset by the card's padding is a coloured box, not a rule,
+   * and the whole point is that it runs edge to edge.
+   *
+   * White on this navy holds 11.14:1 and the subtitle 7.24:1; both were
+   * measured against the band, not against the card under it.
+   */
+  if (onSurface?.band) {
+    return (
+      <div
+        className="flex flex-wrap items-start justify-between gap-3 px-5 py-3.5"
+        style={{ backgroundColor: onSurface.band }}
+      >
+        <div className="flex items-start gap-3 min-w-0">
+          {Icon && (
+            <span
+              className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg"
+              style={{ backgroundColor: "rgba(255,255,255,0.12)" }}
+              aria-hidden="true"
+            >
+              <Icon size={16} style={{ color: onSurface.bandInk }} />
+            </span>
+          )}
+          <div className="min-w-0">
+            <h2 className="text-sm font-semibold" style={{ color: onSurface.bandInk }}>
+              {title}
+            </h2>
+            {subtitle && (
+              <p className="text-xs mt-0.5" style={{ color: onSurface.bandInkSub }}>
+                {subtitle}
+              </p>
+            )}
+          </div>
+        </div>
+        {action}
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
