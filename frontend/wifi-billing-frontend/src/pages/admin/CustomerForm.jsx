@@ -114,18 +114,18 @@ export default function CustomerForm() {
     }
   }, [existing]);
 
-  // The catalogue, for selling at the counter. Only hotspot packages: a
-  // walk-in buying an hour of WiFi is not renewing a home line.
+  // The catalogue, for selling at the counter.
   const { data: packageData } = useQuery({
-    queryKey: ["packages", "hotspot"],
+    queryKey: ["packages", "catalogue"],
     queryFn: async () => (await api.get("packages/", { params: { page_size: 100 } })).data,
     staleTime: 5 * 60 * 1000,
   });
-  // Archived packages are retired from sale, so they are not offered here
-  // either — the server refuses them, and a select that lists one is a select
-  // that produces an error.
-  const hotspotPackages = (packageData?.results ?? []).filter(
-    (p) => p.is_hotspot && !p.is_archived
+  // Matched to the connection type. A walk-in buying an hour of WiFi is not
+  // renewing a home line, and the two lists are priced for different things —
+  // the server refuses a crossed pair, so offering one here only produces an
+  // error. Archived packages are retired from sale for the same reason.
+  const sellablePackages = (packageData?.results ?? []).filter(
+    (p) => p.is_hotspot === (form.connection_type === "hotspot") && !p.is_archived
   );
 
   const [issued, setIssued] = useState(null);
@@ -133,6 +133,20 @@ export default function CustomerForm() {
   const set = (field) => (e) => {
     setForm((f) => ({ ...f, [field]: e.target.value }));
     if (errors[field]) setErrors((e) => { const n = { ...e }; delete n[field]; return n; });
+  };
+
+  // The two catalogues are separate, so a package picked before the type was
+  // changed is no longer on the list being shown — and left in state it would
+  // still be the one submitted.
+  const setConnectionType = (e) => {
+    const connection_type = e.target.value;
+    setForm((f) => ({ ...f, connection_type, package: "", paid_with: "", payment_reference: "" }));
+    setErrors((prev) => {
+      const next = { ...prev };
+      delete next.connection_type;
+      delete next.package;
+      return next;
+    });
   };
 
   const handleSubmit = async (e) => {
@@ -155,16 +169,18 @@ export default function CustomerForm() {
       if (form.pppoe_password) payload.pppoe_password = form.pppoe_password;
     } else {
       if (form.hotspot_username) payload.hotspot_username = form.hotspot_username.trim();
-      // Creating a hotspot customer used to leave them with no subscription
-      // and no voucher — active, with no access, and nothing on screen to
-      // give them. Sending a package makes the sale in the same request.
-      if (!isEdit && form.package) {
-        payload.package = Number(form.package);
-        if (form.paid_with) {
-          payload.paid_with = form.paid_with;
-          if (form.payment_reference) {
-            payload.payment_reference = form.payment_reference.trim();
-          }
+    }
+
+    // Creating a customer used to leave them with no subscription — a hotspot
+    // subscriber with no voucher, or a PPPoE line on no package, so no speed,
+    // no expiry and no invoice. Nothing in the admin adds one afterwards, so
+    // it stayed that way. Sending a package makes the sale in the same request.
+    if (!isEdit && form.package) {
+      payload.package = Number(form.package);
+      if (form.paid_with) {
+        payload.paid_with = form.paid_with;
+        if (form.payment_reference) {
+          payload.payment_reference = form.payment_reference.trim();
         }
       }
     }
@@ -331,7 +347,7 @@ export default function CustomerForm() {
               </p>
               <div className="grid sm:grid-cols-2 gap-4">
                 <Field label="Connection Type" required error={errors.connection_type}>
-                  <Select value={form.connection_type} onChange={set("connection_type")}>
+                  <Select value={form.connection_type} onChange={setConnectionType}>
                     <option value="pppoe">PPPoE</option>
                     <option value="hotspot">Hotspot</option>
                   </Select>
@@ -372,55 +388,75 @@ export default function CustomerForm() {
                 )}
 
                 {form.connection_type === "hotspot" && (
-                  <>
-                    <Field label="Device MAC" error={errors.hotspot_username}>
-                      <Input
-                        value={form.hotspot_username}
-                        onChange={set("hotspot_username")}
-                        placeholder="Leave blank — bound on first use"
-                      />
-                    </Field>
-
-                    {!isEdit && (
-                      <>
-                        <Field label="Package" error={errors.package}>
-                          <Select value={form.package} onChange={set("package")}>
-                            <option value="">None — create the customer only</option>
-                            {hotspotPackages.map((p) => (
-                              <option key={p.id} value={p.id}>
-                                {p.name} · KES {Number(p.price).toLocaleString()}
-                              </option>
-                            ))}
-                          </Select>
-                        </Field>
-
-                        {form.package && (
-                          <>
-                            <Field label="Paid with" error={errors.paid_with}>
-                              <Select value={form.paid_with} onChange={set("paid_with")}>
-                                <option value="">Not paid yet — invoice only</option>
-                                <option value="cash">Cash</option>
-                                <option value="mpesa">M-Pesa</option>
-                                <option value="bank">Bank</option>
-                              </Select>
-                            </Field>
-                            {form.paid_with === "mpesa" && (
-                              <Field label="M-Pesa receipt" error={errors.payment_reference}>
-                                <Input
-                                  value={form.payment_reference}
-                                  onChange={set("payment_reference")}
-                                  placeholder="TGX11AA001"
-                                />
-                              </Field>
-                            )}
-                          </>
-                        )}
-                      </>
-                    )}
-                  </>
+                  <Field label="Device MAC" error={errors.hotspot_username}>
+                    <Input
+                      value={form.hotspot_username}
+                      onChange={set("hotspot_username")}
+                      placeholder="Leave blank — bound on first use"
+                    />
+                  </Field>
                 )}
               </div>
             </div>
+
+            {/* Package — the sale itself, for either kind of line */}
+            {!isEdit && (
+              <div className="border-t border-white/5 pt-5">
+                <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-[0.14em] mb-4">
+                  Package
+                </p>
+                <div className="grid sm:grid-cols-2 gap-4">
+                  <Field label="Package" error={errors.package}>
+                    <Select value={form.package} onChange={set("package")}>
+                      <option value="">None — create the customer only</option>
+                      {sellablePackages.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name} · KES {Number(p.price).toLocaleString()} ·{" "}
+                          {p.download_speed}/{p.upload_speed} Mbps ·{" "}
+                          {p.duration_value} {p.duration_unit}
+                        </option>
+                      ))}
+                    </Select>
+                  </Field>
+
+                  {form.package && (
+                    <>
+                      <Field label="Paid with" error={errors.paid_with}>
+                        <Select value={form.paid_with} onChange={set("paid_with")}>
+                          <option value="">Not paid yet — invoice only</option>
+                          <option value="cash">Cash</option>
+                          <option value="mpesa">M-Pesa</option>
+                          <option value="bank">Bank</option>
+                        </Select>
+                      </Field>
+                      {form.paid_with === "mpesa" && (
+                        <Field label="M-Pesa receipt" error={errors.payment_reference}>
+                          <Input
+                            value={form.payment_reference}
+                            onChange={set("payment_reference")}
+                            placeholder="TGX11AA001"
+                          />
+                        </Field>
+                      )}
+                    </>
+                  )}
+                </div>
+
+                {!sellablePackages.length ? (
+                  <p className="mt-3 text-xs text-amber-300">
+                    No {form.connection_type === "hotspot" ? "hotspot" : "PPPoE"} packages
+                    are on sale. Create one under Packages first — until then this
+                    customer is created with no speed, no expiry and no invoice.
+                  </p>
+                ) : !form.package ? (
+                  <p className="mt-3 text-xs text-slate-500">
+                    Without a package there is no subscription, so nothing sets the
+                    line's speed or expiry and no invoice is raised. Nothing in the
+                    admin adds one later.
+                  </p>
+                ) : null}
+              </div>
+            )}
 
             {/* Advanced */}
             <div className="border-t border-white/5 pt-5">

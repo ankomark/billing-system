@@ -291,6 +291,30 @@ class CustomerViewSet(viewsets.ModelViewSet):
             return CustomerDetailSerializer
         return CustomerSerializer
 
+    @staticmethod
+    def _package_for_sale(package_id, connection_type):
+        """
+        The package this line may be put on, or None if there is not one.
+
+        Scoped to the operator's own catalogue by the tenant manager, and
+        matched to the connection type: the hotspot list prices an hour of
+        walk-in access and the PPPoE list prices a month of a home line, so
+        crossing the two sells the wrong thing at the wrong price. Archived
+        packages are retired from sale and are not offered to anyone new.
+        """
+        try:
+            pk = int(package_id)
+        except (TypeError, ValueError):
+            # A queryset filtered on a non-numeric id raises rather than
+            # returning nothing, and this value comes straight off the wire.
+            return None
+
+        return Package.objects.filter(
+            id=pk,
+            is_archived=False,
+            is_hotspot=(connection_type == "hotspot"),
+        ).first()
+
     def create(self, request, *args, **kwargs):
         # Plan caps limit growth only. An operator already over their cap
         # keeps every subscriber they have — downgrading a plan must never
@@ -304,22 +328,41 @@ class CustomerViewSet(viewsets.ModelViewSet):
         package_id = request.data.get("package")
         paid_with = request.data.get("paid_with")
 
-        response = super().create(request, *args, **kwargs)
-        if response.status_code != status.HTTP_201_CREATED or not package_id:
-            return response
-
         # Selling at the counter.
         #
-        # Creating a hotspot customer used to produce a row with a MAC, no
-        # subscription and no voucher — marked active with no access, and
-        # nothing in the interface to give them a code. An operator taking cash
-        # from someone standing in front of them had no way to finish the job.
+        # Creating a customer used to produce a row with no subscription at
+        # all: a hotspot subscriber with a MAC and no voucher, or a PPPoE line
+        # with no package — so no speed profile, no expiry and no invoice —
+        # marked active, with no access, and nothing in the interface to finish
+        # the job with. There is no admin page that adds a subscription
+        # afterwards, so a customer created without a package stayed that way.
         #
         # Optional: without a package this behaves exactly as it always did.
+        package = None
+        if package_id:
+            package = self._package_for_sale(
+                package_id,
+                # Absent, the model default applies — see Customer.
+                request.data.get("connection_type") or "pppoe",
+            )
+            if package is None:
+                # Refused before the customer exists. Reported afterwards, as
+                # this was, the operator is left with a half-made row to clean
+                # up before they can try again.
+                return Response(
+                    {"package": [
+                        "That package is not available for this connection type."
+                    ]},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        response = super().create(request, *args, **kwargs)
+        if response.status_code != status.HTTP_201_CREATED or package is None:
+            return response
+
         customer = Customer.objects.filter(id=response.data["id"]).first()
-        package = Package.objects.filter(id=package_id).first()
-        if customer is None or package is None:
-            response.data["provisioning_error"] = "That package is not available."
+        if customer is None:
+            response.data["provisioning_error"] = "That customer could not be found."
             return response
 
         try:

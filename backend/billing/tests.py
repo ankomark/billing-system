@@ -8421,10 +8421,40 @@ class CounterSaleTests(TwoOperatorMixin, TestCase):
             self.assertEqual(sub.invoice.payment_status, "unpaid")
 
     def test_another_operators_package_cannot_be_sold(self):
+        """
+        And nothing is created. This used to answer 201 with a
+        provisioning_error, which left the operator a customer on no package to
+        find and clean up before they could try the sale again.
+        """
         resp = self.create(package=self.data["t2"]["package"].id, paid_with="cash")
-        self.assertEqual(resp.status_code, 201)
-        self.assertIn("provisioning_error", resp.data)
-        self.assertIsNone(resp.data.get("voucher_code"))
+        self.assertEqual(resp.status_code, 400, resp.data)
+        with tenant_context(self.t1):
+            self.assertFalse(Customer.objects.filter(full_name="Walk In").exists())
+
+    def test_a_pppoe_package_cannot_be_sold_to_a_walk_in(self):
+        """
+        The two catalogues price different things — an hour of hotspot access
+        against a month of a home line — so a crossed pair sells the wrong
+        thing at the wrong price.
+        """
+        with tenant_context(self.t1):
+            monthly = Package.objects.create(
+                tenant=self.t1, name="t1-home", download_speed=10, upload_speed=5,
+                price=Decimal("2500.00"), duration_value=30, duration_unit="days",
+                monthly_data_cap_gb=0, is_hotspot=False)
+        resp = self.create(package=monthly.id, paid_with="cash")
+        self.assertEqual(resp.status_code, 400, resp.data)
+
+    def test_an_archived_package_cannot_be_sold(self):
+        with tenant_context(self.t1):
+            self.pkg.is_archived = True
+            self.pkg.save(update_fields=["is_archived"])
+        resp = self.create(package=self.pkg.id, paid_with="cash")
+        self.assertEqual(resp.status_code, 400, resp.data)
+
+    def test_a_package_id_that_is_not_a_number_is_refused(self):
+        resp = self.create(package="not-an-id", paid_with="cash")
+        self.assertEqual(resp.status_code, 400, resp.data)
 
     def test_the_payment_is_recorded_against_this_operator(self):
         resp = self.create(package=self.pkg.id, paid_with="cash")
@@ -8445,6 +8475,100 @@ class CounterSaleTests(TwoOperatorMixin, TestCase):
              "paid_with": "cash"},
             format="json")
         self.assertEqual(resp.status_code, 403)
+
+
+class PPPoESignUpTests(TwoOperatorMixin, TestCase):
+    """
+    A PPPoE line was signed up onto nothing.
+
+    The form offered a package only to hotspot customers, so a new home
+    subscriber was created with no subscription: no package to set their speed
+    profile from, no expiry, and no invoice — active, and billed for nothing.
+    No admin page adds a subscription afterwards, so it stayed that way until
+    somebody noticed the customer had never been charged.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.build_operators()
+        with tenant_context(self.t1):
+            self.pkg = Package.objects.create(
+                tenant=self.t1, name="t1-home-10", download_speed=10, upload_speed=5,
+                price=Decimal("2500.00"), duration_value=30, duration_unit="days",
+                monthly_data_cap_gb=0, is_hotspot=False)
+
+    def create(self, **extra):
+        body = {
+            "full_name": "New Home",
+            "phone": "254799000200",
+            "connection_type": "pppoe",
+        }
+        body.update(extra)
+        return self.auth(self.admin1).post("/api/customers/", body, format="json")
+
+    def test_a_package_puts_the_line_on_a_subscription(self):
+        resp = self.create(package=self.pkg.id, paid_with="cash")
+        self.assertEqual(resp.status_code, 201, resp.data)
+        with tenant_context(self.t1):
+            sub = Subscription.objects.get(id=resp.data["subscription_id"])
+        self.assertEqual(sub.package_id, self.pkg.id)
+
+    def test_the_subscription_runs_for_the_package_duration(self):
+        resp = self.create(package=self.pkg.id, paid_with="cash")
+        with tenant_context(self.t1):
+            sub = Subscription.objects.get(id=resp.data["subscription_id"])
+        days = (sub.expiry_date - timezone.now()).total_seconds() / 86400
+        self.assertGreater(days, 29.5)
+        self.assertLess(days, 30.5)
+
+    def test_paying_settles_the_invoice_at_the_package_price(self):
+        resp = self.create(package=self.pkg.id, paid_with="cash")
+        with tenant_context(self.t1):
+            sub = Subscription.objects.get(id=resp.data["subscription_id"])
+            payment = Payment.objects.get(subscription=sub)
+        self.assertEqual(sub.invoice.payment_status, "paid")
+        self.assertEqual(payment.amount, self.pkg.price)
+
+    def test_credentials_are_generated_for_the_new_line(self):
+        """What the operator reads out to the customer."""
+        resp = self.create(package=self.pkg.id, paid_with="cash")
+        with tenant_context(self.t1):
+            customer = Customer.objects.get(id=resp.data["id"])
+        self.assertTrue(customer.pppoe_username)
+        self.assertTrue(customer.pppoe_password)
+
+    def test_a_package_without_payment_leaves_an_invoice(self):
+        """Signed up on credit: they owe for it from the day they were added."""
+        resp = self.create(package=self.pkg.id)
+        self.assertEqual(resp.status_code, 201, resp.data)
+        with tenant_context(self.t1):
+            sub = Subscription.objects.get(id=resp.data["subscription_id"])
+        self.assertEqual(sub.invoice.payment_status, "unpaid")
+        self.assertEqual(sub.invoice.total_amount, self.pkg.price)
+
+    def test_no_voucher_is_minted_for_a_pppoe_line(self):
+        """A voucher is a hotspot code; a PPPoE subscriber has credentials."""
+        resp = self.create(package=self.pkg.id, paid_with="cash")
+        self.assertIsNone(resp.data.get("voucher_code"))
+
+    def test_a_hotspot_package_cannot_be_sold_to_a_pppoe_line(self):
+        with tenant_context(self.t1):
+            hourly = Package.objects.create(
+                tenant=self.t1, name="t1-hour", download_speed=5, upload_speed=5,
+                price=Decimal("50.00"), duration_value=3, duration_unit="hours",
+                monthly_data_cap_gb=0, is_hotspot=True)
+        resp = self.create(package=hourly.id, paid_with="cash")
+        self.assertEqual(resp.status_code, 400, resp.data)
+        with tenant_context(self.t1):
+            self.assertFalse(Customer.objects.filter(full_name="New Home").exists())
+
+    def test_without_a_package_nothing_changes(self):
+        """The old behaviour, for an operator recording a line to bill later."""
+        resp = self.create()
+        self.assertEqual(resp.status_code, 201, resp.data)
+        with tenant_context(self.t1):
+            self.assertFalse(
+                Subscription.objects.filter(customer_id=resp.data["id"]).exists())
 
 
 # =====================================================
