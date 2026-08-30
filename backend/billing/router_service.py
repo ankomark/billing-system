@@ -154,7 +154,7 @@ def enable_hotspot(api, router, mac_address, package, expiry_date):
             # updated the database, reported success, and left the customer
             # online indefinitely.
             users.remove(u[".id"])
-    users.add(**{
+    attrs = {
         "name": mac_address,
         "password": "",
         "profile": profile,
@@ -164,7 +164,44 @@ def enable_hotspot(api, router, mac_address, package, expiry_date):
         # nightly sweep, and only if it ran.
         "limit-uptime": f"{remaining_seconds}s",
         "comment": "AUTO | WIFI BILLING SYSTEM",
-    })
+    }
+
+    try:
+        users.add(**attrs)
+    except (TrapError, MultiTrapError) as exc:
+        # `already have user with this name for this server`.
+        #
+        # Both classes, because they are siblings rather than parent and child:
+        # MultiTrapError descends from ProtocolError, not from TrapError, so
+        # catching the obvious one alone would let a multi-sentence refusal
+        # past. The view's guard would still keep it off the customer's screen,
+        # but the recovery below is what actually gets them online, and it
+        # would have been skipped.
+        #
+        # The loop above is what is supposed to make this impossible, and it
+        # does its job against anything already on the router when the scan
+        # ran. What it cannot see is a user added *after* it: two grants for
+        # the same handset overlapping — the portal's inline call and the
+        # provisioning task retrying, or a customer tapping Connect twice —
+        # both find nothing to remove and both add.
+        #
+        # Whichever add loses that race, the wanted state is the one already on
+        # the router. Rescan, take the collision out, and add once more so this
+        # grant's own profile and limit-uptime are the ones that stick; a stale
+        # account left in place is a customer on yesterday's package. If the
+        # second attempt still collides, something other than a race is going
+        # on and it must not be swallowed.
+        if "already have" not in str(exc).lower():
+            raise
+
+        logger.warning(
+            "[hotspot] %s was added while this grant was running — "
+            "replacing it", mac_address,
+        )
+        for u in api.path("ip", "hotspot", "user"):
+            if normalize_mac(u.get("name")) == wanted:
+                users.remove(u[".id"])
+        users.add(**attrs)
 def disable_hotspot(api, mac_address):
     """
     Take a device off the hotspot.

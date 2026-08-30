@@ -1888,7 +1888,69 @@ class HotspotVoucherValidateView(APIView):
         # behind on the old router to be cleaned up later.
         _home_customer_to(customer, _portal_router(request, tenant))
 
-        enable_customer_access(customer)
+        # Guarded, because a router refusing the grant is not this customer's
+        # fault and must not be shown to them as one.
+        #
+        # A router refusing the grant — `already have user with this name for
+        # this server`, which RouterOS raises when the add races the removal
+        # just above it — came out of here as an unhandled TrapError. DRF turned
+        # it into a 500, whose body is HTML, so the portal's `JSON.parse` failed,
+        # `detail` was undefined, and login.html fell back to its default text:
+        # the customer was told their code did not match. They had just
+        # presented a valid, *paid* code — this line is only reached after
+        # validate_voucher accepted it — and the binding was already committed,
+        # because the transaction above closed before this call. So the record
+        # said provisioned, the operator saw an active subscriber, and the
+        # person holding the phone was told they had typed it wrong. Eleven
+        # times in the seven days to 2026-08-30.
+        #
+        # Only a raise is handled here, deliberately. enable_customer_access
+        # also returns False, and that answer is left alone because it does not
+        # mean one thing: it is "no paid subscription" — a refusal no amount of
+        # retrying changes — as often as it is "no router answered". Treating
+        # the two alike told somebody who had not paid that their payment was
+        # in, and spent four retries and an operator alert proving they had not.
+        # Separating them means changing what this function returns, which is a
+        # wider change than the fault being fixed here.
+        #
+        # A raise carries no such ambiguity. It degrades to the path a payment
+        # already uses: the task is idempotent, backs off 60s/240s/960s, and
+        # tells the operator if it runs out — the outcome this endpoint could
+        # not produce on its own.
+        try:
+            enable_customer_access(customer)
+        except Exception:
+            logger.exception(
+                "[hotspot] provisioning %s for customer %s raised; falling back "
+                "to the retry queue", mac_address, customer.pk,
+            )
+            try:
+                from billing.tasks.provisioning import ensure_customer_access_task
+                ensure_customer_access_task.delay(customer.pk, reason="voucher")
+            except Exception:
+                # No broker. Nothing more can be arranged from here, and the
+                # customer still needs to be told the truth rather than a
+                # cheerful lie about a connection they do not have.
+                logger.exception(
+                    "[hotspot] could not queue provisioning for customer %s",
+                    customer.pk,
+                )
+
+            # Deliberately not 500: this is a working code and the money is in.
+            # The one thing this response must never do is read as a refusal of
+            # the voucher, because that is the message that makes somebody give
+            # up on a package they have paid for.
+            return Response(
+                {
+                    "detail": "Your code is valid and your payment is in. We "
+                              "couldn't reach the WiFi router just now — "
+                              "please tap Connect again in a moment.",
+                    "expires_at": subscription.expiry_date,
+                    "provisioning": True,
+                    "device_token": device_token_for(mac_address),
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
 
         return Response(
             {
