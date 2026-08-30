@@ -7464,7 +7464,12 @@ class MikrotikPortalPageTests(TestCase):
     KNOWN_VARS = {
         "mac", "ip", "username", "password", "error", "if", "endif",
         "link-login", "link-login-only", "link-logout", "link-status",
-        "link-orig", "link-redirect", "session-time-left", "uptime",
+        "link-orig", "link-orig-esc", "link-redirect",
+        # link-orig-esc is the URL-escaped form of link-orig. alogin.html reads
+        # it into a JavaScript string to decide where "Start browsing" goes,
+        # and the unescaped one would end the string early on any address
+        # carrying a quote.
+        "session-time-left", "uptime",
         "uptime-secs", "idle-timeout", "refresh-timeout", "trial",
         "chap-id", "chap-challenge", "hostname", "identity",
         "bytes-in", "bytes-out", "bytes-in-nice", "bytes-out-nice",

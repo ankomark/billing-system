@@ -251,7 +251,7 @@
     </dl>
   </div>
 
-  <a class="btn btn-primary" href="$(link-redirect)">
+  <a class="btn btn-primary" id="browseBtn" href="$(link-redirect)">
     <span data-i18n="connected.browse">Start browsing</span>
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
          stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
@@ -286,6 +286,46 @@
      A captive portal is served over plain http as often as not, and
      navigator.clipboard does not exist there. Selecting the text is the
      fallback that always works — the code element is user-select:all. */
+
+  /* ── Where "Start browsing" actually goes ──────────────────
+     A phone opens this portal by fetching a captive-detection URL of its
+     own accord — connectivitycheck.gstatic.com on Android, captive.apple.com
+     on iOS, msftconnecttest on Windows. When that is what $(link-orig) holds,
+     the customer never asked for a page and there is nothing to send them
+     back to, so they go to our own site instead.
+
+     When $(link-orig) is a real address they typed or tapped before the
+     portal interrupted them, it stays untouched. Somebody who has just paid
+     to reach a page gets that page; taking it away to show them an advert
+     would be the thanks they get for buying. */
+  (function chooseDestination() {
+    var orig = '$(link-orig-esc)';
+    var site = 'https://smartbillsolution.com/';
+    var detection = /connectivitycheck|generate_204|gstatic\.com|captive\.apple\.com|msftconnecttest|msftncsi|nmcheck\.gnome|detectportal\.firefox|connectivity-check|network-test|ncsi\.txt|hotspot-detect/i;
+
+    var btn = document.getElementById('browseBtn');
+    if (!btn) { return; }
+
+    /* Empty, an unsubstituted template (this file opened anywhere but a
+       RouterOS hotspot), or a detection probe — all of them mean the same
+       thing: nowhere in particular.
+
+       Note there is no `orig === '$(link-orig-esc)'` test here. Both sides of
+       that comparison are substituted by the router, so it would be true for
+       every customer and would send all of them to the site — the opposite of
+       what this function is for. An unsubstituted value is caught by looking
+       for the variable name still sitting inside the string. */
+    var nowhere = !orig ||
+                  orig.indexOf('link-orig') !== -1 ||
+                  detection.test(orig);
+
+    if (nowhere) {
+      btn.setAttribute('href', site);
+      var label = btn.querySelector('[data-i18n="connected.browse"]');
+      if (label) { label.removeAttribute('data-i18n'); label.textContent = 'Start browsing'; }
+    }
+  }());
+
   function copyCode() {
     var el  = document.getElementById('code');
     var btn = document.getElementById('copyBtn');
