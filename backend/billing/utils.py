@@ -72,9 +72,27 @@ def mac_variants(value):
 def generate_invoice_number():
     """
     Generates unique invoice numbers like:
-    INV-20250912153045-A9F3
+    INV-20250912153045-9A3FB7C210
+
+    The timestamp only resolves to the second, so the random tail is the whole
+    of the uniqueness guarantee between two invoices raised in the same second.
+    It used to be two bytes — 65,536 values — and `Invoice.invoice_number` is
+    `unique=True`, so this is a birthday problem, not a "will never happen":
+    fifty invoices inside one second collided about 1.9% of the time, and a
+    hundred about 7.3%.
+
+    A collision is not a cosmetic failure. Subscription.save() creates the
+    invoice inside its own `transaction.atomic()`, and nothing retries, so the
+    IntegrityError rolls the subscription back with it — a customer whose
+    payment has just cleared ends up with no subscription at all. It surfaced
+    as an intermittent failure in the test suite, which raises invoices in
+    bursts and therefore reaches those odds far sooner than production does.
+
+    Five bytes takes the space to about 1.1 x 10^12, which puts a hundred
+    invoices in one second at roughly one chance in 200 million. The shape is
+    unchanged and the result is 29 characters, well inside max_length=50.
     """
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-    random_part = secrets.token_hex(2).upper()
+    random_part = secrets.token_hex(5).upper()
     return f"INV-{timestamp}-{random_part}"
 
