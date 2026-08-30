@@ -1,0 +1,895 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#071319" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f2f5f5" media="(prefers-color-scheme: light)">
+
+<meta name="description" content="SmartBill runs the whole loop for a WiFi business - captive portal, M-Pesa payment, voucher, and the MikroTik configuration behind it. Billing and network control for internet providers.">
+<link rel="canonical" href="https://smartbillsolution.com/">
+
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://smartbillsolution.com/">
+<meta property="og:site_name" content="SmartBill Solution">
+<meta property="og:title" content="SmartBill Solution - billing and network control for internet providers">
+<meta property="og:description" content="Your customers pay by M-Pesa. Your routers open by themselves. Hotspot and PPPoE provisioning on MikroTik, handled automatically.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="SmartBill Solution">
+<meta name="twitter:description" content="Your customers pay by M-Pesa. Your routers open by themselves.">
+
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23071319'/%3E%3Cg stroke='%23d9b46a' stroke-width='1.4' fill='none'%3E%3Cpath d='M16 16 L7 9 M16 16 L26 10 M16 16 L9 25 M16 16 L25 24'/%3E%3C/g%3E%3Cg fill='%23d9b46a'%3E%3Ccircle cx='16' cy='16' r='3.6'/%3E%3Ccircle cx='7' cy='9' r='1.8'/%3E%3Ccircle cx='26' cy='10' r='1.8'/%3E%3Ccircle cx='9' cy='25' r='1.8'/%3E%3Ccircle cx='25' cy='24' r='1.8'/%3E%3C/g%3E%3C/svg%3E">
+
+<title>SmartBill Solution</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Marcellus&family=Archivo:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+
+<style>
+/* ─────────────────────────────────────────────────────────────
+   SmartBill Solution — dark-first.
+   Bare :root carries the DARK palette; light is the swap.
+   ───────────────────────────────────────────────────────────── */
+:root {
+  --ground:      #071319;
+  --ground-deep: #040d11;
+  --surface:     #0d2028;
+  --surface-2:   #123039;
+  --ink:         #e8f0f1;
+  --ink-soft:    #93aab2;
+  --ink-faint:   #5d7780;
+  --line:        #1b3843;
+  --brass:       #d9b46a;
+  --brass-bright:#ebcb8b;
+  --brass-dim:   rgba(217,180,106,.14);
+  --node-rgb:    200, 225, 228;
+  --glow:        rgba(217,180,106,.20);
+
+  --shell: 1180px;
+  --step--1: clamp(.78rem, .76rem + .12vw, .85rem);
+  --step-0:  clamp(1rem, .97rem + .16vw, 1.09rem);
+  --step-1:  clamp(1.2rem, 1.13rem + .35vw, 1.45rem);
+  --step-2:  clamp(1.5rem, 1.35rem + .72vw, 2.05rem);
+  --step-3:  clamp(2rem, 1.66rem + 1.65vw, 3.2rem);
+  --step-4:  clamp(2.6rem, 1.9rem + 3.4vw, 5.1rem);
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --ground:      #f2f5f5;
+    --ground-deep: #e6ecec;
+    --surface:     #ffffff;
+    --surface-2:   #eaf0f0;
+    --ink:         #0b1f26;
+    --ink-soft:    #4a626c;
+    --ink-faint:   #8399a1;
+    --line:        #d4dede;
+    --brass:       #8a6d22;
+    --brass-bright:#6f5716;
+    --brass-dim:   rgba(138,109,34,.10);
+    --node-rgb:    11, 31, 38;
+    --glow:        rgba(138,109,34,.16);
+  }
+}
+
+:root[data-theme="light"] {
+  --ground:      #f2f5f5;
+  --ground-deep: #e6ecec;
+  --surface:     #ffffff;
+  --surface-2:   #eaf0f0;
+  --ink:         #0b1f26;
+  --ink-soft:    #4a626c;
+  --ink-faint:   #8399a1;
+  --line:        #d4dede;
+  --brass:       #8a6d22;
+  --brass-bright:#6f5716;
+  --brass-dim:   rgba(138,109,34,.10);
+  --node-rgb:    11, 31, 38;
+  --glow:        rgba(138,109,34,.16);
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: "Archivo", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: var(--step-0);
+  font-weight: 300;
+  line-height: 1.68;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+h1, h2, h3 {
+  font-family: "Marcellus", "Iowan Old Style", Georgia, serif;
+  font-weight: 400;
+  line-height: 1.08;
+  text-wrap: balance;
+  margin: 0;
+  letter-spacing: -.008em;
+}
+
+p { margin: 0; }
+a { color: inherit; }
+
+.shell {
+  width: 100%;
+  max-width: var(--shell);
+  margin-inline: auto;
+  padding-inline: clamp(1.15rem, 4vw, 2.6rem);
+}
+
+.eyebrow {
+  font-family: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  font-size: var(--step--1);
+  font-weight: 500;
+  letter-spacing: .19em;
+  text-transform: uppercase;
+  color: var(--brass);
+  margin: 0;
+}
+
+.lede { color: var(--ink-soft); max-width: 63ch; font-size: var(--step-1); line-height: 1.6; }
+.body-copy { color: var(--ink-soft); max-width: 65ch; }
+
+/* ── ambient network ─────────────────────────────────────── */
+#weave {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+  pointer-events: none;
+}
+
+.page { position: relative; z-index: 1; }
+
+/* ── nav ─────────────────────────────────────────────────── */
+.nav {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  backdrop-filter: blur(14px);
+  background: color-mix(in srgb, var(--ground) 82%, transparent);
+  border-bottom: 1px solid var(--line);
+}
+.nav-in {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  min-height: 74px;
+}
+.brand {
+  display: flex;
+  align-items: baseline;
+  gap: .5rem;
+  text-decoration: none;
+  margin-right: auto;
+}
+.brand-mark {
+  font-family: "Marcellus", Georgia, serif;
+  font-size: 1.3rem;
+  letter-spacing: .015em;
+}
+.brand-mark b { color: var(--brass); font-weight: 400; }
+.brand-tld {
+  font-family: "JetBrains Mono", monospace;
+  font-size: .68rem;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+.nav-links { display: none; gap: 2.1rem; }
+@media (min-width: 900px) { .nav-links { display: flex; } }
+.nav-links a {
+  text-decoration: none;
+  font-size: var(--step--1);
+  letter-spacing: .04em;
+  color: var(--ink-soft);
+  padding-block: .3rem;
+  border-bottom: 1px solid transparent;
+  transition: color .2s, border-color .2s;
+}
+.nav-links a:hover, .nav-links a:focus-visible { color: var(--ink); border-bottom-color: var(--brass); }
+
+.client-link {
+  font-family: "JetBrains Mono", monospace;
+  font-size: .72rem;
+  letter-spacing: .13em;
+  text-transform: uppercase;
+  text-decoration: none;
+  color: var(--ink);
+  border: 1px solid var(--line);
+  padding: .58rem .95rem;
+  white-space: nowrap;
+  transition: border-color .2s, color .2s;
+}
+.client-link:hover, .client-link:focus-visible { border-color: var(--brass); color: var(--brass); }
+
+/* ── hero ────────────────────────────────────────────────── */
+.hero {
+  display: grid;
+  gap: 2.2rem;
+  padding-block: clamp(4.5rem, 11vw, 9rem) clamp(3.5rem, 8vw, 6.5rem);
+}
+.hero h1 { font-size: var(--step-4); max-width: 17ch; }
+.hero h1 .accent { color: var(--brass); }
+.hero-sub { max-width: 56ch; color: var(--ink-soft); font-size: var(--step-1); line-height: 1.58; }
+
+.cta-row { display: flex; flex-wrap: wrap; gap: .85rem; align-items: center; }
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: .6rem;
+  text-decoration: none;
+  font-family: "JetBrains Mono", monospace;
+  font-size: .78rem;
+  letter-spacing: .13em;
+  text-transform: uppercase;
+  padding: .95rem 1.5rem;
+  border: 1px solid transparent;
+  transition: transform .18s, background .2s, border-color .2s, color .2s;
+}
+.btn:active { transform: translateY(1px); }
+.btn-primary {
+  background: var(--brass);
+  color: var(--ground-deep);
+  font-weight: 500;
+  box-shadow: 0 0 0 0 var(--glow);
+}
+.btn-primary:hover, .btn-primary:focus-visible {
+  background: var(--brass-bright);
+  box-shadow: 0 10px 34px -12px var(--glow);
+}
+.btn-ghost { border-color: var(--line); color: var(--ink); }
+.btn-ghost:hover, .btn-ghost:focus-visible { border-color: var(--brass); color: var(--brass); }
+
+.hero-note {
+  font-family: "JetBrains Mono", monospace;
+  font-size: .72rem;
+  letter-spacing: .1em;
+  color: var(--ink-faint);
+  display: flex;
+  align-items: center;
+  gap: .55rem;
+}
+.pip {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--brass);
+  box-shadow: 0 0 0 3px var(--brass-dim);
+  flex: none;
+}
+
+/* ── measures band ───────────────────────────────────────── */
+.band {
+  border-block: 1px solid var(--line);
+  background: color-mix(in srgb, var(--surface) 55%, transparent);
+}
+.band-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+.measure {
+  padding: 2.1rem 0;
+  display: grid;
+  gap: .3rem;
+  border-right: 1px solid var(--line);
+  padding-inline: clamp(1.1rem, 2.6vw, 1.9rem);
+}
+.measure:last-child { border-right: none; }
+.measure-n {
+  font-family: "JetBrains Mono", monospace;
+  font-size: clamp(1.65rem, 1.3rem + 1.2vw, 2.3rem);
+  font-weight: 500;
+  color: var(--brass);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.measure-l {
+  font-size: var(--step--1);
+  color: var(--ink-soft);
+  line-height: 1.45;
+}
+
+/* ── sections ────────────────────────────────────────────── */
+section { position: relative; }
+.sec { padding-block: clamp(4rem, 9vw, 7.5rem); }
+.sec-head { display: grid; gap: 1.1rem; margin-bottom: clamp(2.5rem, 5vw, 4rem); }
+.sec-head h2 { font-size: var(--step-3); max-width: 20ch; }
+
+/* asymmetric capability rows */
+.rows { display: grid; gap: 0; border-top: 1px solid var(--line); }
+.row {
+  display: grid;
+  gap: 1rem 3.2rem;
+  padding-block: clamp(1.9rem, 4vw, 2.9rem);
+  border-bottom: 1px solid var(--line);
+  align-items: start;
+}
+@media (min-width: 860px) {
+  .row { grid-template-columns: 1.05fr 1.45fr; }
+  .row:nth-child(even) .row-body { order: -1; }
+  .row:nth-child(even) .row-title { text-align: right; }
+}
+.row-title { display: grid; gap: .55rem; align-content: start; }
+.row-title h3 { font-size: var(--step-2); }
+.row-idx {
+  font-family: "JetBrains Mono", monospace;
+  font-size: .7rem;
+  letter-spacing: .16em;
+  color: var(--brass);
+  text-transform: uppercase;
+}
+.row-body { color: var(--ink-soft); }
+.row-body strong { color: var(--ink); font-weight: 500; }
+
+/* how it works — a real sequence, so it is numbered */
+.flow { display: grid; gap: 0; counter-reset: step; }
+.step {
+  display: grid;
+  gap: .35rem 1.9rem;
+  grid-template-columns: auto 1fr;
+  padding-block: 1.8rem;
+  border-bottom: 1px solid var(--line);
+}
+.step:first-child { border-top: 1px solid var(--line); }
+.step-n {
+  counter-increment: step;
+  font-family: "JetBrains Mono", monospace;
+  font-size: .82rem;
+  font-weight: 500;
+  color: var(--brass);
+  grid-row: span 2;
+  padding-top: .42rem;
+  font-variant-numeric: tabular-nums;
+}
+.step-n::before { content: counter(step, decimal-leading-zero); }
+.step h3 { font-size: var(--step-1); }
+.step p { color: var(--ink-soft); max-width: 62ch; }
+
+/* who it is for */
+.cards { display: grid; gap: 1px; background: var(--line); border: 1px solid var(--line); }
+@media (min-width: 780px) { .cards { grid-template-columns: repeat(3, 1fr); } }
+.card {
+  background: var(--ground);
+  padding: clamp(1.6rem, 3vw, 2.2rem);
+  display: grid;
+  gap: .7rem;
+  align-content: start;
+}
+.card h3 { font-size: var(--step-1); }
+.card p { color: var(--ink-soft); font-size: var(--step--1); line-height: 1.62; }
+
+/* contact */
+.contact { background: var(--surface); border-block: 1px solid var(--line); }
+.channels { display: grid; gap: 1px; background: var(--line); border: 1px solid var(--line); margin-top: 2.6rem; }
+@media (min-width: 780px) { .channels { grid-template-columns: repeat(3, 1fr); } }
+.channel {
+  background: var(--surface);
+  padding: clamp(1.7rem, 3vw, 2.3rem);
+  display: grid;
+  gap: .45rem;
+  align-content: start;
+  text-decoration: none;
+  transition: background .2s;
+}
+.channel:hover, .channel:focus-visible { background: var(--surface-2); }
+.channel-k {
+  font-family: "JetBrains Mono", monospace;
+  font-size: .7rem;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: var(--brass);
+}
+.channel-v { font-family: "Marcellus", Georgia, serif; font-size: var(--step-1); word-break: break-word; }
+.channel-note { font-size: var(--step--1); color: var(--ink-faint); }
+
+.divider-note {
+  margin-top: 2.6rem;
+  padding: 1.4rem 1.6rem;
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--brass);
+  background: color-mix(in srgb, var(--brass) 5%, transparent);
+  color: var(--ink-soft);
+  font-size: var(--step--1);
+  max-width: 68ch;
+}
+.divider-note a { color: var(--brass); text-underline-offset: 3px; }
+
+/* footer */
+.foot {
+  padding-block: 2.8rem 3.4rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem 2rem;
+  align-items: center;
+  justify-content: space-between;
+  font-family: "JetBrains Mono", monospace;
+  font-size: .72rem;
+  letter-spacing: .08em;
+  color: var(--ink-faint);
+}
+.foot a { color: var(--ink-soft); text-decoration: none; }
+.foot a:hover { color: var(--brass); }
+
+:focus-visible { outline: 2px solid var(--brass); outline-offset: 3px; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: .001ms !important; transition-duration: .001ms !important; }
+}
+
+/* entrance */
+.rise { opacity: 0; transform: translateY(16px); transition: opacity .7s ease, transform .7s ease; }
+.rise.in { opacity: 1; transform: none; }
+@media (prefers-reduced-motion: reduce) { .rise { opacity: 1; transform: none; } }
+</style>
+</head>
+<body>
+
+<canvas id="weave" aria-hidden="true"></canvas>
+
+<div class="page">
+
+  <header class="nav">
+    <div class="shell nav-in">
+      <a class="brand" href="#top">
+        <span class="brand-mark">Smart<b>Bill</b></span>
+        <span class="brand-tld">Solution</span>
+      </a>
+      <nav class="nav-links" aria-label="Sections">
+        <a href="#what">What it does</a>
+        <a href="#how">How it works</a>
+        <a href="#who">Who it's for</a>
+        <a href="#contact">Contact</a>
+      </nav>
+      <a class="client-link" href="https://app.smartbillsolution.com">Client login</a>
+    </div>
+  </header>
+
+  <main id="top">
+
+    <section class="shell hero">
+      <p class="eyebrow rise">Billing &amp; network control for internet providers</p>
+      <h1 class="rise">Your customers pay by M-Pesa. Your routers <span class="accent">open by themselves.</span></h1>
+      <p class="hero-sub rise">SmartBill runs the whole loop for a WiFi business — the captive portal, the payment, the voucher, and the MikroTik configuration behind it. No spreadsheets. No one sitting up at night switching people on.</p>
+      <div class="cta-row rise">
+        <a class="btn btn-primary" href="https://wa.me/254701071435?text=Hello%20SmartBill%20-%20I%27d%20like%20a%20demo%20account">Request a demo account</a>
+        <a class="btn btn-ghost" href="#what">See what it does</a>
+      </div>
+      <p class="hero-note rise"><span class="pip"></span> Available worldwide — live on subscriber networks today</p>
+    </section>
+
+    <div class="band">
+      <div class="shell band-grid">
+        <div class="measure">
+          <span class="measure-n">M-Pesa</span>
+          <span class="measure-l">STK push straight to the customer's phone — access opens on confirmation</span>
+        </div>
+        <div class="measure">
+          <span class="measure-n">MikroTik</span>
+          <span class="measure-l">Hotspot and PPPoE provisioned on RouterOS automatically</span>
+        </div>
+        <div class="measure">
+          <span class="measure-n">Multi-site</span>
+          <span class="measure-l">Many routers, many towers, one dashboard and one set of books</span>
+        </div>
+        <div class="measure">
+          <span class="measure-n">24 / 7</span>
+          <span class="measure-l">Router health watched continuously, with automatic failover</span>
+        </div>
+      </div>
+    </div>
+
+    <section class="shell sec" id="what">
+      <div class="sec-head">
+        <p class="eyebrow">What it does</p>
+        <h2>Everything between the customer's money and the customer's internet.</h2>
+        <p class="body-copy">Most small providers lose money in the gap — a subscriber pays and waits for someone to notice, or their time runs out and nobody switches them off. SmartBill closes that gap and keeps it closed.</p>
+      </div>
+
+      <div class="rows">
+        <div class="row rise">
+          <div class="row-title">
+            <span class="row-idx">Payments</span>
+            <h3>Money collects itself</h3>
+          </div>
+          <p class="row-body">A customer picks a package on your portal and enters their number. The M-Pesa prompt reaches their phone, and the moment it clears, their access opens and their code is issued. <strong>Every transaction is reconciled against the subscription that paid for it</strong> — so an abandoned prompt never quietly becomes free internet.</p>
+        </div>
+
+        <div class="row rise">
+          <div class="row-title">
+            <span class="row-idx">Provisioning</span>
+            <h3>The router configures itself</h3>
+          </div>
+          <p class="row-body">SmartBill speaks RouterOS directly. It creates the hotspot user or the PPPoE secret, applies the speed profile the package was sold at, and writes the expiry onto the router itself — <strong>so time runs out on the hardware, not just in the database.</strong> If a router is briefly unreachable it retries, and tells you if it still can't.</p>
+        </div>
+
+        <div class="row rise">
+          <div class="row-title">
+            <span class="row-idx">Control</span>
+            <h3>One code, the devices you sold</h3>
+          </div>
+          <p class="row-body">Packages carry a device allowance, and it is counted against who is actually online rather than every phone that ever connected. A customer who changes handset isn't locked out; <strong>a code being passed around a room is.</strong> Devices can be blocked outright, and a blocked handset is disconnected, not just recorded.</p>
+        </div>
+
+        <div class="row rise">
+          <div class="row-title">
+            <span class="row-idx">Visibility</span>
+            <h3>You can see the whole network</h3>
+          </div>
+          <p class="row-body">Live sessions, data used, revenue by package, which router each subscriber is on, and every device that failed to connect and why. Routers are polled continuously — <strong>when one drops, subscribers move to another and the move is recorded</strong> rather than discovered later from complaints.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="shell sec" id="how">
+      <div class="sec-head">
+        <p class="eyebrow">How it works</p>
+        <h2>Four steps, and nobody on your side touches any of them.</h2>
+      </div>
+
+      <div class="flow">
+        <div class="step rise">
+          <span class="step-n" aria-hidden="true"></span>
+          <h3>They connect to your WiFi</h3>
+          <p>Your branded portal opens on their phone, showing your packages at your prices. Each site can carry its own name and look.</p>
+        </div>
+        <div class="step rise">
+          <span class="step-n" aria-hidden="true"></span>
+          <h3>They choose a package and pay</h3>
+          <p>The M-Pesa prompt arrives on the number they entered. Nothing is granted until the payment actually confirms.</p>
+        </div>
+        <div class="step rise">
+          <span class="step-n" aria-hidden="true"></span>
+          <h3>SmartBill configures the router</h3>
+          <p>The account is created on the hardware with the right speed profile and the right expiry, and the customer receives their code.</p>
+        </div>
+        <div class="step rise">
+          <span class="step-n" aria-hidden="true"></span>
+          <h3>Time runs out on its own</h3>
+          <p>When the package expires the session ends and the account is removed — on the router, not merely in a report. Renewing puts them straight back on.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="shell sec" id="who">
+      <div class="sec-head">
+        <p class="eyebrow">Who it's for</p>
+        <h2>Built for operators who already have customers waiting.</h2>
+      </div>
+      <div class="cards">
+        <div class="card rise">
+          <h3>Hotspot operators</h3>
+          <p>Selling hours, days and weeks of WiFi at a shopping centre, a hostel, an estate or a trading centre. Vouchers, device limits and automatic cut-off included.</p>
+        </div>
+        <div class="card rise">
+          <h3>Home &amp; business lines</h3>
+          <p>PPPoE subscribers on monthly packages, each household sharing one session across their own devices, with the speed you sold enforced at the router.</p>
+        </div>
+        <div class="card rise">
+          <h3>Growing networks</h3>
+          <p>More than one tower, more than one router, and a need for a single dashboard, one set of books, and subscribers who move between sites without losing access.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="contact" id="contact">
+      <div class="shell sec">
+        <div class="sec-head">
+          <p class="eyebrow">Get started</p>
+          <h2>Talk to us about a demo account.</h2>
+          <p class="body-copy">Tell us how many subscribers you carry and what routers you run, and we'll set you up with an account to try. WhatsApp is the fastest way to reach us.</p>
+        </div>
+
+        <div class="channels">
+          <a class="channel" href="https://wa.me/254701071435?text=Hello%20SmartBill%20-%20I%27d%20like%20a%20demo%20account">
+            <span class="channel-k">WhatsApp</span>
+            <span class="channel-v">0701 071 435</span>
+            <span class="channel-note">Chat with us — usually the quickest reply</span>
+          </a>
+          <a class="channel" href="tel:+254701071435">
+            <span class="channel-k">Call</span>
+            <span class="channel-v">0701 071 435</span>
+            <span class="channel-note">Speak to us directly about your network</span>
+          </a>
+          <a class="channel" href="mailto:miseymark@gmail.com?subject=SmartBill%20demo%20account">
+            <span class="channel-k">Email</span>
+            <span class="channel-v">miseymark@gmail.com</span>
+            <span class="channel-note">Send details of your setup and we'll reply</span>
+          </a>
+        </div>
+
+        <p class="divider-note">
+          Already a SmartBill customer? Your dashboard is at
+          <a href="https://app.smartbillsolution.com">app.smartbillsolution.com</a>.
+          That sign-in is for existing account holders only — if you don't have an account yet, message us above and we'll create one for you.
+        </p>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="shell foot">
+    <span>SmartBill Solution — WiFi billing &amp; network control</span>
+    <span><a href="https://wa.me/254701071435">WhatsApp</a> · <a href="mailto:miseymark@gmail.com">Email</a> · <a href="https://app.smartbillsolution.com">Client login</a></span>
+  </footer>
+
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  /* ── Ambient topology ──────────────────────────────────────
+     Not decorative confetti: hubs are routers, the small nodes
+     are subscriber devices that link to whichever hub is in
+     range, and a pulse travelling a link is a payment clearing
+     and access opening. The subject of the product, drawn.
+     ──────────────────────────────────────────────────────── */
+
+  var canvas = document.getElementById("weave");
+  if (!canvas || !canvas.getContext) { return; }
+  var ctx = canvas.getContext("2d");
+
+  var reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
+  var W = 0, H = 0, dpr = 1;
+  var hubs = [], clients = [], pulses = [];
+  var raf = null, running = false;
+
+  var theme = { node: "200,225,228", brass: "217,180,106" };
+
+  function readTheme() {
+    var cs = getComputedStyle(document.documentElement);
+    var n = cs.getPropertyValue("--node-rgb").trim();
+    if (n) { theme.node = n; }
+    var b = cs.getPropertyValue("--brass").trim();
+    if (b && b.charAt(0) === "#" && b.length === 7) {
+      theme.brass = parseInt(b.substr(1, 2), 16) + "," +
+                    parseInt(b.substr(3, 2), 16) + "," +
+                    parseInt(b.substr(5, 2), 16);
+    }
+  }
+
+  function rand(a, b) { return a + Math.random() * (b - a); }
+
+  function build() {
+    var area = W * H;
+    var hubCount = Math.max(3, Math.min(7, Math.round(area / 260000)));
+    var clientCount = Math.max(18, Math.min(64, Math.round(area / 26000)));
+
+    hubs = [];
+    for (var i = 0; i < hubCount; i++) {
+      hubs.push({
+        x: rand(W * 0.08, W * 0.92),
+        y: rand(H * 0.10, H * 0.90),
+        vx: rand(-0.05, 0.05),
+        vy: rand(-0.05, 0.05),
+        r: rand(2.6, 3.8),
+        phase: rand(0, Math.PI * 2)
+      });
+    }
+
+    clients = [];
+    for (var j = 0; j < clientCount; j++) {
+      clients.push({
+        x: rand(0, W),
+        y: rand(0, H),
+        vx: rand(-0.16, 0.16),
+        vy: rand(-0.16, 0.16),
+        r: rand(0.8, 1.7)
+      });
+    }
+    pulses = [];
+  }
+
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth;
+    H = window.innerHeight;
+    canvas.width = Math.floor(W * dpr);
+    canvas.height = Math.floor(H * dpr);
+    canvas.style.width = W + "px";
+    canvas.style.height = H + "px";
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    build();
+  }
+
+  var LINK = 210;   // a client links to a hub within this range
+  var MESH = 340;   // hubs link to each other within this range
+
+  function nearestHub(c) {
+    var best = null, bd = LINK * LINK;
+    for (var i = 0; i < hubs.length; i++) {
+      var dx = hubs[i].x - c.x, dy = hubs[i].y - c.y;
+      var d = dx * dx + dy * dy;
+      if (d < bd) { bd = d; best = hubs[i]; }
+    }
+    return best;
+  }
+
+  function spawnPulse() {
+    if (!hubs.length || !clients.length) { return; }
+    var c = clients[Math.floor(Math.random() * clients.length)];
+    var h = nearestHub(c);
+    if (!h) { return; }
+    pulses.push({ from: h, to: c, t: 0, speed: rand(0.006, 0.013) });
+  }
+
+  function step(dt) {
+    var i, n;
+    for (i = 0; i < clients.length; i++) {
+      n = clients[i];
+      n.x += n.vx * dt; n.y += n.vy * dt;
+      if (n.x < -20) { n.x = W + 20; } else if (n.x > W + 20) { n.x = -20; }
+      if (n.y < -20) { n.y = H + 20; } else if (n.y > H + 20) { n.y = -20; }
+    }
+    for (i = 0; i < hubs.length; i++) {
+      n = hubs[i];
+      n.x += n.vx * dt; n.y += n.vy * dt;
+      n.phase += 0.012 * dt;
+      if (n.x < W * 0.05 || n.x > W * 0.95) { n.vx *= -1; }
+      if (n.y < H * 0.06 || n.y > H * 0.94) { n.vy *= -1; }
+    }
+    for (i = pulses.length - 1; i >= 0; i--) {
+      pulses[i].t += pulses[i].speed * dt;
+      if (pulses[i].t >= 1) { pulses.splice(i, 1); }
+    }
+    if (pulses.length < 4 && Math.random() < 0.012 * dt) { spawnPulse(); }
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, W, H);
+    var i, j, h, c, dx, dy, dist, a;
+
+    // hub-to-hub mesh — the backbone
+    ctx.lineWidth = 0.7;
+    for (i = 0; i < hubs.length; i++) {
+      for (j = i + 1; j < hubs.length; j++) {
+        dx = hubs[i].x - hubs[j].x; dy = hubs[i].y - hubs[j].y;
+        dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < MESH) {
+          a = (1 - dist / MESH) * 0.16;
+          ctx.strokeStyle = "rgba(" + theme.brass + "," + a.toFixed(3) + ")";
+          ctx.beginPath();
+          ctx.moveTo(hubs[i].x, hubs[i].y);
+          ctx.lineTo(hubs[j].x, hubs[j].y);
+          ctx.stroke();
+        }
+      }
+    }
+
+    // clients attach to their hub
+    ctx.lineWidth = 0.55;
+    for (i = 0; i < clients.length; i++) {
+      c = clients[i];
+      h = nearestHub(c);
+      if (!h) { continue; }
+      dx = h.x - c.x; dy = h.y - c.y;
+      dist = Math.sqrt(dx * dx + dy * dy);
+      a = (1 - dist / LINK) * 0.20;
+      ctx.strokeStyle = "rgba(" + theme.node + "," + a.toFixed(3) + ")";
+      ctx.beginPath();
+      ctx.moveTo(c.x, c.y);
+      ctx.lineTo(h.x, h.y);
+      ctx.stroke();
+    }
+
+    // client dots
+    for (i = 0; i < clients.length; i++) {
+      c = clients[i];
+      ctx.fillStyle = "rgba(" + theme.node + ",0.32)";
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // hubs, breathing slowly
+    for (i = 0; i < hubs.length; i++) {
+      h = hubs[i];
+      var pulseR = h.r + Math.sin(h.phase) * 0.5;
+      ctx.fillStyle = "rgba(" + theme.brass + ",0.55)";
+      ctx.beginPath();
+      ctx.arc(h.x, h.y, pulseR, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "rgba(" + theme.brass + ",0.16)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(h.x, h.y, pulseR + 5 + Math.sin(h.phase) * 1.6, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    // a payment clearing, travelling out to the device
+    for (i = 0; i < pulses.length; i++) {
+      var p = pulses[i];
+      var t = p.t;
+      var px = p.from.x + (p.to.x - p.from.x) * t;
+      var py = p.from.y + (p.to.y - p.from.y) * t;
+      var fade = Math.sin(t * Math.PI);
+      ctx.fillStyle = "rgba(" + theme.brass + "," + (0.85 * fade).toFixed(3) + ")";
+      ctx.beginPath();
+      ctx.arc(px, py, 1.9, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "rgba(" + theme.brass + "," + (0.14 * fade).toFixed(3) + ")";
+      ctx.beginPath();
+      ctx.arc(px, py, 6.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  var last = 0;
+  function frame(ts) {
+    if (!running) { return; }
+    var dt = last ? Math.min((ts - last) / 16.667, 3) : 1;
+    last = ts;
+    step(dt);
+    draw();
+    raf = window.requestAnimationFrame(frame);
+  }
+
+  function start() {
+    if (running || reduced.matches) { return; }
+    running = true; last = 0;
+    raf = window.requestAnimationFrame(frame);
+  }
+  function stop() {
+    running = false;
+    if (raf) { window.cancelAnimationFrame(raf); raf = null; }
+  }
+
+  function boot() {
+    readTheme();
+    resize();
+    if (reduced.matches) { draw(); } else { start(); }
+  }
+
+  var rt = null;
+  window.addEventListener("resize", function () {
+    window.clearTimeout(rt);
+    rt = window.setTimeout(function () { resize(); if (reduced.matches) { draw(); } }, 160);
+  });
+
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden) { stop(); } else if (!reduced.matches) { start(); }
+  });
+
+  if (reduced.addEventListener) {
+    reduced.addEventListener("change", function () {
+      stop();
+      if (reduced.matches) { draw(); } else { start(); }
+    });
+  }
+
+  // repaint on theme flip so the palette follows the viewer
+  var mqLight = window.matchMedia("(prefers-color-scheme: light)");
+  if (mqLight.addEventListener) {
+    mqLight.addEventListener("change", function () { readTheme(); draw(); });
+  }
+  new MutationObserver(function () { readTheme(); draw(); })
+    .observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+
+  boot();
+
+  /* ── entrance ─────────────────────────────────────────── */
+  var rises = document.querySelectorAll(".rise");
+  if (!("IntersectionObserver" in window) || reduced.matches) {
+    for (var k = 0; k < rises.length; k++) { rises[k].classList.add("in"); }
+  } else {
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); }
+      });
+    }, { rootMargin: "0px 0px -8% 0px", threshold: 0.08 });
+    for (var m = 0; m < rises.length; m++) {
+      rises[m].style.transitionDelay = (Math.min(m, 5) * 70) + "ms";
+      io.observe(rises[m]);
+    }
+  }
+}());
+</script>
+
+</body>
+</html>
