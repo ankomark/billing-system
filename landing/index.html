@@ -7,17 +7,19 @@
 <meta name="theme-color" content="#071319" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#f2f5f5" media="(prefers-color-scheme: light)">
 
-<meta name="description" content="SmartBill runs the whole loop for a WiFi business - captive portal, M-Pesa payment, voucher, and the MikroTik configuration behind it. Billing and network control for internet providers.">
+<meta name="description" content="SmartBill Solution - smart solutions, seamless billing. Your customers pay by M-Pesa and your routers open by themselves: captive portal, payments, vouchers and MikroTik provisioning for internet providers.">
 <link rel="canonical" href="https://smartbillsolution.com/">
 
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://smartbillsolution.com/">
 <meta property="og:site_name" content="SmartBill Solution">
-<meta property="og:title" content="SmartBill Solution - billing and network control for internet providers">
-<meta property="og:description" content="Your customers pay by M-Pesa. Your routers open by themselves. Hotspot and PPPoE provisioning on MikroTik, handled automatically.">
+<meta property="og:title" content="SmartBill Solution - billing made smarter">
+<meta property="og:description" content="Smart solutions. Seamless billing. Your customers pay by M-Pesa. Your routers open by themselves.">
+<meta property="og:image" content="https://smartbillsolution.com/img/network-globe.jpg">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="SmartBill Solution">
-<meta name="twitter:description" content="Your customers pay by M-Pesa. Your routers open by themselves.">
+<meta name="twitter:title" content="SmartBill Solution - billing made smarter">
+<meta name="twitter:description" content="Smart solutions. Seamless billing.">
+<meta name="twitter:image" content="https://smartbillsolution.com/img/network-globe.jpg">
 
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23071319'/%3E%3Cg stroke='%23d9b46a' stroke-width='1.4' fill='none'%3E%3Cpath d='M16 16 L7 9 M16 16 L26 10 M16 16 L9 25 M16 16 L25 24'/%3E%3C/g%3E%3Cg fill='%23d9b46a'%3E%3Ccircle cx='16' cy='16' r='3.6'/%3E%3Ccircle cx='7' cy='9' r='1.8'/%3E%3Ccircle cx='26' cy='10' r='1.8'/%3E%3Ccircle cx='9' cy='25' r='1.8'/%3E%3Ccircle cx='25' cy='24' r='1.8'/%3E%3C/g%3E%3C/svg%3E">
 
@@ -45,6 +47,9 @@
   --brass-dim:   rgba(217,180,106,.14);
   --node-rgb:    200, 225, 228;
   --glow:        rgba(217,180,106,.20);
+  --live:        #4ec9a5;
+  --globe-opacity: .55;
+  --card-lift:   rgba(217,180,106,.30);
 
   --shell: 1180px;
   --step--1: clamp(.78rem, .76rem + .12vw, .85rem);
@@ -52,7 +57,7 @@
   --step-1:  clamp(1.2rem, 1.13rem + .35vw, 1.45rem);
   --step-2:  clamp(1.5rem, 1.35rem + .72vw, 2.05rem);
   --step-3:  clamp(2rem, 1.66rem + 1.65vw, 3.2rem);
-  --step-4:  clamp(2.6rem, 1.9rem + 3.4vw, 5.1rem);
+  --step-4:  clamp(2.4rem, 1.8rem + 3vw, 4.6rem);
 }
 
 @media (prefers-color-scheme: light) {
@@ -70,6 +75,9 @@
     --brass-dim:   rgba(138,109,34,.10);
     --node-rgb:    11, 31, 38;
     --glow:        rgba(138,109,34,.16);
+    --live:        #1d7a5f;
+    --globe-opacity: .17;
+    --card-lift:   rgba(138,109,34,.24);
   }
 }
 
@@ -87,6 +95,9 @@
   --brass-dim:   rgba(138,109,34,.10);
   --node-rgb:    11, 31, 38;
   --glow:        rgba(138,109,34,.16);
+  --live:        #1d7a5f;
+  --globe-opacity: .17;
+  --card-lift:   rgba(138,109,34,.24);
 }
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -114,6 +125,7 @@ h1, h2, h3 {
 
 p { margin: 0; }
 a { color: inherit; }
+img { max-width: 100%; display: block; }
 
 .shell {
   width: 100%;
@@ -136,164 +148,295 @@ a { color: inherit; }
 .body-copy { color: var(--ink-soft); max-width: 65ch; }
 
 /* ── ambient network ─────────────────────────────────────── */
-#weave {
-  position: fixed;
-  inset: 0;
-  width: 100%;
-  height: 100%;
+#weave { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; }
+
+/* the globe: the network this thing runs on, seen from outside */
+.globe-wrap {
+  position: absolute;
+  top: 50%;
+  right: -18%;
+  transform: translateY(-50%);
+  width: min(74vw, 780px);
+  aspect-ratio: 734 / 1280;
   z-index: 0;
   pointer-events: none;
+  opacity: var(--globe-opacity);
+  -webkit-mask-image: radial-gradient(closest-side at 42% 50%, #000 42%, rgba(0,0,0,.55) 68%, transparent 92%);
+          mask-image: radial-gradient(closest-side at 42% 50%, #000 42%, rgba(0,0,0,.55) 68%, transparent 92%);
+  animation: globe-drift 34s ease-in-out infinite;
+}
+.globe-wrap img { width: 100%; height: 100%; object-fit: cover; object-position: 30% 50%; }
+@keyframes globe-drift {
+  0%, 100% { transform: translateY(-50%) scale(1); }
+  50%      { transform: translateY(-52%) scale(1.035); }
+}
+@media (max-width: 900px) {
+  .globe-wrap { right: -42%; top: 32%; width: 130vw; opacity: calc(var(--globe-opacity) * .55); }
 }
 
 .page { position: relative; z-index: 1; }
 
 /* ── nav ─────────────────────────────────────────────────── */
 .nav {
-  position: sticky;
-  top: 0;
-  z-index: 40;
+  position: sticky; top: 0; z-index: 40;
   backdrop-filter: blur(14px);
   background: color-mix(in srgb, var(--ground) 82%, transparent);
   border-bottom: 1px solid var(--line);
 }
-.nav-in {
-  display: flex;
-  align-items: center;
-  gap: 1.5rem;
-  min-height: 74px;
-}
-.brand {
-  display: flex;
-  align-items: baseline;
-  gap: .5rem;
-  text-decoration: none;
-  margin-right: auto;
-}
-.brand-mark {
-  font-family: "Marcellus", Georgia, serif;
-  font-size: 1.3rem;
-  letter-spacing: .015em;
-}
+.nav-in { display: flex; align-items: center; gap: 1.5rem; min-height: 74px; }
+.brand { display: flex; align-items: baseline; gap: .5rem; text-decoration: none; margin-right: auto; }
+.brand-mark { font-family: "Marcellus", Georgia, serif; font-size: 1.3rem; letter-spacing: .015em; }
 .brand-mark b { color: var(--brass); font-weight: 400; }
-.brand-tld {
-  font-family: "JetBrains Mono", monospace;
-  font-size: .68rem;
-  letter-spacing: .16em;
-  text-transform: uppercase;
-  color: var(--ink-faint);
-}
+.brand-tld { font-family: "JetBrains Mono", monospace; font-size: .68rem; letter-spacing: .16em; text-transform: uppercase; color: var(--ink-faint); }
 .nav-links { display: none; gap: 2.1rem; }
-@media (min-width: 900px) { .nav-links { display: flex; } }
+@media (min-width: 940px) { .nav-links { display: flex; } }
 .nav-links a {
-  text-decoration: none;
-  font-size: var(--step--1);
-  letter-spacing: .04em;
-  color: var(--ink-soft);
-  padding-block: .3rem;
-  border-bottom: 1px solid transparent;
-  transition: color .2s, border-color .2s;
+  text-decoration: none; font-size: var(--step--1); letter-spacing: .04em;
+  color: var(--ink-soft); padding-block: .3rem;
+  border-bottom: 1px solid transparent; transition: color .2s, border-color .2s;
 }
 .nav-links a:hover, .nav-links a:focus-visible { color: var(--ink); border-bottom-color: var(--brass); }
 
 .client-link {
-  font-family: "JetBrains Mono", monospace;
-  font-size: .72rem;
-  letter-spacing: .13em;
-  text-transform: uppercase;
-  text-decoration: none;
-  color: var(--ink);
-  border: 1px solid var(--line);
-  padding: .58rem .95rem;
-  white-space: nowrap;
+  font-family: "JetBrains Mono", monospace; font-size: .72rem; letter-spacing: .13em;
+  text-transform: uppercase; text-decoration: none; color: var(--ink);
+  border: 1px solid var(--line); padding: .58rem .95rem; white-space: nowrap;
   transition: border-color .2s, color .2s;
 }
 .client-link:hover, .client-link:focus-visible { border-color: var(--brass); color: var(--brass); }
 
 /* ── hero ────────────────────────────────────────────────── */
+.hero-outer { position: relative; overflow: hidden; }
 .hero {
-  display: grid;
-  gap: 2.2rem;
-  padding-block: clamp(4.5rem, 11vw, 9rem) clamp(3.5rem, 8vw, 6.5rem);
+  display: grid; gap: 2rem;
+  padding-block: clamp(3.5rem, 8vw, 6.5rem) clamp(3rem, 7vw, 5rem);
+  position: relative; z-index: 2;
 }
-.hero h1 { font-size: var(--step-4); max-width: 17ch; }
+@media (min-width: 1000px) {
+  .hero { grid-template-columns: minmax(0, 1.15fr) minmax(300px, .85fr); align-items: center; gap: 3.5rem; }
+  .hero-copy { grid-column: 1; }
+  .hero-live { grid-column: 2; }
+}
+.hero-copy { display: grid; gap: 1.6rem; }
+.hero h1 { font-size: var(--step-4); max-width: 15ch; }
 .hero h1 .accent { color: var(--brass); }
-.hero-sub { max-width: 56ch; color: var(--ink-soft); font-size: var(--step-1); line-height: 1.58; }
+.hero-sub { max-width: 52ch; color: var(--ink-soft); font-size: var(--step-1); line-height: 1.58; }
+.hero-tagline {
+  font-family: "Marcellus", Georgia, serif;
+  font-size: clamp(1.05rem, .98rem + .35vw, 1.3rem);
+  color: var(--brass); letter-spacing: .02em;
+  display: flex; align-items: center; gap: .9rem;
+}
+.hero-tagline::after { content: ""; height: 1px; flex: 1; max-width: 120px; background: linear-gradient(90deg, var(--brass), transparent); }
+
+/* ── capability grid ─────────────────────────────────────── */
+.caps { display: grid; gap: 1px; background: var(--line); border: 1px solid var(--line); }
+@media (min-width: 700px)  { .caps { grid-template-columns: repeat(2, 1fr); } }
+@media (min-width: 1040px) { .caps { grid-template-columns: repeat(3, 1fr); } }
+.cap {
+  background: var(--ground); padding: clamp(1.5rem, 3vw, 2rem);
+  display: grid; gap: .7rem; align-content: start;
+  transition: background .25s ease;
+}
+.cap:hover { background: color-mix(in srgb, var(--surface) 70%, transparent); }
+.cap-top { display: flex; align-items: center; gap: .8rem; }
+.cap-ico {
+  width: 38px; height: 38px; flex: none; border-radius: 50%;
+  border: 1px solid var(--card-lift); background: var(--brass-dim);
+  display: grid; place-items: center; color: var(--brass);
+}
+.cap-ico svg { width: 18px; height: 18px; }
+.cap h3 { font-size: 1.08rem; }
+.cap p { color: var(--ink-soft); font-size: var(--step--1); line-height: 1.62; }
+.cap-list { display: grid; gap: .35rem; margin-top: .15rem; }
+.cap-list span {
+  display: grid; grid-template-columns: auto 1fr; gap: .55rem;
+  font-size: var(--step--1); color: var(--ink-soft); line-height: 1.5;
+}
+.cap-list svg { width: 14px; height: 14px; color: var(--live); margin-top: .34rem; }
+
+/* ── closing value strip ─────────────────────────────────── */
+.value { border-block: 1px solid var(--line); background: color-mix(in srgb, var(--surface) 60%, transparent); }
+.value-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+.value-item {
+  display: flex; align-items: center; gap: .85rem;
+  padding: 1.7rem clamp(1.1rem, 2.4vw, 1.8rem);
+  border-right: 1px solid var(--line);
+  font-family: "JetBrains Mono", monospace; font-size: .74rem;
+  letter-spacing: .13em; text-transform: uppercase; color: var(--ink);
+}
+.value-item:last-child { border-right: none; }
+.value-item svg { width: 19px; height: 19px; color: var(--brass); flex: none; }
 
 .cta-row { display: flex; flex-wrap: wrap; gap: .85rem; align-items: center; }
 
 .btn {
-  display: inline-flex;
-  align-items: center;
-  gap: .6rem;
-  text-decoration: none;
-  font-family: "JetBrains Mono", monospace;
-  font-size: .78rem;
-  letter-spacing: .13em;
-  text-transform: uppercase;
-  padding: .95rem 1.5rem;
-  border: 1px solid transparent;
-  transition: transform .18s, background .2s, border-color .2s, color .2s;
+  display: inline-flex; align-items: center; gap: .6rem; text-decoration: none;
+  font-family: "JetBrains Mono", monospace; font-size: .78rem; letter-spacing: .13em;
+  text-transform: uppercase; padding: .95rem 1.5rem; border: 1px solid transparent;
+  cursor: pointer;
+  transition: transform .18s, background .2s, border-color .2s, color .2s, box-shadow .2s;
 }
 .btn:active { transform: translateY(1px); }
-.btn-primary {
-  background: var(--brass);
-  color: var(--ground-deep);
-  font-weight: 500;
-  box-shadow: 0 0 0 0 var(--glow);
-}
-.btn-primary:hover, .btn-primary:focus-visible {
-  background: var(--brass-bright);
-  box-shadow: 0 10px 34px -12px var(--glow);
-}
-.btn-ghost { border-color: var(--line); color: var(--ink); }
+.btn-primary { background: var(--brass); color: var(--ground-deep); font-weight: 500; }
+.btn-primary:hover, .btn-primary:focus-visible { background: var(--brass-bright); box-shadow: 0 10px 34px -12px var(--glow); }
+.btn-ghost { border-color: var(--line); color: var(--ink); background: transparent; }
 .btn-ghost:hover, .btn-ghost:focus-visible { border-color: var(--brass); color: var(--brass); }
 
-.hero-note {
-  font-family: "JetBrains Mono", monospace;
-  font-size: .72rem;
-  letter-spacing: .1em;
-  color: var(--ink-faint);
-  display: flex;
-  align-items: center;
-  gap: .55rem;
+/* ── live panel: the "active signs" ──────────────────────── */
+.livepanel {
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  backdrop-filter: blur(10px);
+  display: grid;
+  box-shadow: 0 30px 70px -40px rgba(0,0,0,.85);
 }
-.pip {
-  width: 6px; height: 6px; border-radius: 50%;
-  background: var(--brass);
-  box-shadow: 0 0 0 3px var(--brass-dim);
-  flex: none;
+.livepanel-head {
+  display: flex; align-items: center; gap: .6rem;
+  padding: .95rem 1.2rem; border-bottom: 1px solid var(--line);
+  font-family: "JetBrains Mono", monospace; font-size: .69rem;
+  letter-spacing: .15em; text-transform: uppercase; color: var(--ink-soft);
 }
+.dot-live {
+  width: 7px; height: 7px; border-radius: 50%; background: var(--live); flex: none;
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--live) 70%, transparent);
+  animation: ping 2.4s cubic-bezier(.4,0,.2,1) infinite;
+}
+@keyframes ping {
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--live) 55%, transparent); }
+  70%  { box-shadow: 0 0 0 9px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+.livepanel-body { display: grid; }
+.live-row {
+  display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 1rem;
+  padding: .95rem 1.2rem; border-bottom: 1px solid var(--line);
+}
+.live-row:last-child { border-bottom: none; }
+.live-k { font-size: var(--step--1); color: var(--ink-soft); }
+.live-v {
+  font-family: "JetBrains Mono", monospace; font-weight: 500;
+  font-size: 1.15rem; color: var(--brass); font-variant-numeric: tabular-nums;
+}
+.live-v.ok { color: var(--live); }
+.bars { display: flex; align-items: flex-end; gap: 3px; height: 26px; }
+.bars i { width: 4px; background: var(--brass); opacity: .55; display: block; animation: bar 2.6s ease-in-out infinite; }
+@keyframes bar { 0%,100% { height: 26%; } 50% { height: 100%; } }
+
+/* ── interactive demo ────────────────────────────────────── */
+.demo { background: color-mix(in srgb, var(--surface) 45%, transparent); border-block: 1px solid var(--line); }
+.demo-grid { display: grid; gap: 2rem; align-items: start; }
+@media (min-width: 940px) { .demo-grid { grid-template-columns: 340px 1fr; gap: 3rem; } }
+
+.phone {
+  border: 1px solid var(--line); border-radius: 26px;
+  background: var(--ground-deep); padding: .8rem;
+  box-shadow: 0 40px 80px -50px rgba(0,0,0,.9);
+  max-width: 340px; width: 100%; margin-inline: auto;
+}
+.phone-screen {
+  border: 1px solid var(--line); border-radius: 18px; background: var(--ground);
+  min-height: 430px; padding: 1.15rem; display: grid; gap: .85rem; align-content: start;
+  position: relative; overflow: hidden;
+}
+.phone-bar {
+  display: flex; justify-content: space-between; align-items: center;
+  font-family: "JetBrains Mono", monospace; font-size: .6rem;
+  letter-spacing: .1em; color: var(--ink-faint); margin-bottom: .2rem;
+}
+.portal-brand { font-family: "Marcellus", Georgia, serif; font-size: 1.05rem; }
+.portal-brand b { color: var(--brass); font-weight: 400; }
+.portal-hint { font-size: .78rem; color: var(--ink-soft); line-height: 1.5; }
+
+.pkg { display: grid; gap: .5rem; }
+.pkg button {
+  display: flex; justify-content: space-between; align-items: center; gap: .8rem;
+  width: 100%; text-align: left; cursor: pointer;
+  background: var(--surface); color: var(--ink);
+  border: 1px solid var(--line); padding: .7rem .85rem;
+  font-family: inherit; font-size: .85rem;
+  transition: border-color .18s, transform .18s, background .18s;
+}
+.pkg button:hover:not(:disabled), .pkg button:focus-visible:not(:disabled) {
+  border-color: var(--brass); transform: translateX(3px); background: var(--surface-2);
+}
+.pkg button:disabled { opacity: .4; cursor: default; }
+.pkg .price { font-family: "JetBrains Mono", monospace; color: var(--brass); font-size: .82rem; white-space: nowrap; }
+
+.stage { display: grid; gap: .75rem; align-content: start; }
+.stage-msg { font-size: .84rem; color: var(--ink-soft); line-height: 1.55; }
+.mpesa {
+  border: 1px solid var(--line); background: var(--surface);
+  padding: .9rem; display: grid; gap: .45rem;
+}
+.mpesa-t { font-family: "JetBrains Mono", monospace; font-size: .62rem; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-faint); }
+.mpesa-b { font-size: .84rem; line-height: 1.5; }
+.pinrow { display: flex; gap: .4rem; margin-top: .2rem; }
+.pinrow span {
+  width: 26px; height: 32px; border: 1px solid var(--line); background: var(--ground);
+  display: grid; place-items: center; font-family: "JetBrains Mono", monospace; color: var(--brass);
+}
+.done-badge {
+  display: inline-flex; align-items: center; gap: .5rem;
+  font-family: "JetBrains Mono", monospace; font-size: .7rem;
+  letter-spacing: .1em; text-transform: uppercase; color: var(--live);
+}
+.timer { font-family: "JetBrains Mono", monospace; font-size: 1.9rem; color: var(--brass); font-variant-numeric: tabular-nums; }
+
+.spinner {
+  width: 15px; height: 15px; border: 2px solid var(--line);
+  border-top-color: var(--brass); border-radius: 50%;
+  animation: spin .8s linear infinite; flex: none;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.inline-wait { display: flex; align-items: center; gap: .6rem; font-size: .82rem; color: var(--ink-soft); }
+
+/* router console */
+.console {
+  border: 1px solid var(--line); background: var(--ground-deep);
+  display: grid; align-content: start; min-height: 430px;
+}
+.console-head {
+  display: flex; align-items: center; gap: .6rem; padding: .8rem 1.1rem;
+  border-bottom: 1px solid var(--line);
+  font-family: "JetBrains Mono", monospace; font-size: .66rem;
+  letter-spacing: .14em; text-transform: uppercase; color: var(--ink-soft);
+}
+.console-body {
+  padding: 1.1rem; font-family: "JetBrains Mono", monospace;
+  font-size: .76rem; line-height: 1.95; color: var(--ink-soft);
+  overflow-x: auto;
+}
+.console-body .l { display: block; white-space: pre; opacity: 0; transform: translateX(-6px); }
+.console-body .l.show { opacity: 1; transform: none; transition: opacity .3s, transform .3s; }
+.console-body .c-dim { color: var(--ink-faint); }
+.console-body .c-key { color: var(--brass); }
+.console-body .c-ok  { color: var(--live); }
+
+.demo-steps { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: 1.2rem; }
+.demo-steps span {
+  font-family: "JetBrains Mono", monospace; font-size: .64rem; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--ink-faint);
+  border: 1px solid var(--line); padding: .35rem .6rem;
+  transition: color .25s, border-color .25s, background .25s;
+}
+.demo-steps span.on { color: var(--brass); border-color: var(--brass); background: var(--brass-dim); }
+.demo-steps span.done { color: var(--live); border-color: color-mix(in srgb, var(--live) 45%, transparent); }
 
 /* ── measures band ───────────────────────────────────────── */
-.band {
-  border-block: 1px solid var(--line);
-  background: color-mix(in srgb, var(--surface) 55%, transparent);
-}
-.band-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-}
+.band { border-block: 1px solid var(--line); background: color-mix(in srgb, var(--surface) 55%, transparent); }
+.band-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
 .measure {
-  padding: 2.1rem 0;
-  display: grid;
-  gap: .3rem;
-  border-right: 1px solid var(--line);
-  padding-inline: clamp(1.1rem, 2.6vw, 1.9rem);
+  padding: 2.1rem 0; display: grid; gap: .3rem;
+  border-right: 1px solid var(--line); padding-inline: clamp(1.1rem, 2.6vw, 1.9rem);
 }
 .measure:last-child { border-right: none; }
 .measure-n {
   font-family: "JetBrains Mono", monospace;
-  font-size: clamp(1.65rem, 1.3rem + 1.2vw, 2.3rem);
-  font-weight: 500;
-  color: var(--brass);
-  font-variant-numeric: tabular-nums;
-  line-height: 1;
+  font-size: clamp(1.65rem, 1.3rem + 1.2vw, 2.3rem); font-weight: 500;
+  color: var(--brass); font-variant-numeric: tabular-nums; line-height: 1;
 }
-.measure-l {
-  font-size: var(--step--1);
-  color: var(--ink-soft);
-  line-height: 1.45;
-}
+.measure-l { font-size: var(--step--1); color: var(--ink-soft); line-height: 1.45; }
 
 /* ── sections ────────────────────────────────────────────── */
 section { position: relative; }
@@ -301,15 +444,8 @@ section { position: relative; }
 .sec-head { display: grid; gap: 1.1rem; margin-bottom: clamp(2.5rem, 5vw, 4rem); }
 .sec-head h2 { font-size: var(--step-3); max-width: 20ch; }
 
-/* asymmetric capability rows */
 .rows { display: grid; gap: 0; border-top: 1px solid var(--line); }
-.row {
-  display: grid;
-  gap: 1rem 3.2rem;
-  padding-block: clamp(1.9rem, 4vw, 2.9rem);
-  border-bottom: 1px solid var(--line);
-  align-items: start;
-}
+.row { display: grid; gap: 1rem 3.2rem; padding-block: clamp(1.9rem, 4vw, 2.9rem); border-bottom: 1px solid var(--line); align-items: start; }
 @media (min-width: 860px) {
   .row { grid-template-columns: 1.05fr 1.45fr; }
   .row:nth-child(even) .row-body { order: -1; }
@@ -317,118 +453,131 @@ section { position: relative; }
 }
 .row-title { display: grid; gap: .55rem; align-content: start; }
 .row-title h3 { font-size: var(--step-2); }
-.row-idx {
-  font-family: "JetBrains Mono", monospace;
-  font-size: .7rem;
-  letter-spacing: .16em;
-  color: var(--brass);
-  text-transform: uppercase;
-}
+.row-idx { font-family: "JetBrains Mono", monospace; font-size: .7rem; letter-spacing: .16em; color: var(--brass); text-transform: uppercase; }
 .row-body { color: var(--ink-soft); }
 .row-body strong { color: var(--ink); font-weight: 500; }
 
-/* how it works — a real sequence, so it is numbered */
 .flow { display: grid; gap: 0; counter-reset: step; }
-.step {
-  display: grid;
-  gap: .35rem 1.9rem;
-  grid-template-columns: auto 1fr;
-  padding-block: 1.8rem;
-  border-bottom: 1px solid var(--line);
-}
+.step { display: grid; gap: .35rem 1.9rem; grid-template-columns: auto 1fr; padding-block: 1.8rem; border-bottom: 1px solid var(--line); }
 .step:first-child { border-top: 1px solid var(--line); }
 .step-n {
-  counter-increment: step;
-  font-family: "JetBrains Mono", monospace;
-  font-size: .82rem;
-  font-weight: 500;
-  color: var(--brass);
-  grid-row: span 2;
-  padding-top: .42rem;
-  font-variant-numeric: tabular-nums;
+  counter-increment: step; font-family: "JetBrains Mono", monospace;
+  font-size: .82rem; font-weight: 500; color: var(--brass);
+  grid-row: span 2; padding-top: .42rem; font-variant-numeric: tabular-nums;
 }
 .step-n::before { content: counter(step, decimal-leading-zero); }
 .step h3 { font-size: var(--step-1); }
 .step p { color: var(--ink-soft); max-width: 62ch; }
 
-/* who it is for */
-.cards { display: grid; gap: 1px; background: var(--line); border: 1px solid var(--line); }
+/* ── who it's for: lifting glow cards ────────────────────── */
+.cards { display: grid; gap: 1.25rem; }
 @media (min-width: 780px) { .cards { grid-template-columns: repeat(3, 1fr); } }
 .card {
-  background: var(--ground);
-  padding: clamp(1.6rem, 3vw, 2.2rem);
-  display: grid;
-  gap: .7rem;
-  align-content: start;
+  background: color-mix(in srgb, var(--surface) 80%, transparent);
+  border: 1px solid var(--line);
+  padding: clamp(1.6rem, 3vw, 2.1rem);
+  display: grid; gap: .8rem; align-content: start;
+  transition: transform .28s ease, border-color .28s ease, box-shadow .28s ease;
 }
+.card:hover { transform: translateY(-6px); border-color: var(--card-lift); box-shadow: 0 26px 60px -34px var(--glow); }
 .card h3 { font-size: var(--step-1); }
 .card p { color: var(--ink-soft); font-size: var(--step--1); line-height: 1.62; }
+.card-ico {
+  width: 46px; height: 46px; border: 1px solid var(--card-lift); border-radius: 50%;
+  display: grid; place-items: center; color: var(--brass); background: var(--brass-dim);
+}
+.card-ico svg { width: 21px; height: 21px; }
 
-/* contact */
+/* ── people on the network ───────────────────────────────── */
+.people { display: grid; gap: 1.25rem; }
+@media (min-width: 820px) { .people { grid-template-columns: repeat(3, 1fr); } }
+.person {
+  border: 1px solid var(--line); background: color-mix(in srgb, var(--surface) 70%, transparent);
+  display: grid; gap: 0; overflow: hidden;
+  transition: transform .28s ease, border-color .28s ease;
+}
+.person:hover { transform: translateY(-5px); border-color: var(--card-lift); }
+/* Three photographs from three different shoots, on three different
+   backgrounds. Left raw they read as clip-art dropped on a dark page, so
+   they are duotoned onto the brand gradient — luminosity blending keeps
+   the faces and throws away the purple, white and mint. Hovering releases
+   the treatment and returns the photograph to full colour. */
+.person-art {
+  aspect-ratio: 4 / 5;
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(165deg, color-mix(in srgb, var(--brass) 58%, #000) 0%, var(--ground-deep) 82%);
+}
+.person-art img {
+  width: 100%; height: 100%; object-fit: cover;
+  mix-blend-mode: luminosity;
+  opacity: .88;
+  filter: contrast(1.05);
+  transition: mix-blend-mode .45s ease, opacity .45s ease, filter .45s ease, transform .7s ease;
+}
+.person:hover .person-art img,
+.person:focus-within .person-art img {
+  mix-blend-mode: normal; opacity: 1; filter: none; transform: scale(1.035);
+}
+.person-art::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(to top, var(--ground) 1%, transparent 46%);
+}
+.person-art svg { width: 100%; height: 100%; display: block; }
+.person-txt { padding: 1.15rem 1.25rem 1.4rem; display: grid; gap: .4rem; }
+.person-txt h3 { font-size: var(--step-1); }
+.person-txt p { color: var(--ink-soft); font-size: var(--step--1); line-height: 1.6; }
+.person-tag {
+  font-family: "JetBrains Mono", monospace; font-size: .63rem; letter-spacing: .14em;
+  text-transform: uppercase; color: var(--live);
+  display: inline-flex; align-items: center; gap: .45rem;
+}
+
+/* ── contact ─────────────────────────────────────────────── */
 .contact { background: var(--surface); border-block: 1px solid var(--line); }
 .channels { display: grid; gap: 1px; background: var(--line); border: 1px solid var(--line); margin-top: 2.6rem; }
 @media (min-width: 780px) { .channels { grid-template-columns: repeat(3, 1fr); } }
 .channel {
-  background: var(--surface);
-  padding: clamp(1.7rem, 3vw, 2.3rem);
-  display: grid;
-  gap: .45rem;
-  align-content: start;
-  text-decoration: none;
+  background: var(--surface); padding: clamp(1.7rem, 3vw, 2.3rem);
+  display: grid; gap: .45rem; align-content: start; text-decoration: none;
   transition: background .2s;
 }
 .channel:hover, .channel:focus-visible { background: var(--surface-2); }
-.channel-k {
-  font-family: "JetBrains Mono", monospace;
-  font-size: .7rem;
-  letter-spacing: .16em;
-  text-transform: uppercase;
-  color: var(--brass);
-}
+.channel-k { font-family: "JetBrains Mono", monospace; font-size: .7rem; letter-spacing: .16em; text-transform: uppercase; color: var(--brass); }
 .channel-v { font-family: "Marcellus", Georgia, serif; font-size: var(--step-1); word-break: break-word; }
 .channel-note { font-size: var(--step--1); color: var(--ink-faint); }
 
 .divider-note {
-  margin-top: 2.6rem;
-  padding: 1.4rem 1.6rem;
-  border: 1px solid var(--line);
-  border-left: 2px solid var(--brass);
+  margin-top: 2.6rem; padding: 1.4rem 1.6rem;
+  border: 1px solid var(--line); border-left: 2px solid var(--brass);
   background: color-mix(in srgb, var(--brass) 5%, transparent);
-  color: var(--ink-soft);
-  font-size: var(--step--1);
-  max-width: 68ch;
+  color: var(--ink-soft); font-size: var(--step--1); max-width: 68ch;
 }
 .divider-note a { color: var(--brass); text-underline-offset: 3px; }
 
-/* footer */
 .foot {
-  padding-block: 2.8rem 3.4rem;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 1rem 2rem;
-  align-items: center;
-  justify-content: space-between;
-  font-family: "JetBrains Mono", monospace;
-  font-size: .72rem;
-  letter-spacing: .08em;
-  color: var(--ink-faint);
+  padding-block: 2.8rem 3.4rem; display: flex; flex-wrap: wrap;
+  gap: 1rem 2rem; align-items: center; justify-content: space-between;
+  font-family: "JetBrains Mono", monospace; font-size: .72rem;
+  letter-spacing: .08em; color: var(--ink-faint);
 }
 .foot a { color: var(--ink-soft); text-decoration: none; }
 .foot a:hover { color: var(--brass); }
 
 :focus-visible { outline: 2px solid var(--brass); outline-offset: 3px; }
 
-@media (prefers-reduced-motion: reduce) {
-  * { animation-duration: .001ms !important; transition-duration: .001ms !important; }
-}
-
-/* entrance */
 .rise { opacity: 0; transform: translateY(16px); transition: opacity .7s ease, transform .7s ease; }
 .rise.in { opacity: 1; transform: none; }
-@media (prefers-reduced-motion: reduce) { .rise { opacity: 1; transform: none; } }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
+  .rise { opacity: 1; transform: none; }
+  .globe-wrap { animation: none; }
+}
 </style>
 </head>
 <body>
+
 
 <canvas id="weave" aria-hidden="true"></canvas>
 
@@ -441,6 +590,8 @@ section { position: relative; }
         <span class="brand-tld">Solution</span>
       </a>
       <nav class="nav-links" aria-label="Sections">
+        <a href="#demo">See it work</a>
+        <a href="#capabilities">Capabilities</a>
         <a href="#what">What it does</a>
         <a href="#how">How it works</a>
         <a href="#who">Who it's for</a>
@@ -452,37 +603,163 @@ section { position: relative; }
 
   <main id="top">
 
-    <section class="shell hero">
-      <p class="eyebrow rise">Billing &amp; network control for internet providers</p>
-      <h1 class="rise">Your customers pay by M-Pesa. Your routers <span class="accent">open by themselves.</span></h1>
-      <p class="hero-sub rise">SmartBill runs the whole loop for a WiFi business — the captive portal, the payment, the voucher, and the MikroTik configuration behind it. No spreadsheets. No one sitting up at night switching people on.</p>
-      <div class="cta-row rise">
-        <a class="btn btn-primary" href="https://wa.me/254701071435?text=Hello%20SmartBill%20-%20I%27d%20like%20a%20demo%20account">Request a demo account</a>
-        <a class="btn btn-ghost" href="#what">See what it does</a>
+    <div class="hero-outer">
+      <div class="globe-wrap" aria-hidden="true">
+        <img src="img/network-globe.jpg" alt="">
       </div>
-      <p class="hero-note rise"><span class="pip"></span> Available worldwide — live on subscriber networks today</p>
-    </section>
+
+      <section class="shell hero">
+        <div class="hero-copy">
+          <p class="eyebrow rise">Welcome to SmartBill Solution</p>
+          <h1 class="rise">Billing made <span class="accent">smarter.</span></h1>
+          <p class="hero-tagline rise">Smart solutions. Seamless billing.</p>
+          <p class="hero-sub rise"><strong>Your customers pay by M-Pesa. Your routers open by themselves.</strong> SmartBill runs the whole loop for a WiFi business — the captive portal, the payment, the voucher, and the MikroTik configuration behind it. No spreadsheets, and nobody sitting up at night switching people on.</p>
+          <div class="cta-row rise">
+            <a class="btn btn-primary" href="https://wa.me/254701071435?text=Hello%20SmartBill%20-%20I%27d%20like%20a%20demo%20account">Request a demo account</a>
+            <a class="btn btn-ghost" href="#demo">Watch it provision</a>
+          </div>
+        </div>
+
+        <aside class="livepanel rise" aria-label="Live network activity">
+          <div class="livepanel-head"><span class="dot-live"></span> Network activity</div>
+          <div class="livepanel-body">
+            <div class="live-row">
+              <span class="live-k">Routers reporting in</span>
+              <span class="live-v ok" data-count="24" data-suffix="/7">0</span>
+            </div>
+            <div class="live-row">
+              <span class="live-k">Sessions on the network</span>
+              <span class="live-v" data-count="1240" data-plus="1">0</span>
+            </div>
+            <div class="live-row">
+              <span class="live-k">Time from payment to online</span>
+              <span class="live-v" data-count="9" data-suffix="s">0</span>
+            </div>
+            <div class="live-row">
+              <span class="live-k">Throughput</span>
+              <span class="bars" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+            </div>
+          </div>
+        </aside>
+      </section>
+    </div>
 
     <div class="band">
       <div class="shell band-grid">
-        <div class="measure">
-          <span class="measure-n">M-Pesa</span>
-          <span class="measure-l">STK push straight to the customer's phone — access opens on confirmation</span>
-        </div>
-        <div class="measure">
-          <span class="measure-n">MikroTik</span>
-          <span class="measure-l">Hotspot and PPPoE provisioned on RouterOS automatically</span>
-        </div>
-        <div class="measure">
-          <span class="measure-n">Multi-site</span>
-          <span class="measure-l">Many routers, many towers, one dashboard and one set of books</span>
-        </div>
-        <div class="measure">
-          <span class="measure-n">24 / 7</span>
-          <span class="measure-l">Router health watched continuously, with automatic failover</span>
-        </div>
+        <div class="measure"><span class="measure-n">M-Pesa</span><span class="measure-l">STK push straight to the customer's phone — access opens on confirmation</span></div>
+        <div class="measure"><span class="measure-n">MikroTik</span><span class="measure-l">Hotspot and PPPoE provisioned on RouterOS automatically</span></div>
+        <div class="measure"><span class="measure-n">Multi-site</span><span class="measure-l">Many routers, many towers, one dashboard and one set of books</span></div>
+        <div class="measure"><span class="measure-n">24 / 7</span><span class="measure-l">Router health watched continuously, with automatic failover</span></div>
       </div>
     </div>
+
+    <!-- ── the interactive piece ─────────────────────────── -->
+    <section class="demo" id="demo">
+      <div class="shell sec">
+        <div class="sec-head">
+          <p class="eyebrow">See it work</p>
+          <h2>Buy a package. Watch the router configure itself.</h2>
+          <p class="body-copy">This is the real sequence, at real speed — the portal your customer sees on the left, and what SmartBill says to your MikroTik on the right. Pick a package.</p>
+        </div>
+
+        <div class="demo-grid">
+          <div class="phone rise">
+            <div class="phone-screen">
+              <div class="phone-bar"><span>SKYLINK WIFI</span><span id="demoClock">20:14</span></div>
+              <div class="portal-brand">Smart<b>Bill</b> portal</div>
+              <div id="demoStage" class="stage">
+                <p class="portal-hint">Choose how long you'd like to be online.</p>
+                <div class="pkg" id="demoPkgs">
+                  <button type="button" data-mins="180" data-price="10" data-name="3 hours">3 hours unlimited <span class="price">KES 10</span></button>
+                  <button type="button" data-mins="1440" data-price="40" data-name="24 hours">24 hours unlimited <span class="price">KES 40</span></button>
+                  <button type="button" data-mins="10080" data-price="175" data-name="1 week">1 week unlimited <span class="price">KES 175</span></button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <div class="console rise">
+              <div class="console-head"><span class="dot-live"></span> smartbill → skylink3 (10.10.0.5)</div>
+              <div class="console-body" id="demoConsole" aria-live="polite">
+                <span class="l show c-dim">waiting for a package to be selected…</span>
+              </div>
+            </div>
+            <div class="demo-steps" id="demoSteps">
+              <span data-s="0">Package chosen</span>
+              <span data-s="1">M-Pesa prompt</span>
+              <span data-s="2">Payment confirmed</span>
+              <span data-s="3">Router provisioned</span>
+              <span data-s="4">Online</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── everything the operation needs ────────────────── -->
+    <section class="shell sec" id="capabilities">
+      <div class="sec-head">
+        <p class="eyebrow">All in one place</p>
+        <h2>Everything your internet business needs to get paid.</h2>
+        <p class="body-copy">Invoicing, payments, subscribers, reporting and the network itself — one system, one login, one set of books. Nothing to reconcile between tools at the end of the month.</p>
+      </div>
+
+      <div class="caps">
+        <div class="cap rise">
+          <div class="cap-top">
+            <span class="cap-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M6 2h9l5 5v15H6z"/><path d="M15 2v5h5"/><path d="M9.5 12.5h6M9.5 16h6"/></svg></span>
+            <h3>Automatic invoicing</h3>
+          </div>
+          <p>Every subscription raises its own invoice the moment it is created — numbered, dated, and tied to the package that produced it. Nobody types one.</p>
+        </div>
+
+        <div class="cap rise">
+          <div class="cap-top">
+            <span class="cap-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="2.5" y="5" width="19" height="14" rx="2"/><path d="M2.5 10h19"/><path d="M6.5 15h4"/></svg></span>
+            <h3>Payment tracking</h3>
+          </div>
+          <p>Every M-Pesa transaction is matched to the subscriber and the subscription it paid for. You can answer "did this person pay?" from the dashboard, not from an SMS inbox.</p>
+        </div>
+
+        <div class="cap rise">
+          <div class="cap-top">
+            <span class="cap-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="9" cy="8" r="3.4"/><path d="M2.6 20c0-3.6 2.9-6.2 6.4-6.2s6.4 2.6 6.4 6.2"/><path d="M16.5 5.4a3.4 3.4 0 0 1 0 5.6"/><path d="M18.4 13.9c1.8.8 3 2.4 3 4.4"/></svg></span>
+            <h3>Subscriber management</h3>
+          </div>
+          <p>Who is connected, on which router, on what package, with how many devices, and when their time runs out. Block a handset and it leaves the network, not just the record.</p>
+        </div>
+
+        <div class="cap rise">
+          <div class="cap-top">
+            <span class="cap-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 21h18"/><rect x="5" y="12" width="3.4" height="7"/><rect x="10.3" y="7.5" width="3.4" height="11.5"/><rect x="15.6" y="4" width="3.4" height="15"/></svg></span>
+            <h3>Reports that add up</h3>
+          </div>
+          <p>Revenue by package, by router and by site. Data used per subscriber. Failed connection attempts and the reason for each. The numbers come from the same rows that granted the access.</p>
+        </div>
+
+        <div class="cap rise">
+          <div class="cap-top">
+            <span class="cap-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 2.8l7.5 3v6.1c0 4.5-3.1 8.2-7.5 9.3-4.4-1.1-7.5-4.8-7.5-9.3V5.8z"/><path d="M9 12.2l2.2 2.2L15.4 10"/></svg></span>
+            <h3>Secure &amp; cloud based</h3>
+          </div>
+          <p>Runs on your own server or ours, reached over encrypted tunnels to routers that sit behind CGNAT. Backed up nightly, before any change is applied.</p>
+        </div>
+
+        <div class="cap rise">
+          <div class="cap-top">
+            <span class="cap-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2 9a16 16 0 0 1 20 0M5.5 12.5a11 11 0 0 1 13 0M9 16a6 6 0 0 1 6 0"/><circle cx="12" cy="19.5" r="1.3" fill="currentColor" stroke="none"/></svg></span>
+            <h3>The network itself</h3>
+          </div>
+          <div class="cap-list">
+            <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M4 12.5l5 5L20 6.5"/></svg>Hotspot vouchers &amp; captive portal</span>
+            <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M4 12.5l5 5L20 6.5"/></svg>PPPoE lines for homes &amp; business</span>
+            <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M4 12.5l5 5L20 6.5"/></svg>Speed profiles applied at the router</span>
+            <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M4 12.5l5 5L20 6.5"/></svg>Health monitoring &amp; automatic failover</span>
+          </div>
+        </div>
+      </div>
+    </section>
 
     <section class="shell sec" id="what">
       <div class="sec-head">
@@ -493,34 +770,19 @@ section { position: relative; }
 
       <div class="rows">
         <div class="row rise">
-          <div class="row-title">
-            <span class="row-idx">Payments</span>
-            <h3>Money collects itself</h3>
-          </div>
+          <div class="row-title"><span class="row-idx">Payments</span><h3>Money collects itself</h3></div>
           <p class="row-body">A customer picks a package on your portal and enters their number. The M-Pesa prompt reaches their phone, and the moment it clears, their access opens and their code is issued. <strong>Every transaction is reconciled against the subscription that paid for it</strong> — so an abandoned prompt never quietly becomes free internet.</p>
         </div>
-
         <div class="row rise">
-          <div class="row-title">
-            <span class="row-idx">Provisioning</span>
-            <h3>The router configures itself</h3>
-          </div>
+          <div class="row-title"><span class="row-idx">Provisioning</span><h3>The router configures itself</h3></div>
           <p class="row-body">SmartBill speaks RouterOS directly. It creates the hotspot user or the PPPoE secret, applies the speed profile the package was sold at, and writes the expiry onto the router itself — <strong>so time runs out on the hardware, not just in the database.</strong> If a router is briefly unreachable it retries, and tells you if it still can't.</p>
         </div>
-
         <div class="row rise">
-          <div class="row-title">
-            <span class="row-idx">Control</span>
-            <h3>One code, the devices you sold</h3>
-          </div>
+          <div class="row-title"><span class="row-idx">Control</span><h3>One code, the devices you sold</h3></div>
           <p class="row-body">Packages carry a device allowance, and it is counted against who is actually online rather than every phone that ever connected. A customer who changes handset isn't locked out; <strong>a code being passed around a room is.</strong> Devices can be blocked outright, and a blocked handset is disconnected, not just recorded.</p>
         </div>
-
         <div class="row rise">
-          <div class="row-title">
-            <span class="row-idx">Visibility</span>
-            <h3>You can see the whole network</h3>
-          </div>
+          <div class="row-title"><span class="row-idx">Visibility</span><h3>You can see the whole network</h3></div>
           <p class="row-body">Live sessions, data used, revenue by package, which router each subscriber is on, and every device that failed to connect and why. Routers are polled continuously — <strong>when one drops, subscribers move to another and the move is recorded</strong> rather than discovered later from complaints.</p>
         </div>
       </div>
@@ -531,28 +793,55 @@ section { position: relative; }
         <p class="eyebrow">How it works</p>
         <h2>Four steps, and nobody on your side touches any of them.</h2>
       </div>
-
       <div class="flow">
-        <div class="step rise">
-          <span class="step-n" aria-hidden="true"></span>
-          <h3>They connect to your WiFi</h3>
-          <p>Your branded portal opens on their phone, showing your packages at your prices. Each site can carry its own name and look.</p>
-        </div>
-        <div class="step rise">
-          <span class="step-n" aria-hidden="true"></span>
-          <h3>They choose a package and pay</h3>
-          <p>The M-Pesa prompt arrives on the number they entered. Nothing is granted until the payment actually confirms.</p>
-        </div>
-        <div class="step rise">
-          <span class="step-n" aria-hidden="true"></span>
-          <h3>SmartBill configures the router</h3>
-          <p>The account is created on the hardware with the right speed profile and the right expiry, and the customer receives their code.</p>
-        </div>
-        <div class="step rise">
-          <span class="step-n" aria-hidden="true"></span>
-          <h3>Time runs out on its own</h3>
-          <p>When the package expires the session ends and the account is removed — on the router, not merely in a report. Renewing puts them straight back on.</p>
-        </div>
+        <div class="step rise"><span class="step-n" aria-hidden="true"></span><h3>They connect to your WiFi</h3><p>Your branded portal opens on their phone, showing your packages at your prices. Each site can carry its own name and look.</p></div>
+        <div class="step rise"><span class="step-n" aria-hidden="true"></span><h3>They choose a package and pay</h3><p>The M-Pesa prompt arrives on the number they entered. Nothing is granted until the payment actually confirms.</p></div>
+        <div class="step rise"><span class="step-n" aria-hidden="true"></span><h3>SmartBill configures the router</h3><p>The account is created on the hardware with the right speed profile and the right expiry, and the customer receives their code.</p></div>
+        <div class="step rise"><span class="step-n" aria-hidden="true"></span><h3>Time runs out on its own</h3><p>When the package expires the session ends and the account is removed — on the router, not merely in a report. Renewing puts them straight back on.</p></div>
+      </div>
+    </section>
+
+    <!-- ── people on the network ─────────────────────────── -->
+    <section class="shell sec" id="people">
+      <div class="sec-head">
+        <p class="eyebrow">On the network right now</p>
+        <h2>The people your packages are actually sold to.</h2>
+        <p class="body-copy">Every session on your dashboard is somebody in the middle of something. SmartBill's job is that none of them waits on you to be switched on.</p>
+      </div>
+
+      <div class="people">
+        <article class="person rise">
+          <div class="person-art">
+            <img src="img/subscriber-1.jpg" alt="A young woman smiling at her phone, just connected" loading="lazy" style="object-position:50% 20%">
+          </div>
+          <div class="person-txt">
+            <span class="person-tag"><span class="dot-live"></span>Session active</span>
+            <h3>A student, 3 hours, 10 bob</h3>
+            <p>Buys small and buys often. The whole transaction has to work on the first tap, because there is nobody at the desk to ask.</p>
+          </div>
+        </article>
+
+        <article class="person rise">
+          <div class="person-art">
+            <img src="img/subscriber-2.jpg" alt="A customer celebrating as her package activates" loading="lazy" style="object-position:50% 16%">
+          </div>
+          <div class="person-txt">
+            <span class="person-tag"><span class="dot-live"></span>3 devices online</span>
+            <h3>A shop, all day, every day</h3>
+            <p>Sells to whoever walks in. A package good for three devices has to mean three — not one, and not the whole street.</p>
+          </div>
+        </article>
+
+        <article class="person rise">
+          <div class="person-art">
+            <img src="img/subscriber-3.jpg" alt="A subscriber using her phone on a monthly line" loading="lazy" style="object-position:56% 18%">
+          </div>
+          <div class="person-txt">
+            <span class="person-tag"><span class="dot-live"></span>PPPoE line up</span>
+            <h3>A household, monthly, one line</h3>
+            <p>Everyone behind one router, sharing the speed that was bought. Expiry has to cut the line at the hardware, or the month never ends.</p>
+          </div>
+        </article>
       </div>
     </section>
 
@@ -563,19 +852,31 @@ section { position: relative; }
       </div>
       <div class="cards">
         <div class="card rise">
+          <span class="card-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2 9a16 16 0 0 1 20 0M5.5 12.5a11 11 0 0 1 13 0M9 16a6 6 0 0 1 6 0"/><circle cx="12" cy="19.5" r="1.4" fill="currentColor" stroke="none"/></svg></span>
           <h3>Hotspot operators</h3>
           <p>Selling hours, days and weeks of WiFi at a shopping centre, a hostel, an estate or a trading centre. Vouchers, device limits and automatic cut-off included.</p>
         </div>
         <div class="card rise">
+          <span class="card-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 11l9-7 9 7"/><path d="M5.5 10v10h13V10"/><path d="M10 20v-5h4v5"/></svg></span>
           <h3>Home &amp; business lines</h3>
           <p>PPPoE subscribers on monthly packages, each household sharing one session across their own devices, with the speed you sold enforced at the router.</p>
         </div>
         <div class="card rise">
+          <span class="card-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.6 2.7 4 5.7 4 9s-1.4 6.3-4 9c-2.6-2.7-4-5.7-4-9s1.4-6.3 4-9z"/></svg></span>
           <h3>Growing networks</h3>
           <p>More than one tower, more than one router, and a need for a single dashboard, one set of books, and subscribers who move between sites without losing access.</p>
         </div>
       </div>
     </section>
+
+    <div class="value">
+      <div class="shell value-grid">
+        <div class="value-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 6.8V12l3.4 2.1"/></svg>Save time</div>
+        <div class="value-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M12 2.8l7.5 3v6.1c0 4.5-3.1 8.2-7.5 9.3-4.4-1.1-7.5-4.8-7.5-9.3V5.8z"/><path d="M9 12.2l2.2 2.2L15.4 10"/></svg>Reduce errors</div>
+        <div class="value-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M14.6 9.1c-.5-.9-1.5-1.4-2.6-1.4-1.6 0-2.7.9-2.7 2.1 0 2.9 5.6 1.5 5.6 4.5 0 1.3-1.2 2.2-2.9 2.2-1.3 0-2.3-.6-2.8-1.5"/><path d="M12 6.1v11.8"/></svg>Get paid faster</div>
+        <div class="value-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3 17.5l6-6 4 4 8-8"/><path d="M15 7.5h6v6"/></svg>Grow your business</div>
+      </div>
+    </div>
 
     <section class="contact" id="contact">
       <div class="shell sec">
@@ -614,7 +915,7 @@ section { position: relative; }
   </main>
 
   <footer class="shell foot">
-    <span>SmartBill Solution — WiFi billing &amp; network control</span>
+    <span>SmartBill Solution — smart solutions, seamless billing</span>
     <span><a href="https://wa.me/254701071435">WhatsApp</a> · <a href="mailto:miseymark@gmail.com">Email</a> · <a href="https://app.smartbillsolution.com">Client login</a></span>
   </footer>
 
@@ -624,270 +925,361 @@ section { position: relative; }
 (function () {
   "use strict";
 
-  /* ── Ambient topology ──────────────────────────────────────
-     Not decorative confetti: hubs are routers, the small nodes
-     are subscriber devices that link to whichever hub is in
-     range, and a pulse travelling a link is a payment clearing
-     and access opening. The subject of the product, drawn.
-     ──────────────────────────────────────────────────────── */
-
-  var canvas = document.getElementById("weave");
-  if (!canvas || !canvas.getContext) { return; }
-  var ctx = canvas.getContext("2d");
-
   var reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
-  var W = 0, H = 0, dpr = 1;
-  var hubs = [], clients = [], pulses = [];
-  var raf = null, running = false;
 
-  var theme = { node: "200,225,228", brass: "217,180,106" };
+  /* ── Ambient topology ──────────────────────────────────────
+     Hubs are routers, small nodes are subscriber devices that
+     link to whichever hub is in range, and a pulse travelling a
+     link is a payment clearing and access opening.
+     ──────────────────────────────────────────────────────── */
+  (function weave() {
+    var canvas = document.getElementById("weave");
+    if (!canvas || !canvas.getContext) { return; }
+    var ctx = canvas.getContext("2d");
 
-  function readTheme() {
-    var cs = getComputedStyle(document.documentElement);
-    var n = cs.getPropertyValue("--node-rgb").trim();
-    if (n) { theme.node = n; }
-    var b = cs.getPropertyValue("--brass").trim();
-    if (b && b.charAt(0) === "#" && b.length === 7) {
-      theme.brass = parseInt(b.substr(1, 2), 16) + "," +
-                    parseInt(b.substr(3, 2), 16) + "," +
-                    parseInt(b.substr(5, 2), 16);
+    var W = 0, H = 0, dpr = 1;
+    var hubs = [], clients = [], pulses = [];
+    var raf = null, running = false;
+    var theme = { node: "200,225,228", brass: "217,180,106" };
+
+    function readTheme() {
+      var cs = getComputedStyle(document.documentElement);
+      var n = cs.getPropertyValue("--node-rgb").trim();
+      if (n) { theme.node = n; }
+      var b = cs.getPropertyValue("--brass").trim();
+      if (b && b.charAt(0) === "#" && b.length === 7) {
+        theme.brass = parseInt(b.substr(1, 2), 16) + "," + parseInt(b.substr(3, 2), 16) + "," + parseInt(b.substr(5, 2), 16);
+      }
     }
-  }
+    function rand(a, b) { return a + Math.random() * (b - a); }
 
-  function rand(a, b) { return a + Math.random() * (b - a); }
-
-  function build() {
-    var area = W * H;
-    var hubCount = Math.max(3, Math.min(7, Math.round(area / 260000)));
-    var clientCount = Math.max(18, Math.min(64, Math.round(area / 26000)));
-
-    hubs = [];
-    for (var i = 0; i < hubCount; i++) {
-      hubs.push({
-        x: rand(W * 0.08, W * 0.92),
-        y: rand(H * 0.10, H * 0.90),
-        vx: rand(-0.05, 0.05),
-        vy: rand(-0.05, 0.05),
-        r: rand(2.6, 3.8),
-        phase: rand(0, Math.PI * 2)
-      });
+    function build() {
+      var area = W * H;
+      var hubCount = Math.max(3, Math.min(7, Math.round(area / 260000)));
+      var clientCount = Math.max(18, Math.min(60, Math.round(area / 27000)));
+      hubs = [];
+      for (var i = 0; i < hubCount; i++) {
+        hubs.push({ x: rand(W * .08, W * .92), y: rand(H * .10, H * .90), vx: rand(-.05, .05), vy: rand(-.05, .05), r: rand(2.6, 3.8), phase: rand(0, Math.PI * 2) });
+      }
+      clients = [];
+      for (var j = 0; j < clientCount; j++) {
+        clients.push({ x: rand(0, W), y: rand(0, H), vx: rand(-.16, .16), vy: rand(-.16, .16), r: rand(.8, 1.7) });
+      }
+      pulses = [];
     }
 
-    clients = [];
-    for (var j = 0; j < clientCount; j++) {
-      clients.push({
-        x: rand(0, W),
-        y: rand(0, H),
-        vx: rand(-0.16, 0.16),
-        vy: rand(-0.16, 0.16),
-        r: rand(0.8, 1.7)
-      });
+    function resize() {
+      dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = window.innerWidth; H = window.innerHeight;
+      canvas.width = Math.floor(W * dpr); canvas.height = Math.floor(H * dpr);
+      canvas.style.width = W + "px"; canvas.style.height = H + "px";
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      build();
     }
-    pulses = [];
-  }
 
-  function resize() {
-    dpr = Math.min(window.devicePixelRatio || 1, 2);
-    W = window.innerWidth;
-    H = window.innerHeight;
-    canvas.width = Math.floor(W * dpr);
-    canvas.height = Math.floor(H * dpr);
-    canvas.style.width = W + "px";
-    canvas.style.height = H + "px";
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    build();
-  }
+    var LINK = 210, MESH = 340;
 
-  var LINK = 210;   // a client links to a hub within this range
-  var MESH = 340;   // hubs link to each other within this range
-
-  function nearestHub(c) {
-    var best = null, bd = LINK * LINK;
-    for (var i = 0; i < hubs.length; i++) {
-      var dx = hubs[i].x - c.x, dy = hubs[i].y - c.y;
-      var d = dx * dx + dy * dy;
-      if (d < bd) { bd = d; best = hubs[i]; }
+    function nearestHub(c) {
+      var best = null, bd = LINK * LINK;
+      for (var i = 0; i < hubs.length; i++) {
+        var dx = hubs[i].x - c.x, dy = hubs[i].y - c.y, d = dx * dx + dy * dy;
+        if (d < bd) { bd = d; best = hubs[i]; }
+      }
+      return best;
     }
-    return best;
-  }
-
-  function spawnPulse() {
-    if (!hubs.length || !clients.length) { return; }
-    var c = clients[Math.floor(Math.random() * clients.length)];
-    var h = nearestHub(c);
-    if (!h) { return; }
-    pulses.push({ from: h, to: c, t: 0, speed: rand(0.006, 0.013) });
-  }
-
-  function step(dt) {
-    var i, n;
-    for (i = 0; i < clients.length; i++) {
-      n = clients[i];
-      n.x += n.vx * dt; n.y += n.vy * dt;
-      if (n.x < -20) { n.x = W + 20; } else if (n.x > W + 20) { n.x = -20; }
-      if (n.y < -20) { n.y = H + 20; } else if (n.y > H + 20) { n.y = -20; }
+    function spawnPulse() {
+      if (!hubs.length || !clients.length) { return; }
+      var c = clients[Math.floor(Math.random() * clients.length)];
+      var h = nearestHub(c);
+      if (h) { pulses.push({ from: h, to: c, t: 0, speed: rand(.006, .013) }); }
     }
-    for (i = 0; i < hubs.length; i++) {
-      n = hubs[i];
-      n.x += n.vx * dt; n.y += n.vy * dt;
-      n.phase += 0.012 * dt;
-      if (n.x < W * 0.05 || n.x > W * 0.95) { n.vx *= -1; }
-      if (n.y < H * 0.06 || n.y > H * 0.94) { n.vy *= -1; }
-    }
-    for (i = pulses.length - 1; i >= 0; i--) {
-      pulses[i].t += pulses[i].speed * dt;
-      if (pulses[i].t >= 1) { pulses.splice(i, 1); }
-    }
-    if (pulses.length < 4 && Math.random() < 0.012 * dt) { spawnPulse(); }
-  }
 
-  function draw() {
-    ctx.clearRect(0, 0, W, H);
-    var i, j, h, c, dx, dy, dist, a;
+    function step(dt) {
+      var i, n;
+      for (i = 0; i < clients.length; i++) {
+        n = clients[i]; n.x += n.vx * dt; n.y += n.vy * dt;
+        if (n.x < -20) { n.x = W + 20; } else if (n.x > W + 20) { n.x = -20; }
+        if (n.y < -20) { n.y = H + 20; } else if (n.y > H + 20) { n.y = -20; }
+      }
+      for (i = 0; i < hubs.length; i++) {
+        n = hubs[i]; n.x += n.vx * dt; n.y += n.vy * dt; n.phase += .012 * dt;
+        if (n.x < W * .05 || n.x > W * .95) { n.vx *= -1; }
+        if (n.y < H * .06 || n.y > H * .94) { n.vy *= -1; }
+      }
+      for (i = pulses.length - 1; i >= 0; i--) {
+        pulses[i].t += pulses[i].speed * dt;
+        if (pulses[i].t >= 1) { pulses.splice(i, 1); }
+      }
+      if (pulses.length < 4 && Math.random() < .012 * dt) { spawnPulse(); }
+    }
 
-    // hub-to-hub mesh — the backbone
-    ctx.lineWidth = 0.7;
-    for (i = 0; i < hubs.length; i++) {
-      for (j = i + 1; j < hubs.length; j++) {
-        dx = hubs[i].x - hubs[j].x; dy = hubs[i].y - hubs[j].y;
-        dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist < MESH) {
-          a = (1 - dist / MESH) * 0.16;
-          ctx.strokeStyle = "rgba(" + theme.brass + "," + a.toFixed(3) + ")";
-          ctx.beginPath();
-          ctx.moveTo(hubs[i].x, hubs[i].y);
-          ctx.lineTo(hubs[j].x, hubs[j].y);
-          ctx.stroke();
+    function draw() {
+      ctx.clearRect(0, 0, W, H);
+      var i, j, h, c, dx, dy, dist, a;
+      ctx.lineWidth = .7;
+      for (i = 0; i < hubs.length; i++) {
+        for (j = i + 1; j < hubs.length; j++) {
+          dx = hubs[i].x - hubs[j].x; dy = hubs[i].y - hubs[j].y;
+          dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < MESH) {
+            a = (1 - dist / MESH) * .16;
+            ctx.strokeStyle = "rgba(" + theme.brass + "," + a.toFixed(3) + ")";
+            ctx.beginPath(); ctx.moveTo(hubs[i].x, hubs[i].y); ctx.lineTo(hubs[j].x, hubs[j].y); ctx.stroke();
+          }
         }
+      }
+      ctx.lineWidth = .55;
+      for (i = 0; i < clients.length; i++) {
+        c = clients[i]; h = nearestHub(c);
+        if (!h) { continue; }
+        dx = h.x - c.x; dy = h.y - c.y; dist = Math.sqrt(dx * dx + dy * dy);
+        a = (1 - dist / LINK) * .20;
+        ctx.strokeStyle = "rgba(" + theme.node + "," + a.toFixed(3) + ")";
+        ctx.beginPath(); ctx.moveTo(c.x, c.y); ctx.lineTo(h.x, h.y); ctx.stroke();
+      }
+      for (i = 0; i < clients.length; i++) {
+        c = clients[i];
+        ctx.fillStyle = "rgba(" + theme.node + ",0.32)";
+        ctx.beginPath(); ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2); ctx.fill();
+      }
+      for (i = 0; i < hubs.length; i++) {
+        h = hubs[i];
+        var pr = h.r + Math.sin(h.phase) * .5;
+        ctx.fillStyle = "rgba(" + theme.brass + ",0.55)";
+        ctx.beginPath(); ctx.arc(h.x, h.y, pr, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = "rgba(" + theme.brass + ",0.16)"; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.arc(h.x, h.y, pr + 5 + Math.sin(h.phase) * 1.6, 0, Math.PI * 2); ctx.stroke();
+      }
+      for (i = 0; i < pulses.length; i++) {
+        var p = pulses[i], t = p.t;
+        var px = p.from.x + (p.to.x - p.from.x) * t, py = p.from.y + (p.to.y - p.from.y) * t;
+        var fade = Math.sin(t * Math.PI);
+        ctx.fillStyle = "rgba(" + theme.brass + "," + (.85 * fade).toFixed(3) + ")";
+        ctx.beginPath(); ctx.arc(px, py, 1.9, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = "rgba(" + theme.brass + "," + (.14 * fade).toFixed(3) + ")";
+        ctx.beginPath(); ctx.arc(px, py, 6.5, 0, Math.PI * 2); ctx.fill();
       }
     }
 
-    // clients attach to their hub
-    ctx.lineWidth = 0.55;
-    for (i = 0; i < clients.length; i++) {
-      c = clients[i];
-      h = nearestHub(c);
-      if (!h) { continue; }
-      dx = h.x - c.x; dy = h.y - c.y;
-      dist = Math.sqrt(dx * dx + dy * dy);
-      a = (1 - dist / LINK) * 0.20;
-      ctx.strokeStyle = "rgba(" + theme.node + "," + a.toFixed(3) + ")";
-      ctx.beginPath();
-      ctx.moveTo(c.x, c.y);
-      ctx.lineTo(h.x, h.y);
-      ctx.stroke();
+    var last = 0;
+    function frame(ts) {
+      if (!running) { return; }
+      var dt = last ? Math.min((ts - last) / 16.667, 3) : 1;
+      last = ts; step(dt); draw();
+      raf = window.requestAnimationFrame(frame);
     }
+    function start() { if (running || reduced.matches) { return; } running = true; last = 0; raf = window.requestAnimationFrame(frame); }
+    function stop() { running = false; if (raf) { window.cancelAnimationFrame(raf); raf = null; } }
 
-    // client dots
-    for (i = 0; i < clients.length; i++) {
-      c = clients[i];
-      ctx.fillStyle = "rgba(" + theme.node + ",0.32)";
-      ctx.beginPath();
-      ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    // hubs, breathing slowly
-    for (i = 0; i < hubs.length; i++) {
-      h = hubs[i];
-      var pulseR = h.r + Math.sin(h.phase) * 0.5;
-      ctx.fillStyle = "rgba(" + theme.brass + ",0.55)";
-      ctx.beginPath();
-      ctx.arc(h.x, h.y, pulseR, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = "rgba(" + theme.brass + ",0.16)";
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.arc(h.x, h.y, pulseR + 5 + Math.sin(h.phase) * 1.6, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-
-    // a payment clearing, travelling out to the device
-    for (i = 0; i < pulses.length; i++) {
-      var p = pulses[i];
-      var t = p.t;
-      var px = p.from.x + (p.to.x - p.from.x) * t;
-      var py = p.from.y + (p.to.y - p.from.y) * t;
-      var fade = Math.sin(t * Math.PI);
-      ctx.fillStyle = "rgba(" + theme.brass + "," + (0.85 * fade).toFixed(3) + ")";
-      ctx.beginPath();
-      ctx.arc(px, py, 1.9, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = "rgba(" + theme.brass + "," + (0.14 * fade).toFixed(3) + ")";
-      ctx.beginPath();
-      ctx.arc(px, py, 6.5, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  }
-
-  var last = 0;
-  function frame(ts) {
-    if (!running) { return; }
-    var dt = last ? Math.min((ts - last) / 16.667, 3) : 1;
-    last = ts;
-    step(dt);
-    draw();
-    raf = window.requestAnimationFrame(frame);
-  }
-
-  function start() {
-    if (running || reduced.matches) { return; }
-    running = true; last = 0;
-    raf = window.requestAnimationFrame(frame);
-  }
-  function stop() {
-    running = false;
-    if (raf) { window.cancelAnimationFrame(raf); raf = null; }
-  }
-
-  function boot() {
-    readTheme();
-    resize();
+    readTheme(); resize();
     if (reduced.matches) { draw(); } else { start(); }
-  }
 
-  var rt = null;
-  window.addEventListener("resize", function () {
-    window.clearTimeout(rt);
-    rt = window.setTimeout(function () { resize(); if (reduced.matches) { draw(); } }, 160);
-  });
-
-  document.addEventListener("visibilitychange", function () {
-    if (document.hidden) { stop(); } else if (!reduced.matches) { start(); }
-  });
-
-  if (reduced.addEventListener) {
-    reduced.addEventListener("change", function () {
-      stop();
-      if (reduced.matches) { draw(); } else { start(); }
+    var rt = null;
+    window.addEventListener("resize", function () {
+      window.clearTimeout(rt);
+      rt = window.setTimeout(function () { resize(); if (reduced.matches) { draw(); } }, 160);
     });
-  }
+    document.addEventListener("visibilitychange", function () {
+      if (document.hidden) { stop(); } else if (!reduced.matches) { start(); }
+    });
+    if (reduced.addEventListener) {
+      reduced.addEventListener("change", function () { stop(); if (reduced.matches) { draw(); } else { start(); } });
+    }
+    var mqLight = window.matchMedia("(prefers-color-scheme: light)");
+    if (mqLight.addEventListener) { mqLight.addEventListener("change", function () { readTheme(); draw(); }); }
+    new MutationObserver(function () { readTheme(); draw(); })
+      .observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+  }());
 
-  // repaint on theme flip so the palette follows the viewer
-  var mqLight = window.matchMedia("(prefers-color-scheme: light)");
-  if (mqLight.addEventListener) {
-    mqLight.addEventListener("change", function () { readTheme(); draw(); });
-  }
-  new MutationObserver(function () { readTheme(); draw(); })
-    .observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
-
-  boot();
-
-  /* ── entrance ─────────────────────────────────────────── */
+  /* ── entrance + counters ─────────────────────────────────── */
   var rises = document.querySelectorAll(".rise");
+  var counters = document.querySelectorAll("[data-count]");
+
+  function runCounter(el) {
+    var target = parseFloat(el.getAttribute("data-count")) || 0;
+    var suffix = el.getAttribute("data-suffix") || "";
+    var plus = el.getAttribute("data-plus") ? "+" : "";
+    if (reduced.matches) { el.textContent = target.toLocaleString() + plus + suffix; return; }
+    var t0 = null, dur = 1400;
+    function tick(ts) {
+      if (!t0) { t0 = ts; }
+      var p = Math.min((ts - t0) / dur, 1);
+      var eased = 1 - Math.pow(1 - p, 3);
+      el.textContent = Math.round(target * eased).toLocaleString() + (p === 1 ? plus + suffix : "");
+      if (p < 1) { window.requestAnimationFrame(tick); }
+    }
+    window.requestAnimationFrame(tick);
+  }
+
   if (!("IntersectionObserver" in window) || reduced.matches) {
-    for (var k = 0; k < rises.length; k++) { rises[k].classList.add("in"); }
+    Array.prototype.forEach.call(rises, function (r) { r.classList.add("in"); });
+    Array.prototype.forEach.call(counters, runCounter);
   } else {
     var io = new IntersectionObserver(function (entries) {
       entries.forEach(function (e) {
-        if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); }
+        if (!e.isIntersecting) { return; }
+        e.target.classList.add("in");
+        Array.prototype.forEach.call(e.target.querySelectorAll("[data-count]"), runCounter);
+        if (e.target.hasAttribute("data-count")) { runCounter(e.target); }
+        io.unobserve(e.target);
       });
-    }, { rootMargin: "0px 0px -8% 0px", threshold: 0.08 });
-    for (var m = 0; m < rises.length; m++) {
-      rises[m].style.transitionDelay = (Math.min(m, 5) * 70) + "ms";
-      io.observe(rises[m]);
-    }
+    }, { rootMargin: "0px 0px -8% 0px", threshold: .08 });
+    Array.prototype.forEach.call(rises, function (r, i) {
+      r.style.transitionDelay = (Math.min(i, 5) * 70) + "ms";
+      io.observe(r);
+    });
   }
+
+  /* stagger the throughput bars so they read as traffic, not a metronome */
+  Array.prototype.forEach.call(document.querySelectorAll(".bars i"), function (b, i) {
+    b.style.animationDelay = (i * 0.16).toFixed(2) + "s";
+    b.style.animationDuration = (2.2 + (i % 3) * 0.5).toFixed(1) + "s";
+  });
+
+  /* ── the portal demo ─────────────────────────────────────
+     The real sequence: package, STK push, confirmation, the
+     RouterOS calls SmartBill actually makes, then online.
+     ────────────────────────────────────────────────────── */
+  (function demo() {
+    var stage = document.getElementById("demoStage");
+    var pkgs = document.getElementById("demoPkgs");
+    var con = document.getElementById("demoConsole");
+    var steps = document.getElementById("demoSteps");
+    var clock = document.getElementById("demoClock");
+    if (!stage || !pkgs || !con || !steps) { return; }
+
+    var timers = [];
+    function after(ms, fn) { timers.push(window.setTimeout(fn, ms)); }
+    function clearAll() { timers.forEach(window.clearTimeout); timers = []; }
+
+    if (clock) {
+      var d = new Date();
+      clock.textContent = ("0" + d.getHours()).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2);
+    }
+
+    function setStep(n) {
+      Array.prototype.forEach.call(steps.children, function (s) {
+        var i = parseInt(s.getAttribute("data-s"), 10);
+        s.classList.toggle("on", i === n);
+        s.classList.toggle("done", i < n);
+      });
+    }
+
+    function conReset() { con.innerHTML = ""; }
+    function conLine(html, delay) {
+      after(delay, function () {
+        var el = document.createElement("span");
+        el.className = "l";
+        el.innerHTML = html;
+        con.appendChild(el);
+        window.requestAnimationFrame(function () { el.classList.add("show"); });
+        con.scrollTop = con.scrollHeight;
+      });
+    }
+
+    function mac() {
+      var h = "0123456789ABCDEF", s = [];
+      for (var i = 0; i < 6; i++) { s.push(h[Math.floor(Math.random() * 16)] + h[Math.floor(Math.random() * 16)]); }
+      return s.join(":");
+    }
+
+    function reset() {
+      clearAll();
+      setStep(-1);
+      conReset();
+      conLine('<span class="c-dim">waiting for a package to be selected…</span>', 0);
+      stage.innerHTML = '<p class="portal-hint">Choose how long you\'d like to be online.</p>';
+      stage.appendChild(pkgs);
+      Array.prototype.forEach.call(pkgs.querySelectorAll("button"), function (b) { b.disabled = false; });
+    }
+
+    function run(name, price, mins) {
+      clearAll();
+      var addr = mac();
+      var secs = mins * 60;
+      Array.prototype.forEach.call(pkgs.querySelectorAll("button"), function (b) { b.disabled = true; });
+
+      setStep(0);
+      conReset();
+      conLine('<span class="c-dim">$</span> package selected: <span class="c-key">' + name + '</span> — KES ' + price, 60);
+      conLine('<span class="c-dim">$</span> device <span class="c-key">' + addr + '</span> on hotspot1', 340);
+
+      /* 1 — STK push */
+      after(200, function () {
+        stage.innerHTML =
+          '<p class="portal-hint">' + name + ' — KES ' + price + '</p>' +
+          '<div class="inline-wait"><span class="spinner"></span> Sending the M-Pesa request…</div>';
+        setStep(1);
+      });
+      conLine('<span class="c-dim">$</span> mpesa stk_push → 2547•• ••1435  <span class="c-dim">KES ' + price + '</span>', 900);
+
+      /* 2 — the prompt */
+      after(1500, function () {
+        stage.innerHTML =
+          '<div class="mpesa">' +
+            '<div class="mpesa-t">M-PESA</div>' +
+            '<div class="mpesa-b">Accept KES ' + price + '.00 to SMARTBILL for ' + name + ' internet?</div>' +
+            '<div class="pinrow"><span>•</span><span>•</span><span>•</span><span>•</span></div>' +
+          '</div>' +
+          '<div class="inline-wait"><span class="spinner"></span> Waiting for confirmation…</div>';
+      });
+
+      /* 3 — confirmed */
+      after(3400, function () {
+        setStep(2);
+        stage.innerHTML =
+          '<div class="mpesa">' +
+            '<div class="mpesa-t">M-PESA confirmed</div>' +
+            '<div class="mpesa-b">KES ' + price + '.00 received. Ref TGX' + Math.random().toString(36).slice(2, 7).toUpperCase() + '</div>' +
+          '</div>' +
+          '<div class="inline-wait"><span class="spinner"></span> Opening your access…</div>';
+      });
+      conLine('<span class="c-ok">✓</span> payment confirmed — reconciled to subscription', 3450);
+
+      /* 4 — the router work */
+      setTimeout(function () { setStep(3); }, 3900);
+      conLine('<span class="c-dim">$</span> /ip/hotspot/user <span class="c-key">add</span> name=' + addr, 4000);
+      conLine('    profile=<span class="c-key">' + name.replace(/\s/g, "-") + '</span> comment="AUTO | WIFI BILLING SYSTEM"', 4350);
+      conLine('    limit-uptime=<span class="c-key">' + secs + 's</span>  <span class="c-dim">← expiry lives on the router</span>', 4700);
+      conLine('<span class="c-ok">✓</span> provisioned on skylink3 in 0.42s', 5200);
+
+      /* 5 — online */
+      after(5400, function () {
+        setStep(4);
+        var left = secs;
+        stage.innerHTML =
+          '<span class="done-badge"><span class="dot-live"></span>You are online</span>' +
+          '<div class="timer" id="demoTimer"></div>' +
+          '<p class="portal-hint">Your ' + name + ' package is running. When it ends, the session closes on the router itself.</p>' +
+          '<button class="btn btn-ghost" type="button" id="demoAgain" style="justify-self:start;margin-top:.4rem">Try another package</button>';
+
+        var out = document.getElementById("demoTimer");
+        function fmt(s) {
+          var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60;
+          return ("0" + h).slice(-2) + ":" + ("0" + m).slice(-2) + ":" + ("0" + x).slice(-2);
+        }
+        if (out) { out.textContent = fmt(left); }
+        if (!reduced.matches) {
+          var iv = window.setInterval(function () {
+            left--; if (!out || !document.body.contains(out)) { window.clearInterval(iv); return; }
+            out.textContent = fmt(left);
+          }, 1000);
+          timers.push(iv);
+        }
+        var again = document.getElementById("demoAgain");
+        if (again) { again.addEventListener("click", reset); }
+      });
+      conLine('<span class="c-dim">$</span> session open — <span class="c-ok">customer online</span>', 5500);
+    }
+
+    pkgs.addEventListener("click", function (e) {
+      var b = e.target.closest ? e.target.closest("button") : null;
+      if (!b || b.disabled) { return; }
+      run(b.getAttribute("data-name"), b.getAttribute("data-price"), parseInt(b.getAttribute("data-mins"), 10));
+    });
+
+    setStep(-1);
+  }());
 }());
 </script>
 
