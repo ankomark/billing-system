@@ -93,7 +93,10 @@ def check_single_router_health(router_id):
         # a warning — the next sweep simply will not dispatch it.
         return None
 
-    api = safe_connect_router(router)
+    # The one caller that votes on health. Everything else may fail against a
+    # router without condemning it — see safe_connect_router for why that
+    # matters, and what it cost when twenty-six callers all had a vote.
+    api = safe_connect_router(router, count_failure=True)
     if api:
         # The old loop never closed these. One leaked connection per reachable
         # router per two minutes is nothing at two routers and is a RouterOS

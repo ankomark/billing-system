@@ -83,16 +83,47 @@ def recheck_offline_router_task(self, router_id: int):
             "[auto-failover] %s answered on re-check — nobody moved.", router)
         return 0
 
-    customer_ids = list(
+    # Hotspot subscribers are not migrated, ever.
+    #
+    # Which router serves a hotspot subscriber is not an assignment we get to
+    # make — it is decided by the radio they are standing in front of. Moving
+    # their record to another box cannot help them: if their own router is
+    # down they have no network to reach the other one over, and when it comes
+    # back their account has been built somewhere they cannot see. The portal
+    # already re-homes them from its own router token the moment they present
+    # a code, which is direct evidence of where they are and far stronger than
+    # anything this task knows.
+    #
+    # This is what took Skylink's televisions off. Their two Homabay sites are
+    # separate buildings, and failover moved 111 subscribers between them in
+    # one afternoon; each one kept a valid, paid code that the portal accepted
+    # and the router in front of them then refused, because the account was on
+    # the other box. Excluding them here means no amount of station
+    # misconfiguration can reproduce it.
+    #
+    # PPPoE is different and still migrates: those subscribers are routed
+    # rather than associated, so another router genuinely can carry them.
+    movable = (
         Customer.objects.all_tenants()
         .filter(router=router, status="active")
-        .values_list("id", flat=True)
+        .exclude(connection_type="hotspot")
     )
+    customer_ids = list(movable.values_list("id", flat=True))
+
+    skipped = (
+        Customer.objects.all_tenants()
+        .filter(router=router, status="active", connection_type="hotspot")
+        .count()
+    )
+
     for cid in customer_ids:
         migrate_single_customer_task.delay(cid)
 
-    logger.info("[auto-failover] Dispatched migration for %s customer(s) off %s",
-                len(customer_ids), router)
+    logger.info(
+        "[auto-failover] Dispatched migration for %s customer(s) off %s; "
+        "left %s hotspot subscriber(s) where they are",
+        len(customer_ids), router, skipped,
+    )
     return len(customer_ids)
 
 

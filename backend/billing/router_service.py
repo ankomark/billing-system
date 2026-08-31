@@ -734,16 +734,40 @@ def is_router_reachable(router, timeout=3) -> bool:
         return False
     
     
-def safe_connect_router(router):
+def safe_connect_router(router, *, count_failure=False):
     """
     Connect safely. Returns API object or None.
-    Also updates router health in DB.
+
+    A failure is only counted against the router's health when the caller is
+    the health probe, which is what `count_failure` says.
+
+    record_health already refuses to condemn a router on one missed probe, and
+    its docstring explains the sum: three failures in a row is "about six
+    minutes at the default — because the health sweep runs every two minutes".
+    That arithmetic has one caller in it. This function has twenty-six —
+    provisioning, usage and tethering sweeps, the portal's own validate path,
+    PPPoE — and every one of them used to cast a vote on the router's health
+    whenever it happened to fail. Since the sweeps were fanned out to run
+    concurrently, a thirty-second link drop had a dozen callers failing at once
+    and crossed the threshold in seconds rather than six minutes.
+
+    So the guard that exists precisely to absorb a flap was being defeated by
+    the number of things that call this, and auto-failover then moved every
+    subscriber off a router that was never down. On 2026-08-31 that emptied
+    `skylink` onto `skylink3` four separate times.
+
+    Success is still recorded whoever sees it. Being slow to declare a router
+    dead is prudence; being slow to notice it alive again would just be a
+    second outage, and any caller that gets an answer is proof it is up.
     """
     from billing.models import RouterEvent
 
+    def failed(error, cause):
+        if count_failure:
+            router.record_health(False, error=error, cause=cause)
+
     if not is_router_reachable(router):
-        router.record_health(
-            False, error="TCP unreachable", cause=RouterEvent.CAUSE_UNREACHABLE)
+        failed("TCP unreachable", RouterEvent.CAUSE_UNREACHABLE)
         return None
 
     try:
@@ -761,12 +785,11 @@ def safe_connect_router(router):
         # The router answered and refused us, which is a different problem from
         # not being able to reach it — usually wrong credentials or a disabled
         # API service, neither of which a network fix will help.
-        router.record_health(False, error=e, cause=RouterEvent.CAUSE_AUTH_FAILED)
+        failed(e, RouterEvent.CAUSE_AUTH_FAILED)
         return None
 
     except Exception as e:
-        router.record_health(
-            False, error=f"Unknown: {e}", cause=RouterEvent.CAUSE_ERROR)
+        failed(f"Unknown: {e}", RouterEvent.CAUSE_ERROR)
         return None
 
 
@@ -959,6 +982,21 @@ def pick_best_router_for_new_customer(customer=None, tenant_id=None, station_id=
 from .models import RouterFailoverLog
 
 def migrate_customer_router(customer, reason="manual_migration"):
+    # Automatic failover never moves a hotspot subscriber. The reasoning is in
+    # recheck_offline_router_task, which filters them out before dispatching;
+    # this is the same rule stated where every caller passes through, so the
+    # router_failover management command cannot reintroduce it by calling
+    # here directly.
+    #
+    # A deliberate move is still allowed. An operator looking at their estate
+    # may have a reason to re-home somebody by hand, and can see what they are
+    # doing; this is only about the automatic path, which cannot.
+    if customer.connection_type == "hotspot" and reason == "auto_failover":
+        return False, (
+            "Hotspot subscribers are not migrated automatically — their router "
+            "is whichever one they are associated to."
+        )
+
     # --------------------------------------------------
     # 1️⃣ Validate active subscription
     # --------------------------------------------------
