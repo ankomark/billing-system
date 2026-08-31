@@ -11,6 +11,7 @@ Coverage:
   - LoginThrottleTests         : 5 attempts pass, 6th returns 429
 """
 
+import calendar
 import json
 from pathlib import Path
 import re
@@ -208,7 +209,16 @@ class SubscriptionCreationTests(TestCase):
         end = sub.expiry_date
         expected_month = (start.month % 12) + 1
         self.assertEqual(end.month, expected_month)
-        self.assertEqual(end.day, start.day)
+        # Clamped to the end of a shorter month rather than rolled into the
+        # next one: a monthly package bought on 31 August ends on 30 September,
+        # which is what relativedelta does and what a subscriber expects.
+        #
+        # `end.day == start.day` only holds for days 1-28, so this test failed
+        # on 2026-08-31 with the arithmetic behaving perfectly correctly — it
+        # was the assertion that was wrong, and it had been waiting for a run
+        # on a 31st followed by a 30-day month to say so.
+        last_day = calendar.monthrange(end.year, end.month)[1]
+        self.assertEqual(end.day, min(start.day, last_day))
 
     @patch("billing.models.notify_customer")
     def test_expiry_calculated_for_hours(self, _):
@@ -4538,10 +4548,22 @@ class StationScopingTests(TwoOperatorMixin, TestCase):
         self.assertEqual(_station_of(self.customer), self.kilifi.id)
 
     def test_no_router_means_no_narrowing(self):
+        """
+        Asserted through the picker rather than on the sentinel itself. None is
+        no longer the answer here: it now means "the routers with no site", so
+        returning it for somebody whose location is simply unknown would narrow
+        to those instead of widening. What matters is that nothing is ruled out.
+        """
         stray = Customer.objects.create(
             tenant=self.t1, full_name="Unassigned", phone="254700900002",
             connection_type="pppoe")
-        self.assertIsNone(_station_of(stray))
+        expected = set(
+            RouterDevice.objects.all_tenants()
+            .filter(tenant_id=self.t1.id, is_active=True)
+            .values_list("name", flat=True)
+        )
+        routers = list(_tenant_routers(self.t1.id, _station_of(stray)))
+        self.assertEqual({r.name for r in routers}, expected)
 
     @patch("billing.router_service.safe_connect_router")
     def test_failover_stays_at_the_subscribers_station(self, connect):

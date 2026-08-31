@@ -793,6 +793,21 @@ def _tenant_routers(tenant_id, station_id=_UNSET):
     Mtwapa cannot carry a subscriber in Kilifi; there is no physical path
     between them. Moving one there does not fail over, it takes the subscriber
     offline while reporting success, which is worse than doing nothing.
+
+    `None` is a station, not the absence of one. It means "the routers with no
+    site recorded", and it narrows exactly as hard as any other value — which
+    is what _UNSET above has always said it should mean.
+
+    Reading None as "do not narrow" is what took Skylink's hotspot down on
+    2026-08-31. Their two Homabay sites are peers with no overlapping coverage,
+    but only `skylink3` had been given a station; `skylink` had none. So a
+    subscriber on `skylink` was treated as belonging to no site and every
+    router in the operator became a candidate for them, while a subscriber on
+    `skylink3` was correctly pinned. The asymmetry made the drift one-way: four
+    tunnel flaps that afternoon moved 111 subscribers onto `skylink3`, their
+    hotspot accounts were rebuilt on a box in another building, and nothing
+    could ever select them back. They stood in front of `skylink` entering
+    valid codes that the portal accepted and the router then refused.
     """
     from .models import RouterDevice
 
@@ -803,7 +818,11 @@ def _tenant_routers(tenant_id, station_id=_UNSET):
             "an unscoped selection can provision onto another operator's router."
         )
     qs = qs.filter(tenant_id=tenant_id)
-    if station_id is not _UNSET and station_id is not None:
+    if station_id is not _UNSET:
+        # station_id=None becomes IS NULL, which is the point: a station-less
+        # router keeps company only with other station-less routers. An
+        # operator who has never made a station has all of them in that group,
+        # so nothing about the single-site case changes.
         qs = qs.filter(station_id=station_id)
     return qs.order_by("priority")
 
@@ -817,11 +836,20 @@ def _station_of(customer):
     provisioned on, and the router is the one that decides whether their
     connection works.
 
-    None means either no router yet or a router with no site, and both mean the
-    same thing to the pickers: no narrowing.
+    Two different answers, which used to be the same one. A subscriber with no
+    router tells us nothing about where they are, so nothing is narrowed and
+    _UNSET says so. A subscriber whose router has no site is not unknown — they
+    are demonstrably on that router, and the honest reading is "wherever that
+    box is", which narrows to the routers sharing its lack of a site.
+
+    Collapsing the two into None let a subscriber on a station-less router be
+    failed over to any router in the operator, including one in another town.
+    See _tenant_routers for what that cost.
     """
     router = getattr(customer, "router", None) if customer else None
-    return getattr(router, "station_id", None) if router else None
+    if router is None:
+        return _UNSET
+    return getattr(router, "station_id", None)
 
 
 def pick_working_router(customer=None, tenant_id=None):
@@ -891,7 +919,12 @@ def pick_best_router_for_new_customer(customer=None, tenant_id=None, station_id=
     """
     tenant_id = tenant_id or getattr(customer, "tenant_id", None)
     station = _station_of(customer)
-    if station is None and station_id is not None:
+    # Only when the subscriber has no router at all. A subscriber who is on a
+    # station-less router has a site — the one that box stands in — and the
+    # docstring's promise that their own site beats the argument covers them
+    # too. Tested against None, this let the argument move exactly the people
+    # it promises not to move.
+    if station is _UNSET and station_id is not None:
         station = station_id
     routers = list(_tenant_routers(tenant_id, station))
     candidates = []

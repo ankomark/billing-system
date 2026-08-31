@@ -396,15 +396,46 @@
     // non-simple, so the browser preflights every poll -- two round trips
     // instead of one, on the slowest link the customer will ever use.
     if (body) { xhr.setRequestHeader('Content-Type', 'application/json'); }
+
+    /* Answered exactly once, whatever the browser does with xhr.timeout.
+
+       It is XHR2, and the oldest browser on a hotspot is not a phone — it is
+       a television. Tizen and webOS builds that predate it accept the
+       assignment, ignore it, and never fire ontimeout. `connect` puts the
+       spinner up before calling this and only a callback takes it down, so on
+       those sets a stalled request spins until somebody gives up: no message,
+       no reason, nothing to tell the operator either. It also hides whatever
+       stalled the request, which is the part actually worth knowing.
+
+       `settled` is what stops a late answer, or the abort below, being
+       counted a second time. */
+    var settled = false;
+    var timer = null;
+
+    function done(fn, detail, code) {
+      if (settled) { return; }
+      settled = true;
+      if (timer) { clearTimeout(timer); timer = null; }
+      fn(detail, code);
+    }
+
     xhr.timeout = 15000;
     xhr.onload = function () {
       var data = null;
       try { data = JSON.parse(xhr.responseText); } catch (e) { data = null; }
-      if (xhr.status >= 200 && xhr.status < 300) { onOk(data); }
-      else { onFail(data && data.detail, xhr.status); }
+      if (xhr.status >= 200 && xhr.status < 300) { done(onOk, data); }
+      else { done(onFail, data && data.detail, xhr.status); }
     };
-    xhr.onerror = function () { onFail('No connection to the payment service.', 0); };
-    xhr.ontimeout = function () { onFail('That took too long. Please try again.', 0); };
+    xhr.onerror = function () { done(onFail, 'No connection to the payment service.', 0); };
+    xhr.ontimeout = function () { done(onFail, 'That took too long. Please try again.', 0); };
+
+    // A second past xhr.timeout, so a browser that honours it answers first
+    // and this never fires. Only the ones that ignore it reach here.
+    timer = setTimeout(function () {
+      try { xhr.abort(); } catch (e) { /* already gone */ }
+      done(onFail, 'That took too long. Please try again.', 0);
+    }, 16000);
+
     xhr.send(body ? JSON.stringify(body) : null);
   }
 
