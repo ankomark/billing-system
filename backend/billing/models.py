@@ -238,6 +238,7 @@ class AdminActionLog(models.Model):
     CHANGE_PLAN = "change_plan"
     DELETE_OPERATOR = "delete_operator"
     COMP_VOUCHER = "comp_voucher"
+    RECORD_PAYMENT = "record_payment"
 
     ACTION_CHOICES = (
         (RESET_PASSWORD, "Reset password"),

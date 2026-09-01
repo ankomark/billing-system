@@ -1,6 +1,6 @@
 import secrets
 import string
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from django.http import HttpResponse
 from django.db import IntegrityError, transaction
 from celery import chain
@@ -416,7 +416,15 @@ class CustomerViewSet(viewsets.ModelViewSet):
                 Prefetch(
                     "subscriptions",
                     queryset=Subscription.objects
-                        .select_related("package")
+                        # `invoice` as well as `package`: the row now carries
+                        # what is owed on it, so the counter can be told which
+                        # subscription a payment settles. It is a reverse
+                        # one-to-one, which select_related handles — read per
+                        # subscription instead, it is one query each and the
+                        # detail page grows with the length of somebody's
+                        # history. CustomerDetailSerializerTests holds the
+                        # count fixed and caught exactly that.
+                        .select_related("package", "invoice")
                         .order_by("-expiry_date"),
                 ),
                 "subscriptions__vouchers",
@@ -2380,6 +2388,166 @@ class CompAccessView(APIView):
             "voucher_code": voucher.code if voucher else None,
             "expires_at": subscription.expiry_date,
             "connection_type": customer.connection_type,
+        }, status=201)
+
+
+class RecordPaymentView(APIView):
+    """
+    Record money that has already changed hands, against a bill that exists.
+
+    The gap this fills. A hotspot walk-up pays through the portal and the
+    M-Pesa callback settles their invoice; a PPPoE line is created first and
+    paid afterwards, and there was nothing anywhere that could take that
+    payment. The interface offered "give free access", which writes the sale
+    off, or creating the customer again with a package, which duplicates them.
+    An operator with a real 2,500/- in hand had no honest way to say so.
+
+    There is deliberately no "mark as paid". A paid invoice is a consequence of
+    a payment, not a state to set: Payment.save() settles the invoice, activates
+    the subscription, assigns a router, mints the voucher for a hotspot
+    subscriber and provisions access on the hardware. A button that flipped the
+    flag would tidy the books and provision nothing — the customer would still
+    be refused by the router, and the record would say they were fine.
+
+    So this creates the Payment and lets that machinery run, exactly as the
+    M-Pesa callback does.
+
+    Settles the subscription that is already there rather than making a new one,
+    which is what separates it from the comp path. Comping somebody who already
+    has an unpaid subscription leaves the old one behind for ever.
+
+    Admin only, like comping: this moves money in the books, and it belongs to
+    whoever answers for the money.
+    """
+
+    permission_classes = [IsTenantAdmin]
+
+    # Not "comp". Giving access away is a different decision with a different
+    # record — it demands a reason, contributes nothing to revenue, and has its
+    # own endpoint. Allowing it here would let a giveaway be booked as a sale.
+    METHODS = ("cash", "mpesa", "bank")
+
+    def post(self, request, customer_id):
+        customer = Customer.objects.filter(id=customer_id).first()
+        if customer is None:
+            return Response({"detail": "Customer not found"}, status=404)
+
+        method = (request.data.get("method") or "").strip().lower()
+        if method not in self.METHODS:
+            return Response(
+                {"detail": "Say how it was paid: cash, mpesa or bank."},
+                status=400,
+            )
+
+        # Which bill this settles. Named explicitly by the interface; the
+        # newest outstanding one when it is not, because a customer standing
+        # there paying is almost always paying for the thing just created.
+        subscription_id = request.data.get("subscription_id")
+        if subscription_id:
+            subscription = customer.subscriptions.filter(
+                id=subscription_id).first()
+            if subscription is None:
+                # Scoped to this customer, not looked up globally: an id from
+                # another account would otherwise settle a stranger's invoice
+                # and provision them.
+                return Response(
+                    {"detail": "That subscription does not belong to this customer."},
+                    status=404,
+                )
+        else:
+            subscription = (
+                customer.subscriptions
+                .filter(invoice__payment_status__in=("unpaid", "pending"))
+                .order_by("-id")
+                .first()
+            )
+            if subscription is None:
+                return Response(
+                    {"detail": "This customer has nothing outstanding to pay."},
+                    status=400,
+                )
+
+        invoice = getattr(subscription, "invoice", None)
+        if invoice is None:
+            return Response(
+                {"detail": "That subscription has no invoice to settle."},
+                status=400,
+            )
+
+        # The guard against a double-tap and against a second operator taking
+        # the same money twice. Revenue counts Payment rows, so a repeat here
+        # is money the business never received.
+        if invoice.payment_status == "paid":
+            return Response(
+                {"detail": f"{invoice.invoice_number} is already settled."},
+                status=409,
+            )
+
+        amount = request.data.get("amount")
+        if amount in (None, ""):
+            # The bill, not the package price. They differ once anything is
+            # ever discounted, and the bill is what the customer was asked for.
+            amount = invoice.total_amount
+        try:
+            amount = Decimal(str(amount))
+        except (InvalidOperation, TypeError, ValueError):
+            return Response({"detail": "That amount is not a number."}, status=400)
+
+        if amount < 0:
+            return Response({"detail": "An amount cannot be negative."}, status=400)
+        if amount == 0:
+            # Zero is a giveaway, and a giveaway has to say why. Routing it
+            # here would put free access in the books as a sale of nothing.
+            return Response(
+                {"detail": "Use 'Give free access' for a package at no charge — "
+                           "it records the reason."},
+                status=400,
+            )
+
+        reference = (request.data.get("reference") or "").strip()
+
+        try:
+            payment = Payment.objects.create(
+                tenant_id=customer.tenant_id,
+                customer=customer,
+                subscription=subscription,
+                amount=amount,
+                method=method,
+                reference=reference[:100],
+            )
+        except Exception as exc:
+            logger.exception(
+                "[payment] could not record payment for %s", customer)
+            return Response(
+                {"detail": f"Could not record this: {exc}"}, status=500)
+
+        record_admin_action(
+            request.user,
+            AdminActionLog.RECORD_PAYMENT,
+            target_tenant=customer.tenant,
+            label=customer.full_name,
+            detail=f"{amount} by {method} against {invoice.invoice_number}",
+        )
+
+        invoice.refresh_from_db()
+        subscription.refresh_from_db()
+
+        voucher = (
+            Voucher.objects.all_tenants()
+            .filter(tenant_id=customer.tenant_id, subscription=subscription)
+            .order_by("-created_at")
+            .first()
+        )
+        return Response({
+            "detail": f"{amount} recorded against {invoice.invoice_number}.",
+            "payment_id": payment.id,
+            "invoice_number": invoice.invoice_number,
+            "payment_status": invoice.payment_status,
+            "expires_at": subscription.expiry_date,
+            "connection_type": customer.connection_type,
+            # A hotspot subscriber's code is the thing they just bought, and
+            # the operator is standing in front of them.
+            "voucher_code": voucher.code if voucher else None,
         }, status=201)
 
 

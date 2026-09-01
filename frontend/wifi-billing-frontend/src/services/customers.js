@@ -58,6 +58,27 @@ export const issueVoucher = async ({ packageId, phone, paidWith, reason }) => {
   return res.data;
 };
 
+/**
+ * Money that has already changed hands, against a bill that exists.
+ *
+ * Not "mark as paid". A paid invoice is a consequence of a payment: recording
+ * one settles the invoice, activates the subscription and provisions the
+ * hardware. Flipping a flag would tidy the books and leave the customer
+ * refused by the router.
+ */
+export const recordPayment = async (
+  customerId,
+  { subscriptionId, method, amount, reference }
+) => {
+  const res = await api.post(`admin/customers/${customerId}/payment/`, {
+    ...(subscriptionId ? { subscription_id: subscriptionId } : {}),
+    method,
+    ...(amount !== "" && amount != null ? { amount } : {}),
+    ...(reference ? { reference } : {}),
+  });
+  return res.data;
+};
+
 export const compAccess = async (customerId, { packageId, reason }) => {
   const res = await api.post(`admin/customers/${customerId}/comp/`, {
     package_id: packageId,

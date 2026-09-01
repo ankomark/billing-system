@@ -2,9 +2,10 @@ import { useParams, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import toast from "react-hot-toast";
-import { ArrowLeft, Edit, Router as RouterIcon, Gift, Send, Ban } from "lucide-react";
+import { ArrowLeft, Banknote, Edit, Router as RouterIcon, Gift, Send, Ban } from "lucide-react";
 import AdminLayout from "../../components/admin/AdminLayout";
 import CompAccessModal from "../../components/admin/CompAccessModal";
+import RecordPaymentModal from "../../components/admin/RecordPaymentModal";
 import { getUser } from "../../services/auth";
 import { isOperatorAdmin } from "../../constants/roles";
 import { useConfirm } from "../../components/ui/ConfirmModal";
@@ -73,6 +74,7 @@ export default function CustomerDetail() {
   };
 
   const [comping, setComping] = useState(false);
+  const [paying, setPaying] = useState(false);
   // Giving away what the business sells is a decision about money, so it
   // belongs to whoever answers for the money.
   const canComp = isOperatorAdmin(getUser()?.role);
@@ -188,6 +190,12 @@ export default function CustomerDetail() {
 
   return (
     <AdminLayout>
+      <RecordPaymentModal
+        open={paying}
+        customer={customer}
+        onClose={() => setPaying(false)}
+        onDone={() => qc.invalidateQueries({ queryKey: ["customer", id] })}
+      />
       <CompAccessModal
         open={comping}
         customer={customer}
@@ -252,6 +260,21 @@ export default function CustomerDetail() {
               <Btn color="blue" onClick={handleResendVoucher} loading={actionLoading}>
                 Resend Voucher
               </Btn>
+            )}
+            {canComp && (
+              /*
+                Solid, unlike "Give free access" below it. Taking money is the
+                ordinary thing an operator does at a counter and should read as
+                the obvious action; writing a sale off is the exception and is
+                deliberately quieter.
+              */
+              <button
+                onClick={() => setPaying(true)}
+                className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-emerald-500"
+              >
+                <Banknote size={14} aria-hidden="true" />
+                Record payment
+              </button>
             )}
             {canComp && (
               /*

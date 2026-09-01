@@ -106,9 +106,38 @@ class CustomerSubscriptionSerializer(serializers.ModelSerializer):
     """Compact subscription row for the customer detail page."""
     package_name = serializers.CharField(source="package.name", read_only=True)
 
+    # What is owed on it. Without these the page could show a subscription and
+    # not whether it had been paid for, so an operator taking money at the
+    # counter had nothing to choose between.
+    #
+    # Method fields rather than source="invoice.…": the relation is a reverse
+    # one-to-one and a subscription without an invoice raises rather than
+    # returning None, which would break the whole page for one bad row.
+    payment_status = serializers.SerializerMethodField()
+    invoice_number = serializers.SerializerMethodField()
+    amount_due = serializers.SerializerMethodField()
+
     class Meta:
         model = Subscription
-        fields = ("id", "package", "package_name", "status", "start_date", "expiry_date")
+        fields = ("id", "package", "package_name", "status", "start_date",
+                  "expiry_date", "payment_status", "invoice_number",
+                  "amount_due")
+
+    @staticmethod
+    def _invoice(obj):
+        return getattr(obj, "invoice", None)
+
+    def get_payment_status(self, obj):
+        inv = self._invoice(obj)
+        return inv.payment_status if inv else None
+
+    def get_invoice_number(self, obj):
+        inv = self._invoice(obj)
+        return inv.invoice_number if inv else None
+
+    def get_amount_due(self, obj):
+        inv = self._invoice(obj)
+        return str(inv.total_amount) if inv else None
 
 
 class CustomerVoucherSerializer(serializers.ModelSerializer):

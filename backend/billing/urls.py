@@ -75,6 +75,7 @@ from .views import (
     CustomerSuspendResumeView,
     ResendVoucherView,
     CompAccessView,
+    RecordPaymentView,
     IssueVoucherView,
     CustomerDeviceView,
     DeactivateVoucherView,
@@ -236,6 +237,15 @@ urlpatterns = [
         "api/admin/customers/<int:customer_id>/comp/",
         CompAccessView.as_view(),
         name="customer-comp",
+    ),
+
+    # Money that has already changed hands, against a bill that exists. The
+    # counterpart to comp above: that one gives a package away and creates a
+    # subscription, this one settles the one already there.
+    path(
+        "api/admin/customers/<int:customer_id>/payment/",
+        RecordPaymentView.as_view(),
+        name="customer-record-payment",
     ),
 
     path(
