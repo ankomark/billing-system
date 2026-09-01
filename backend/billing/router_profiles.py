@@ -61,12 +61,20 @@ def _pppoe_addresses(profiles):
     tunnel-side address differ per operator, and `default` is where the
     documented setup puts them — so an operator configures this once per
     router and every package profile follows.
+
+    `dns-server` is copied for the same reason and was missing from this list,
+    which cost the first PPPoE subscriber a morning on 2026-09-01. A client
+    with no resolver authenticates, takes an address, installs a working
+    default route and cannot look anything up — the same "connected, no
+    internet" this function already exists to prevent, one step further along.
+    Nothing in the profile says it is wrong, and the router log says the login
+    succeeded, so there is nothing to find from either end.
     """
     for p in profiles:
         if p.get("name") == "default":
             return {
                 key: p[key]
-                for key in ("local-address", "remote-address")
+                for key in ("local-address", "remote-address", "dns-server")
                 if p.get(key)
             }
     return {}

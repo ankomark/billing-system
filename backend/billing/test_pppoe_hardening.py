@@ -20,6 +20,7 @@ never did", which is the sort of comment that stops somebody checking.
 from decimal import Decimal
 from datetime import timedelta
 
+from librouteros.exceptions import TrapError
 from django.test import TestCase
 from django.utils import timezone
 
@@ -29,38 +30,66 @@ from billing.models import (
 from billing.tenancy import tenant_context
 
 
+# What RouterOS actually accepts on /ppp/secret.
+#
+# Written down because a fake that takes any keyword cannot fail for the reason
+# the router fails. `limit-uptime` was sent here for a week: /ip/hotspot/user
+# has that field and /ppp/secret does not, so RouterOS refused every add whole
+# and no PPPoE subscriber could be provisioned at all — while the test asserting
+# the field was sent passed happily, because this class used to accept it.
+PPP_SECRET_FIELDS = frozenset({
+    ".id", "name", "password", "service", "caller-id", "profile",
+    "local-address", "remote-address", "routes", "ipv6-routes",
+    "limit-bytes-in", "limit-bytes-out", "comment", "disabled",
+})
+
+
 class FakePath(list):
     """Enough of librouteros' Path to see what was asked of the router."""
 
-    def __init__(self, rows, on_remove=None):
+    def __init__(self, rows, on_remove=None, known=None):
         super().__init__(rows)
         self.removed = []
         self.added = []
         self.updated = []
         self._on_remove = on_remove
+        # None means "accept anything", which is right for paths whose field
+        # list is not the point of the test.
+        self._known = known
 
     def remove(self, *ids):
         if self._on_remove:
             self._on_remove(ids)
         self.removed.extend(ids)
 
+    def _check(self, kw):
+        if self._known is None:
+            return
+        unknown = sorted(set(kw) - self._known)
+        if unknown:
+            # The wording RouterOS itself uses, so a failure here reads the way
+            # it reads in the router log.
+            raise TrapError("unknown parameter %s" % unknown[0])
+
     def add(self, **kw):
         # Recorded *and* inserted. A router that accepts an add returns the row
         # on the next read, and create_pppoe_secret then enable_pppoe depend on
         # exactly that: the second call finds the secret the first one made.
         # A fake that only records makes a working sequence look broken.
+        self._check(kw)
         self.added.append(kw)
         row = dict(kw)
         row.setdefault(".id", "*%d" % (len(self) + 1))
         self.append(row)
 
     def update(self, **kw):
+        self._check(kw)
         self.updated.append(kw)
 
 
 class FakeApi:
     def __init__(self, secrets=None, active=None, active_raises=False):
-        self.secrets = FakePath(secrets or [])
+        self.secrets = FakePath(secrets or [], known=PPP_SECRET_FIELDS)
         self.active = FakePath(active or [])
         self.active_raises = active_raises
 
@@ -240,12 +269,25 @@ class PppoeProvisioningHonestyTests(TestCase):
 
 class PppoeForcedExpiryTests(TestCase):
     """
-    The router's own copy of when a subscription runs out.
+    The secret must not carry a limit the router will refuse.
 
-    Until this, nothing on the PPPoE side enforced expiry except our sweep. A
-    sweep that cannot reach the router, or does not run, left a subscriber
-    connected indefinitely. A hotspot user has carried limit-uptime since the
-    day the same problem was found there.
+    This class used to assert the opposite. The reasoning was that a hotspot
+    user carries limit-uptime, so a PPPoE secret should too — and /ip/hotspot/
+    user does have that field. /ppp/secret does not. RouterOS answers
+    `unknown parameter limit-uptime` and refuses the entire add.
+
+    So no secret was ever written, and PPPoE provisioning could not succeed for
+    anybody. It stood from 2026-08-25 until 2026-09-01, invisible only because
+    there were no PPPoE subscribers; the first one created hit it at once and
+    his router repeated `authentication failed` every thirty seconds while
+    every record said he was provisioned.
+
+    The old test passed throughout, because FakePath.add accepts any keyword.
+    A fake that cannot refuse cannot tell you the router would — which is the
+    whole reason a test has to be able to fail for the real reason.
+
+    Expiry is enforced by disable_customer_access: the secret is disabled and
+    the live session disconnected. PppoeExpiryTests above covers it.
     """
 
     USER = "SKY-3333-CCC"
@@ -277,16 +319,43 @@ class PppoeForcedExpiryTests(TestCase):
             return router_service.create_pppoe_secret(
                 api, self.router, self.customer, self.package, expiry)
 
-    def test_the_secret_carries_when_it_runs_out(self):
+    def test_the_secret_carries_no_uptime_limit(self):
+        """
+        The field RouterOS refuses. Sending it does not weaken the guarantee,
+        it destroys the account: the add is rejected whole and the subscriber
+        has no credentials at all.
+        """
         api = FakeApi()
         self._create(api, timezone.now() + timedelta(hours=2))
         added = api.secrets.added[0]
-        self.assertIn("limit-uptime", added)
-        # Hyphenated. As limit_uptime it goes on the wire as a word RouterOS
-        # does not know and the guarantee silently does not exist.
+        self.assertNotIn(
+            "limit-uptime", added,
+            "/ppp/secret has no limit-uptime — RouterOS refuses the whole add")
         self.assertNotIn("limit_uptime", added)
-        seconds = int(added["limit-uptime"].rstrip("s"))
-        self.assertTrue(7000 < seconds <= 7200, added["limit-uptime"])
+
+    def test_the_secret_still_carries_what_a_subscriber_needs(self):
+        """
+        Removing the bad field must not take the working ones with it.
+        """
+        api = FakeApi()
+        self._create(api, timezone.now() + timedelta(hours=2))
+        added = api.secrets.added[0]
+        self.assertEqual(added["name"], self.USER)
+        self.assertEqual(added["password"], "pw")
+        self.assertEqual(added["service"], "pppoe")
+        self.assertEqual(added["profile"], "PPPOE_PKG_1")
+
+    def test_an_expiry_in_hand_changes_nothing_about_what_is_sent(self):
+        """
+        With and without an expiry the secret is identical. The date is still
+        accepted so callers need not care, and is enforced by
+        disable_customer_access rather than by the router.
+        """
+        with_expiry = FakeApi()
+        self._create(with_expiry, timezone.now() + timedelta(days=30))
+        without = FakeApi()
+        self._create(without, None)
+        self.assertEqual(with_expiry.secrets.added[0], without.secrets.added[0])
 
     def test_renewal_resets_the_counter_rather_than_writing_a_new_limit(self):
         """
@@ -384,6 +453,62 @@ class PppoeProfileAddressTests(TestCase):
         self.assertEqual(fixed[".id"], "*5")
         self.assertEqual(fixed["local-address"], "192.168.89.1")
         self.assertEqual(fixed["remote-address"], "pppoe-pool")
+
+    def test_the_generated_profile_inherits_the_resolver(self):
+        """
+        An address without a resolver is still no internet.
+
+        The first real PPPoE subscriber, 2026-09-01: dns-server was empty on
+        every profile, so the client would have authenticated, taken an address
+        from the pool, installed a working default route and resolved nothing.
+        The customer reports "connected, no internet" and every record — the
+        secret, the profile, the router log — says the login succeeded.
+        """
+        profiles = FakePath([
+            {".id": "*0", "name": "default",
+             "local-address": "192.168.89.1", "remote-address": "pppoe-pool",
+             "dns-server": "192.168.89.1,8.8.8.8"},
+        ])
+        self._ensure(profiles)
+
+        added = profiles.added[0]
+        self.assertEqual(added["dns-server"], "192.168.89.1,8.8.8.8")
+
+    def test_a_profile_made_before_dns_was_set_is_repaired(self):
+        """
+        Same argument as the addresses above: idempotent by name would leave
+        every profile generated before the operator set a resolver carrying
+        that emptiness for ever.
+        """
+        profiles = FakePath([
+            {".id": "*0", "name": "default",
+             "local-address": "192.168.89.1", "remote-address": "pppoe-pool",
+             "dns-server": "192.168.89.1,8.8.8.8"},
+            {".id": "*5", "name": "PPPOE_PKG_%s" % self.package.id,
+             "rate-limit": "5M/10M", "only-one": "yes",
+             "local-address": "192.168.89.1", "remote-address": "pppoe-pool",
+             "comment": "Auto: home 10mbps"},
+        ])
+        self._ensure(profiles)
+
+        self.assertEqual(profiles.added, [], "a duplicate profile was created")
+        self.assertEqual(len(profiles.updated), 1)
+        self.assertEqual(profiles.updated[0]["dns-server"],
+                         "192.168.89.1,8.8.8.8")
+
+    def test_a_router_with_no_resolver_configured_is_not_given_a_blank_one(self):
+        """
+        Absent is not the same as empty. An operator who has not set a resolver
+        on `default` must not have `dns-server=""` written onto every package
+        profile, which would look configured and behave worse.
+        """
+        profiles = FakePath([
+            {".id": "*0", "name": "default",
+             "local-address": "192.168.89.1", "remote-address": "pppoe-pool"},
+        ])
+        self._ensure(profiles)
+
+        self.assertNotIn("dns-server", profiles.added[0])
 
     def test_a_changed_package_speed_reaches_the_profile(self):
         profiles = FakePath([

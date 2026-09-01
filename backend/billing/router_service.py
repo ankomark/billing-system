@@ -67,18 +67,30 @@ def create_pppoe_secret(api, router, customer, package, expiry_date=None):
         "comment": "AUTO | WIFI BILLING SYSTEM",
     }
 
-    if expiry_date is not None:
-        # The router's own copy of when this runs out.
-        #
-        # Until now nothing on the PPPoE side enforced expiry except our sweep
-        # — and if that sweep could not reach the router, or did not run, a
-        # subscriber stayed connected indefinitely. A hotspot user has carried
-        # this since the day the same problem was found there.
-        #
-        # Hyphenated. As `limit_uptime` it goes on the wire as a word RouterOS
-        # does not know, and the whole guarantee silently does not exist.
-        remaining = max(int((expiry_date - timezone.now()).total_seconds()), 60)
-        fields["limit-uptime"] = f"{remaining}s"
+    # `expiry_date` is accepted and deliberately not sent.
+    #
+    # This used to write `limit-uptime`, reasoning that a hotspot user has
+    # carried one since the same problem was found there. A hotspot user can:
+    # /ip/hotspot/user has that field. **/ppp/secret does not.** RouterOS
+    # answers `unknown parameter limit-uptime` and refuses the whole add, so
+    # no secret is written at all and the subscriber cannot authenticate.
+    #
+    # It was not a degraded guarantee, it was total. Every PPPoE provisioning
+    # attempt raised, `enable_customer_access` never reached its return, and
+    # the retry queue backed off 60s/240s/960s against an error no amount of
+    # retrying could fix. It went unseen from 2026-08-25 to 2026-09-01 for the
+    # simple reason that this operator had no PPPoE subscribers; the first one
+    # ever created hit it immediately, and his Huawei sat repeating
+    # `user enock authentication failed` every thirty seconds.
+    #
+    # The test that was supposed to cover this asserted the field *was* sent,
+    # and passed — against a fake whose `add` accepts any keyword. A fake that
+    # cannot refuse cannot tell you the router would.
+    #
+    # Expiry is enforced by disable_customer_access, which disables the secret
+    # and then disconnects the live session. That is the real mechanism and its
+    # own comment already said so: "PPP has no `limit-uptime` set on it the way
+    # a hotspot user does" — written in one file while this one set it.
 
     secrets.add(**fields)
     return True
