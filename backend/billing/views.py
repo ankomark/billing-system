@@ -1,6 +1,7 @@
 import secrets
 import string
 from decimal import Decimal, InvalidOperation
+from django.conf import settings
 from django.http import HttpResponse
 from django.db import IntegrityError, transaction
 from celery import chain
@@ -2549,6 +2550,150 @@ class RecordPaymentView(APIView):
             # the operator is standing in front of them.
             "voucher_code": voucher.code if voucher else None,
         }, status=201)
+
+
+class CustomerLoginAccountView(APIView):
+    """
+    Give a PPPoE subscriber a login, or reset the one they have.
+
+    The renewal portal has existed all along — PPPoECustomerPortalView, the
+    packages endpoint, the renew endpoint with its STK push, usage and
+    controls, all of it behind `permissions.IsAuthenticated` resolving the
+    subscriber through `user.customer_profile`. And not one subscriber could
+    reach any of it: every account on the platform belonged to the operator or
+    their staff, because nothing has ever created a login for a customer.
+    Finished software with nobody able to sign in.
+
+    So PPPoE renewal was manual — the operator taking money and recording it by
+    hand, for every line, every month.
+
+    They log in with their PPPoE username. It is what their router is already
+    configured with, it was already sent to them when the line was set up, and
+    it is unique within an operator by database constraint. Their phone number
+    would be friendlier and is not unique in this schema, which makes it unsafe
+    as a Django username; those are unique across the whole platform.
+
+    That last part is also why a clash is refused rather than worked around.
+    Two operators can each have a `SKY-1234-ABC`, and inventing `SKY-1234-ABC2`
+    to get past it would hand somebody a login they will mistype for ever.
+
+    Admin only. This creates an account that can spend money through the STK
+    push, which is not a decision for whoever is on the counter.
+    """
+
+    permission_classes = [IsTenantAdmin]
+
+    # No l/1/I/O/0. The operator is going to read this down a phone line.
+    ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789"
+
+    def post(self, request, customer_id):
+        customer = Customer.objects.filter(id=customer_id).first()
+        if customer is None:
+            return Response({"detail": "Customer not found"}, status=404)
+
+        if customer.connection_type != "pppoe":
+            # A hotspot subscriber is anonymous by design: identified by MAC at
+            # the captive portal, buying without an account at all. There is
+            # nothing behind a login for them to reach.
+            return Response(
+                {"detail": "Only PPPoE subscribers have a portal to log in to."},
+                status=400,
+            )
+
+        username = (customer.pppoe_username or "").strip()
+        if not username:
+            return Response(
+                {"detail": "This line has no PPPoE username yet. It is created "
+                           "with their first subscription."},
+                status=400,
+            )
+
+        existing = getattr(customer, "user", None)
+
+        clash = User.objects.filter(username=username)
+        if existing is not None:
+            clash = clash.exclude(pk=existing.pk)
+        if clash.exists():
+            return Response(
+                {"detail": f"The username '{username}' is already taken on the "
+                           "platform. Change this line's PPPoE username and try "
+                           "again."},
+                status=409,
+            )
+
+        password = "".join(secrets.choice(self.ALPHABET) for _ in range(10))
+
+        if existing is not None:
+            existing.username = username
+            existing.set_password(password)
+            existing.must_change_password = True
+            existing.is_active = True
+            existing.save(update_fields=[
+                "username", "password", "must_change_password", "is_active"])
+            # Whoever was signed in on the old password is signed out, which is
+            # the point of resetting one.
+            existing.invalidate_sessions()
+            user = existing
+            created = False
+        else:
+            user = User.objects.create_user(
+                username=username,
+                password=password,
+                role=User.CUSTOMER,
+                tenant=customer.tenant,
+            )
+            user.must_change_password = True
+            user.save(update_fields=["must_change_password"])
+            customer.user = user
+            customer.save(update_fields=["user"])
+            created = True
+
+        record_admin_action(
+            request.user,
+            AdminActionLog.CREATE_USER if created else AdminActionLog.RESET_PASSWORD,
+            target_user=user,
+            target_tenant=customer.tenant,
+            label=customer.full_name,
+            detail="subscriber portal login",
+        )
+
+        # Sent as well as shown, and reported separately, because the operator
+        # is standing in front of the customer and needs to know whether to
+        # read it out. notify_customer swallows both outcomes and returns None,
+        # which would leave them guessing — and this operator's SMS credit has
+        # been exhausted before now.
+        brand = customer.tenant.business_name or customer.tenant.name
+        # Left out when unset. A URL guessed wrong is worse than none, and every
+        # character costs money in an SMS.
+        portal = (getattr(settings, "PORTAL_URL", "") or "").rstrip("/")
+        message = (
+            f"Your {brand} account portal is ready.\n"
+            + (f"Sign in at {portal}\n" if portal else "")
+            + f"Username: {username}\n"
+            + f"Password: {password}\n"
+            + "You will be asked to change this password when you sign in."
+        )
+        sms_ok = wa_ok = False
+        try:
+            sms_ok = bool(send_sms(customer.phone, message, tenant=customer.tenant))
+        except Exception:
+            logger.exception("[login] SMS failed for customer %s", customer.pk)
+        try:
+            wa_ok = bool(send_whatsapp(customer.phone, message,
+                                       tenant=customer.tenant))
+        except Exception:
+            logger.exception("[login] WhatsApp failed for customer %s", customer.pk)
+
+        return Response({
+            "detail": ("Login created." if created else "Password reset."),
+            "created": created,
+            "username": username,
+            # Shown once. It is hashed the moment it is set, so this response is
+            # the only place it will ever exist in readable form.
+            "password": password,
+            "sms_sent": sms_ok,
+            "whatsapp_sent": wa_ok,
+        }, status=201 if created else 200)
 
 
 class CustomerSuspendResumeView(APIView):

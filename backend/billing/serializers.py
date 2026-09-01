@@ -18,6 +18,10 @@ class CustomerSerializer(serializers.ModelSerializer):
     # them — searching for someone by the code on their receipt found them,
     # and then the row gave no sign of why.
     voucher_code = serializers.SerializerMethodField()
+    # Whether this subscriber can sign in to the renewal portal. The page needs
+    # it to know whether it is offering to create a login or to reset one, and
+    # a boolean is all it needs — never the account itself.
+    has_login = serializers.SerializerMethodField()
 
     class Meta:
         model = Customer
@@ -34,11 +38,17 @@ class CustomerSerializer(serializers.ModelSerializer):
             "voucher_code",
             "router",
             "custom_data_cap_gb",
+            "has_login",
             "created_at",
         ]
         extra_kwargs = {
             "pppoe_password": {"write_only": True},
         }
+
+    def get_has_login(self, obj):
+        # user_id, not obj.user: the id is already on the row and asking for the
+        # object is a query per customer on a paginated page.
+        return obj.user_id is not None
 
     def get_voucher_code(self, obj):
         if obj.connection_type != "hotspot":

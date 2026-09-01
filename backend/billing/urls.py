@@ -76,6 +76,7 @@ from .views import (
     ResendVoucherView,
     CompAccessView,
     RecordPaymentView,
+    CustomerLoginAccountView,
     IssueVoucherView,
     CustomerDeviceView,
     DeactivateVoucherView,
@@ -246,6 +247,15 @@ urlpatterns = [
         "api/admin/customers/<int:customer_id>/payment/",
         RecordPaymentView.as_view(),
         name="customer-record-payment",
+    ),
+
+    # A PPPoE subscriber's own login for the renewal portal. Created by the
+    # operator rather than self-service: it can spend money through the STK
+    # push, so it is not something a stranger may mint for themselves.
+    path(
+        "api/admin/customers/<int:customer_id>/login/",
+        CustomerLoginAccountView.as_view(),
+        name="customer-login-account",
     ),
 
     path(

@@ -2,10 +2,11 @@ import { useParams, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import toast from "react-hot-toast";
-import { ArrowLeft, Banknote, Edit, Router as RouterIcon, Gift, Send, Ban } from "lucide-react";
+import { ArrowLeft, Banknote, Edit, KeyRound, Router as RouterIcon, Gift, Send, Ban } from "lucide-react";
 import AdminLayout from "../../components/admin/AdminLayout";
 import CompAccessModal from "../../components/admin/CompAccessModal";
 import RecordPaymentModal from "../../components/admin/RecordPaymentModal";
+import CustomerLoginModal from "../../components/admin/CustomerLoginModal";
 import { getUser } from "../../services/auth";
 import { isOperatorAdmin } from "../../constants/roles";
 import { useConfirm } from "../../components/ui/ConfirmModal";
@@ -75,6 +76,7 @@ export default function CustomerDetail() {
 
   const [comping, setComping] = useState(false);
   const [paying, setPaying] = useState(false);
+  const [loginOpen, setLoginOpen] = useState(false);
   // Giving away what the business sells is a decision about money, so it
   // belongs to whoever answers for the money.
   const canComp = isOperatorAdmin(getUser()?.role);
@@ -190,6 +192,12 @@ export default function CustomerDetail() {
 
   return (
     <AdminLayout>
+      <CustomerLoginModal
+        open={loginOpen}
+        customer={customer}
+        onClose={() => setLoginOpen(false)}
+        onDone={() => qc.invalidateQueries({ queryKey: ["customer", id] })}
+      />
       <RecordPaymentModal
         open={paying}
         customer={customer}
@@ -260,6 +268,21 @@ export default function CustomerDetail() {
               <Btn color="blue" onClick={handleResendVoucher} loading={actionLoading}>
                 Resend Voucher
               </Btn>
+            )}
+            {canComp && customer.connection_type === "pppoe" && (
+              /*
+                Outlined like the giveaway below: creating a login is
+                occasional housekeeping, not the thing an operator came to the
+                page to do. A hotspot subscriber is anonymous by design and has
+                no portal to sign in to, so this is not offered to them at all.
+              */
+              <button
+                onClick={() => setLoginOpen(true)}
+                className="inline-flex items-center gap-2 rounded-lg border border-sky-500/40 px-4 py-2 text-sm font-semibold text-sky-300 transition-colors hover:bg-sky-500/10"
+              >
+                <KeyRound size={14} aria-hidden="true" />
+                {customer.has_login ? "Reset portal password" : "Create portal login"}
+              </button>
             )}
             {canComp && (
               /*

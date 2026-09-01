@@ -79,6 +79,19 @@ export const recordPayment = async (
   return res.data;
 };
 
+/**
+ * Give a PPPoE subscriber a login for the renewal portal, or reset it.
+ *
+ * They sign in with their PPPoE username — already on their router and already
+ * sent to them. The password comes back once and once only: it is hashed the
+ * moment it is set, so this response is the only readable copy that will ever
+ * exist.
+ */
+export const createCustomerLogin = async (customerId) => {
+  const res = await api.post(`admin/customers/${customerId}/login/`, {});
+  return res.data;
+};
+
 export const compAccess = async (customerId, { packageId, reason }) => {
   const res = await api.post(`admin/customers/${customerId}/comp/`, {
     package_id: packageId,

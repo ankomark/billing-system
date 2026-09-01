@@ -647,6 +647,13 @@ MPESA_ENV = os.getenv("MPESA_ENV", "sandbox")
 # public token so the callback loads the right operator's credentials.
 PLATFORM_BASE_URL = os.getenv("PLATFORM_BASE_URL", "")
 
+# Where a subscriber signs in, e.g. https://app.example.com. Distinct from
+# PLATFORM_BASE_URL above, which is the API: this is the React app, and it is
+# the address put into the SMS that hands somebody their portal login. Empty by
+# default and the line is simply left out of the message — a URL guessed wrong
+# is worse than none, and every character costs money in an SMS.
+PORTAL_URL = os.getenv("PORTAL_URL", "")
+
 # Safaricom's callback sources. A fast path, not a gate — see
 # MpesaSTKCallbackView, which accepts an unlisted address when the callback
 # correlates to a push this platform sent. That matters because this list is
