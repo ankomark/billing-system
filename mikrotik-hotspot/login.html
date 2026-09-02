@@ -4,6 +4,16 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="theme-color" content="#0f172a">
+  <!-- Never cached.
+       RouterOS serves this file with no cache headers of its own, so a device
+       is free to keep whichever copy it first saw. A television did exactly
+       that: the timeout fix shipped on 2026-09-01 and the set went on spinning
+       for ever on the old code, which made a deployed fix look like no fix at
+       all. Meta directives are weaker than real headers and are all that can
+       be set from here, but they cover the browsers that honour them. -->
+  <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
   <title>Connect</title>
   <style>
     /*
@@ -154,6 +164,13 @@
       padding: .4375rem .875rem; cursor: pointer;
     }
     .pkg-buy:disabled { opacity: .5; cursor: default; }
+
+    /* Why the packages did not load. Quiet on purpose: no use to a customer,
+       every use to whoever they read it out to. */
+    .pkg-why {
+      display: block; margin-top: .5rem; font-size: .6875rem; line-height: 1.4;
+      color: #94a3b8; word-break: break-word;
+    }
 
     /* The phone prompt, opened under the package it belongs to so there is
        never a question about which one is being bought. */
@@ -820,7 +837,7 @@
       renderSupport((data && data.support_phones) ||
                     (data && data.support_phone ? [data.support_phone] : []));
     },
-    function () {
+    function (detail, code) {
       // "Pull down to refresh" is advice a captive-portal webview often
       // cannot take. Give them something to press.
       var box = el('pkgEmpty');
@@ -832,6 +849,24 @@
       again.textContent = t('packages.retry');
       again.addEventListener('click', function () { window.location.reload(); });
       box.appendChild(again);
+
+      // Say which failure this was.
+      //
+      // Every device that could not reach the backend showed this same
+      // sentence, so an operator could tell that something was wrong and never
+      // what. Three days went into distinguishing, from the outside, cases the
+      // page knew apart all along: a socket that never opened, a request that
+      // hung, and a server that answered with a refusal. api() already passes
+      // both, and this discarded them.
+      //
+      // Deliberately small and dull. A customer has no use for it; somebody
+      // reading it down a phone to whoever runs the network has every use.
+      var why = document.createElement('small');
+      why.className = 'pkg-why';
+      why.textContent = code
+        ? 'Error ' + code + (detail ? ' — ' + detail : '')
+        : (detail || 'No answer from the payment service.');
+      box.appendChild(why);
     });
 
   initLanguage();
