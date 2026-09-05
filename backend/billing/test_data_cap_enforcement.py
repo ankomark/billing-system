@@ -700,6 +700,43 @@ class HotspotCapsReachTheHardware(TestCase):
             self.assertEqual(call.kwargs["limit_bytes"], (300 * MB) // 3)
 
 
+class DryRun(DataCapBase):
+    """
+    The switch that makes the first deploy survivable.
+
+    Caps have never been enforced here, so the first sweep after switching
+    them on finds everyone who has gone over since their subscription started
+    -- not the few who went over in the last five minutes -- and disconnects
+    all of them at once. This lets that be measured before it is done.
+    """
+
+    def test_dry_run_reports_but_does_not_disconnect(self):
+        self.record(400)
+        with patch("billing.tasks.usage_tasks.USAGE_CAPS_DRY_RUN", True),              patch("billing.tasks.usage_tasks.disable_customer_access") as disable,              patch("billing.tasks.usage_tasks.notify_customer") as notify:
+            cut = check_cap(self.customer, self.sub)
+
+        self.assertFalse(cut, "dry run must not count as an action taken")
+        disable.assert_not_called()
+        notify.assert_not_called()
+
+        self.sub.refresh_from_db()
+        self.assertEqual(self.sub.status, "active")
+        self.assertIsNone(self.sub.capped_at)
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.status, "active")
+
+    def test_enforcement_is_on_unless_asked_otherwise(self):
+        """
+        The default must be to enforce.
+
+        A safety flag that quietly defaults to off is how a data cap becomes
+        decoration again, which is the entire bug this change exists to fix.
+        """
+        from billing.tasks import usage_tasks
+
+        self.assertFalse(usage_tasks.USAGE_CAPS_DRY_RUN)
+
+
 class TheSweepIsScheduled(TestCase):
     """
     The cap was decoration for as long as nothing ran the check.

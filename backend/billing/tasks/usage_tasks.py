@@ -43,6 +43,29 @@ logger = logging.getLogger(__name__)
 COLLECT_EXPIRES_SECONDS = 240
 
 
+# Whether a subscriber over their cap is actually disconnected, or merely
+# logged as one who would have been.
+#
+# This exists for one deploy, and it exists because of the shape of this
+# change rather than out of general timidity. Caps have never been enforced on
+# this platform -- the task was written and never scheduled -- so the first
+# sweep after enforcement is switched on does not find the handful of people
+# who went over in the last five minutes. It finds everyone who has gone over
+# since their current subscription started, and disconnects all of them inside
+# one beat interval, each with an SMS.
+#
+# That population is unknown until it is measured, and measuring it by
+# disconnecting it is the wrong order. Deploy with USAGE_CAPS_DRY_RUN=1, read
+# what the log says it would have done (or run `manage.py report_usage_caps`,
+# which answers the same question without deploying at all), then unset it.
+#
+# Defaults to enforcing. A flag that silently defaults to off is how a cap
+# becomes decoration again, which is the bug this whole change exists to fix.
+USAGE_CAPS_DRY_RUN = os.getenv("USAGE_CAPS_DRY_RUN", "0").lower() in (
+    "1", "true", "yes", "on",
+)
+
+
 @shared_task(
     bind=True,
     autoretry_for=(Exception,),
@@ -403,6 +426,17 @@ def cut_off_for_cap(customer, subscription, used, cap):
     select_for_update, so two collectors landing on the same subscriber at
     once produce one suspension, one message and one log line.
     """
+    if USAGE_CAPS_DRY_RUN:
+        # Says what it would have done and touches nothing -- no suspension,
+        # no router, no message. Returns False so the caller's count reflects
+        # actions taken rather than actions considered.
+        logger.warning(
+            "[usage-caps] DRY RUN: would cut off customer %s (%s of %s used) "
+            "on subscription %s",
+            customer.pk, _human_bytes(used), _human_bytes(cap), subscription.pk,
+        )
+        return False
+
     with transaction.atomic():
         locked = (
             Subscription.objects.all_tenants()
