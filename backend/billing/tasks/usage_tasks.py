@@ -3,11 +3,12 @@ import os
 
 from celery import shared_task
 from django.db import transaction
-from django.db.models import Sum
+from django.db.models import Prefetch, Sum
 from django.utils import timezone
 
 from billing.models import (
     Customer,
+    Subscription,
     HotspotUsageRecord,
     HotspotUsageState,
     PPPoEUsageState,
@@ -20,7 +21,12 @@ from billing.router_service import (
     get_pppoe_sessions,
     tenant_sessions,
 )
-from billing.services.usage import roll_up_day, usage_since
+from billing.services.usage import (
+    cap_bytes_for,
+    roll_up_day,
+    usage_since,
+    window_start,
+)
 from billing.tenancy import all_tenants, tenant_context
 
 logger = logging.getLogger(__name__)
@@ -109,6 +115,22 @@ def collect_pppoe_usage_for_tenant(self, tenant_id):
         )
     )
 
+    # The subscription each cap is measured against, fetched alongside the
+    # customers rather than one query per subscriber inside the loop. At ten
+    # thousand subscribers on a five-minute collection that is the difference
+    # between two queries and ten thousand, every five minutes, for a check
+    # that answers "no cap" for most of them.
+    customers = customers.prefetch_related(
+        Prefetch(
+            "subscriptions",
+            queryset=Subscription.objects.all_tenants()
+            .filter(status="active", invoice__payment_status="paid")
+            .select_related("package")
+            .order_by("-expiry_date"),
+            to_attr="active_subs",
+        )
+    )
+
     # One read of each router's session table for this operator, rather than
     # one connection per subscriber. See _sessions_by_user() for why: the old
     # shape could not finish inside the five minutes between runs once an
@@ -175,6 +197,21 @@ def collect_pppoe_usage_for_tenant(self, tenant_id):
         state.save(update_fields=["last_rx_bytes", "last_tx_bytes", "last_seen_at"])
 
         processed += 1
+
+        # Checked here, against the delta that was just written, because this
+        # is the earliest moment the system can possibly know the allowance is
+        # spent. A separate sweep on its own schedule adds its own interval to
+        # the overshoot, and on a 300 MB bundle an interval is a large
+        # fraction of the whole bundle.
+        #
+        # Guarded, and only this subscriber is lost if it raises: a cap check
+        # that fails must not abandon the rest of the operator's collection,
+        # because the deltas already written are what every later check reads.
+        try:
+            check_cap(customer, next(iter(customer.active_subs), None))
+        except Exception:
+            logger.exception(
+                "[usage] cap check failed for customer %s", customer.pk)
 
     logger.info(f"[usage] PPPoE snapshots collected: {processed}")
     return processed
@@ -245,6 +282,22 @@ def collect_hotspot_usage_for_tenant(self, tenant_id):
         .exclude(hotspot_username="")
     )
 
+    # The subscription each cap is measured against, fetched alongside the
+    # customers rather than one query per subscriber inside the loop. At ten
+    # thousand subscribers on a five-minute collection that is the difference
+    # between two queries and ten thousand, every five minutes, for a check
+    # that answers "no cap" for most of them.
+    customers = customers.prefetch_related(
+        Prefetch(
+            "subscriptions",
+            queryset=Subscription.objects.all_tenants()
+            .filter(status="active", invoice__payment_status="paid")
+            .select_related("package")
+            .order_by("-expiry_date"),
+            to_attr="active_subs",
+        )
+    )
+
     # Read each router's table once for this operator, as above. This one
     # matters more: a hotspot operator has far more subscribers than a PPPoE
     # one, and they are the whole product.
@@ -298,8 +351,214 @@ def collect_hotspot_usage_for_tenant(self, tenant_id):
         state.save(update_fields=["last_rx_bytes", "last_tx_bytes", "last_seen_at"])
         processed += 1
 
+        # Checked here, against the delta that was just written, because this
+        # is the earliest moment the system can possibly know the allowance is
+        # spent. A separate sweep on its own schedule adds its own interval to
+        # the overshoot, and on a 300 MB bundle an interval is a large
+        # fraction of the whole bundle.
+        #
+        # Guarded, and only this subscriber is lost if it raises: a cap check
+        # that fails must not abandon the rest of the operator's collection,
+        # because the deltas already written are what every later check reads.
+        try:
+            check_cap(customer, next(iter(customer.active_subs), None))
+        except Exception:
+            logger.exception(
+                "[usage] cap check failed for customer %s", customer.pk)
+
     logger.info(f"[usage] Hotspot snapshots collected: {processed}")
     return processed
+
+
+def _human_bytes(n):
+    """Bytes as the operator priced them — 314572800 means nothing to anyone."""
+    if n >= 1024 ** 3:
+        return f"{n / 1024 ** 3:.2f}".rstrip("0").rstrip(".") + "GB"
+    return f"{n / 1024 ** 2:.0f}MB"
+
+
+def cut_off_for_cap(customer, subscription, used, cap):
+    """
+    Take one subscriber off the network because their data allowance is spent.
+
+    Returns True if this call is the one that cut them off, False if they were
+    already cut off — so a caller can count real actions rather than sweeps.
+
+    The hard part of a data cap is not disconnecting somebody once. It is that
+    four other things in this system exist to put subscribers *back* on the
+    hardware when they fall off it — auto-failover, the router-health recovery
+    sweep, the provisioning retry, a tenant being re-enabled — and to all of
+    them a disconnected subscriber holding an active paid subscription looks
+    exactly like a fault to repair. Disconnecting alone therefore buys minutes:
+    the next sweep hands the allowance back and the subscriber carries on.
+
+    So the subscription is suspended first, and only then is the router
+    touched. Every one of those paths grants against an *active* subscription
+    — see enable_customer_access — so once it is suspended there is nothing
+    for them to find. The order is the point: suspending after the disconnect
+    leaves a window in which a concurrent sweep sees an active subscription
+    and a disconnected subscriber, and puts them back on.
+
+    Idempotent under concurrency. The row is re-read and re-checked under
+    select_for_update, so two collectors landing on the same subscriber at
+    once produce one suspension, one message and one log line.
+    """
+    with transaction.atomic():
+        locked = (
+            Subscription.objects.all_tenants()
+            .select_for_update()
+            .filter(pk=subscription.pk)
+            .first()
+        )
+        if locked is None or locked.status != "active":
+            return False
+
+        locked.status = "suspended"
+        locked.capped_at = timezone.now()
+        locked.save(update_fields=["status", "capped_at"])
+
+        # Is anything else still keeping this subscriber online?
+        #
+        # Evaluated after the row above is suspended so it cannot count
+        # itself, and phrased the same way enforce_subscription_expiry
+        # phrases it — a top-up bought while a bundle was still running is
+        # a second live subscription, and cutting the customer row over one
+        # allowance running out would take the time they had just paid for
+        # with it.
+        #
+        # Without this the customer row stayed "active" forever after a cap
+        # cut-off: an operator's customer list showed somebody as connected
+        # who had been off for days, and the expiry sweep would never correct
+        # it because that only looks at subscriptions which are still active.
+        # Paid, for the same reason _billable_subscription is paid: an
+        # abandoned purchase is created active and unpaid, and nothing will
+        # ever provision against it. Counting one as coverage would leave a
+        # subscriber connected on the strength of a package nobody bought.
+        still_covered = (
+            Subscription.objects.all_tenants()
+            .filter(customer_id=customer.pk, status="active",
+                    invoice__payment_status="paid",
+                    expiry_date__gt=timezone.now())
+            .exists()
+        )
+        if not still_covered and customer.status != "expired":
+            customer.status = "expired"
+            customer.save(update_fields=["status"])
+
+    if still_covered:
+        # Another live subscription is still serving them, so the network
+        # stays on and only this allowance is closed out.
+        logger.info(
+            "[usage-caps] customer %s spent the allowance on subscription %s "
+            "but holds another live subscription; left connected",
+            customer.pk, subscription.pk,
+        )
+        return True
+
+    # Outside the transaction: this talks to hardware that may be a satellite
+    # hop away, and holding a row lock open across it would block every other
+    # write touching this subscriber for the length of a timeout.
+    #
+    # Acting as the owning operator, because notify_customer resolves SMS and
+    # WhatsApp credentials through get_setting() — with no tenant in context
+    # it picks an arbitrary operator's, and sends this subscriber's message
+    # through somebody else's account and at their expense.
+    with tenant_context(customer.tenant_id):
+        try:
+            disable_customer_access(customer)
+        except Exception:
+            # Logged, not re-raised, and the suspension above stands.
+            #
+            # An unreachable router is the one case where the cut-off cannot
+            # be completed now, and the wrong response is to unwind it: the
+            # allowance really is spent, and leaving the subscription active
+            # so that a later sweep can re-grant it is how a cap turns into a
+            # suggestion. Suspended-but-still-connected resolves itself — the
+            # session ends on its own, and nothing will provision them again
+            # while the subscription is suspended.
+            logger.exception(
+                "[usage-caps] customer %s suspended over cap, but the router "
+                "could not be reached to disconnect them", customer.pk,
+            )
+
+        try:
+            notify_customer(
+                customer.phone,
+                f"Your {_human_bytes(cap)} data bundle is used up "
+                f"({_human_bytes(used)}). Buy a new bundle to get back online.",
+            )
+        except Exception:
+            # A failed message must never undo an enforcement action.
+            logger.exception(
+                "[usage-caps] notify failed for customer %s", customer.pk)
+
+    logger.info(
+        "[usage-caps] customer %s cut off: %s of %s used",
+        customer.pk, _human_bytes(used), _human_bytes(cap),
+    )
+    return True
+
+
+def _billable_subscription(customer):
+    """
+    The subscription a subscriber's allowance is measured against.
+
+    Paid, not merely active, and picked exactly the way enable_customer_access
+    picks the one it provisions — because the cap has to be the cap of the
+    package they are actually being served on.
+
+    Every subscription is born `active` with an unpaid invoice, so "active"
+    says nothing about whether money arrived. Taking the longest-running
+    active subscription instead hands the cap to whichever abandoned purchase
+    happened to be for the biggest package: somebody who paid for a 300 MB
+    bundle and also has an unpaid 10 GB weekly sitting in their history gets
+    measured against 10 GB, and never hits their cap at all. This codebase has
+    already been bitten by that ordering once — see the note on
+    enable_customer_access, and the 25 unpaid-but-active subscriptions found
+    in production on 2026-08-25.
+    """
+    return (
+        customer.subscriptions.filter(
+            status="active", invoice__payment_status="paid")
+        .select_related("package")
+        .order_by("-expiry_date")
+        .first()
+    )
+
+
+def check_cap(customer, subscription=None):
+    """
+    Has this subscriber spent their allowance, and if so, cut them off.
+
+    Called from inside the collectors immediately after a delta is written,
+    which is what makes the cap actually bite. The sweep below is a safety net
+    that runs on a schedule; this runs the instant the traffic is recorded, so
+    the overshoot on a 300 MB bundle is bounded by how much can be pulled
+    between two collections rather than by two unrelated schedules drifting.
+
+    Returns True if this call cut the subscriber off.
+    """
+    if subscription is None:
+        subscription = _billable_subscription(customer)
+    if subscription is None:
+        return False
+
+    cap = cap_bytes_for(customer, subscription)
+    if not cap:
+        return False  # 0 = unlimited
+
+    since = window_start(subscription)
+    if since is None:
+        return False
+
+    # The same reader the subscriber's own screen uses. Two sums of one number
+    # drift, and the way that surfaces is somebody disconnected while the
+    # portal tells them they still have data left.
+    used = usage_since(customer, since)
+    if used < cap:
+        return False
+
+    return cut_off_for_cap(customer, subscription, used, cap)
 
 
 @shared_task(
@@ -311,60 +570,58 @@ def collect_hotspot_usage_for_tenant(self, tenant_id):
 )
 def enforce_usage_caps(self):
     """
-    Disable access for customers who have exceeded their monthly data cap.
+    Sweep every active subscriber and cut off any who are over their cap.
 
-    Ported from the former billing/tasks.py, which was unreachable: the
-    billing/tasks package shadowed that module, so nothing could import it.
-    Deliberately NOT in CELERY_BEAT_SCHEDULE — enabling automatic cut-off is a
-    policy decision. Add a beat entry to switch it on.
+    This existed, was correct enough, and did nothing whatsoever: it was never
+    added to CELERY_BEAT_SCHEDULE, with a comment explaining that automatic
+    cut-off was a policy decision left switched off. Together with a cap field
+    that only accepted whole gigabytes, the net effect was that a data cap was
+    a number on a form — no subscriber has ever been cut off for exceeding
+    one. It is scheduled now.
+
+    Two things enforce the cap, deliberately. check_cap() runs inline in the
+    collectors and catches the overwhelming majority the moment the traffic is
+    recorded; this sweep catches what that cannot see — a subscriber whose
+    router was unreachable during collection, usage that arrived through a
+    rollup, and anything that lands between two collections.
     """
-    month_start = timezone.now().replace(
-        day=1, hour=0, minute=0, second=0, microsecond=0
-    )
     capped = 0
 
-    customers = (
-        Customer.objects.all_tenants()
-        .select_related("router", "tenant")
-        .filter(status="active")
+    # Only subscriptions that could still be cut off, and both halves matter.
+    # Scanning customers instead re-examined every suspended subscription on
+    # every sweep, which on an estate where caps actually bite is most of the
+    # table.
+    subscriptions = (
+        Subscription.objects.all_tenants()
+        .select_related("customer", "customer__router", "package", "tenant")
+        .filter(status="active", customer__status="active",
+                invoice__payment_status="paid")
+        .order_by("customer_id", "-expiry_date")
     )
 
-    for customer in customers:
-        subscription = customer.subscriptions.filter(status="active").first()
-        if not subscription:
+    seen = set()
+    for subscription in subscriptions.iterator(chunk_size=200):
+        # One subscription per customer — the longest-lived *paid* active one,
+        # which is what enable_customer_access provisions against. Also
+        # checking a top-up's shorter window would cut somebody off against an
+        # allowance they are not being served on, and including unpaid ones
+        # would measure them against a package nobody paid for.
+        if subscription.customer_id in seen:
             continue
+        seen.add(subscription.customer_id)
 
-        cap_gb = customer.custom_data_cap_gb or subscription.package.monthly_data_cap_gb
-        if not cap_gb:
-            continue  # 0 / None = unlimited
+        try:
+            if check_cap(subscription.customer, subscription):
+                capped += 1
+        except Exception:
+            # One subscriber's unreachable router must not end the sweep and
+            # leave everybody after them in the ordering uncapped.
+            logger.exception(
+                "[usage-caps] check failed for customer %s",
+                subscription.customer_id,
+            )
 
-        # The same reader the subscriber's own screen uses. Two sums of one
-        # number drift, and the way that surfaces is a customer disconnected
-        # while the portal tells them they have data left.
-        total = usage_since(customer, month_start)
-
-        used_gb = total / (1024 ** 3)
-        if used_gb < cap_gb:
-            continue
-
-        # Act as the owning operator. notify_customer() resolves SMS and
-        # WhatsApp credentials through get_setting(), which without a tenant in
-        # context would pick an arbitrary operator's — sending this customer's
-        # message through someone else's account.
-        with tenant_context(customer.tenant_id):
-            disable_customer_access(customer)
-            capped += 1
-
-            try:
-                notify_customer(
-                    customer.phone,
-                    f"Data limit reached ({cap_gb}GB). Please renew or upgrade.",
-                )
-            except Exception:
-                # Notification failure must not undo the enforcement action
-                logger.exception(f"[usage-caps] Notify failed for customer {customer.id}")
-
-    logger.info(f"[usage-caps] Capped {capped} customers over their limit")
+    logger.info("[usage-caps] cut off %s subscriber(s) over their cap", capped)
     return capped
 
 

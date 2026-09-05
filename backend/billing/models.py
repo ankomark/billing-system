@@ -918,8 +918,19 @@ class Customer(TenantScopedModel):
     pppoe_password = EncryptedCharField(blank=True)  # encrypted at rest
     hotspot_username = models.CharField(max_length=100, blank=True)
 
-    # Optional caps
-    custom_data_cap_gb = models.PositiveIntegerField(null=True, blank=True)
+    # Optional cap override, in megabytes.
+    #
+    # Three states, and they are not the same:
+    #
+    #   None  →  no override; the package's cap applies
+    #   0     →  overridden to unlimited, even if the package has a cap
+    #   n     →  this subscriber gets n MB, whatever the package says
+    #
+    # Half the readers of the old field spelled this `custom or package`,
+    # which collapses the first two: a subscriber deliberately given an
+    # unlimited override silently fell back to the package's ceiling. Every
+    # reader now goes through cap_bytes_for() instead of writing it again.
+    custom_data_cap_mb = models.PositiveIntegerField(null=True, blank=True)
 
     status = models.CharField(
         max_length=10,
@@ -1042,9 +1053,20 @@ class Package(TenantScopedModel):
         default="days",
     )
 
-    monthly_data_cap_gb = models.PositiveIntegerField(
+    # Megabytes, not gigabytes.
+    #
+    # This was a whole number of GB, which cannot express the bundles these
+    # operators actually sell. A 300 MB daily bundle is 0.29 GB, and a
+    # PositiveIntegerField takes that as 0 — which this same field documents
+    # as *unlimited*. So every sub-gigabyte package ever created was sold with
+    # a cap and provisioned without one, and the smaller the bundle the more
+    # completely the cap was ignored.
+    #
+    # MB is the smallest unit anyone prices in, and 2^32 MB is four petabytes,
+    # so there is no ceiling worth worrying about at the other end.
+    data_cap_mb = models.PositiveIntegerField(
         default=0,
-        help_text="0 = unlimited"
+        help_text="Data cap in MB. 0 = unlimited.",
     )
 
     is_hotspot = models.BooleanField(
@@ -1123,6 +1145,23 @@ class Subscription(TenantScopedModel):
     status = models.CharField(
         max_length=10, choices=STATUS_CHOICES, default="active"
     )
+
+    # When this subscription's data allowance ran out, and null until it does.
+    #
+    # The cut-off needs somewhere durable to live, because the danger with a
+    # data cap is not failing to disconnect once — it is reconnecting the
+    # subscriber a minute later. Everything that puts somebody back on the
+    # hardware (auto-failover, the router-health recovery sweep, the
+    # provisioning retry, a tenant being re-enabled) funnels through
+    # enable_customer_access, which grants against an *active* subscription.
+    # Suspending the row is therefore what makes the cut-off stick: there is
+    # no longer an active subscription for those paths to find.
+    #
+    # Kept separate from `status` because "suspended" alone does not say why,
+    # and the subscriber's own screen needs to distinguish "your time ran out"
+    # from "your data ran out" — they buy different things next.
+    capped_at = models.DateTimeField(null=True, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

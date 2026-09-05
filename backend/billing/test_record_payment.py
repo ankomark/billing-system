@@ -46,7 +46,7 @@ class RecordPaymentTests(TestCase):
             self.package = Package.objects.create(
                 tenant=self.tenant, name="home 10mbps", download_speed=10,
                 upload_speed=10, price=Decimal("2500.00"), duration_value=1,
-                duration_unit="months", monthly_data_cap_gb=0,
+                duration_unit="months", data_cap_mb=0,
                 is_hotspot=False, max_devices=4)
             self.customer = Customer.objects.create(
                 tenant=self.tenant, full_name="Enock", phone="254700111222",

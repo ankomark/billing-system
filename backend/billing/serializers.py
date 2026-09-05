@@ -37,7 +37,7 @@ class CustomerSerializer(serializers.ModelSerializer):
             "hotspot_username",
             "voucher_code",
             "router",
-            "custom_data_cap_gb",
+            "custom_data_cap_mb",
             "has_login",
             "created_at",
         ]
@@ -251,10 +251,12 @@ class CustomerDetailSerializer(CustomerSerializer):
 
         subscription = self._current_subscription(obj)
 
-        cap_gb = obj.custom_data_cap_gb
-        if cap_gb is None and subscription and subscription.package_id:
-            cap_gb = subscription.package.monthly_data_cap_gb
-        cap_gb = cap_gb or 0
+        # One resolver for the ceiling and one for the window, both shared
+        # with the cut-off. Spelling either here again is how the console and
+        # the enforcement came to disagree about who was over their cap.
+        from .services.usage import cap_bytes_for, window_start
+
+        cap_bytes = cap_bytes_for(obj, subscription)
 
         model = (
             HotspotUsageRecord if obj.connection_type == "hotspot"
@@ -262,7 +264,7 @@ class CustomerDetailSerializer(CustomerSerializer):
         )
         rows = model.objects.all_tenants().filter(
             tenant_id=obj.tenant_id, customer_id=obj.id)
-        since = getattr(subscription, "start_date", None)
+        since = window_start(subscription)
         if since:
             rows = rows.filter(period_start__gte=since)
 
@@ -274,13 +276,13 @@ class CustomerDetailSerializer(CustomerSerializer):
         up = totals["up"] or 0
         used = down + up
 
-        cap_bytes = cap_gb * 1024 ** 3 if cap_gb else 0
         return {
             "download_bytes": down,
             "upload_bytes": up,
             "used_bytes": used,
-            "cap_gb": cap_gb,          # 0 means unlimited
-            "unlimited": cap_gb == 0,
+            "cap_bytes": cap_bytes,            # 0 means unlimited
+            "cap_mb": cap_bytes // (1024 ** 2),
+            "unlimited": cap_bytes == 0,
             "percent_used": (
                 round(min(used / cap_bytes * 100, 999), 1) if cap_bytes else None
             ),
@@ -320,7 +322,7 @@ class PublicPackageSerializer(serializers.ModelSerializer):
             "id", "name", "price",
             "download_speed", "upload_speed",
             "duration_value", "duration_unit", "duration",
-            "monthly_data_cap_gb", "max_devices",
+            "data_cap_mb", "max_devices",
         )
 
     def get_duration(self, obj):

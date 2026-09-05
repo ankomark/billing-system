@@ -45,7 +45,7 @@ class DeviceEvictionTests(TestCase):
             self.package = Package.objects.create(
                 tenant=self.tenant, name="1 device", download_speed=5,
                 upload_speed=2, price=Decimal("50.00"), duration_value=1,
-                duration_unit="hours", monthly_data_cap_gb=0, is_hotspot=True,
+                duration_unit="hours", data_cap_mb=0, is_hotspot=True,
                 max_devices=1)
             self.customer = Customer.objects.create(
                 tenant=self.tenant, full_name="Asha", phone="254700000001",

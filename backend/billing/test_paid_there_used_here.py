@@ -56,12 +56,12 @@ class PaidThereUsedHereTests(TestCase):
             self.one_device = Package.objects.create(
                 tenant=self.tenant, name="3hrs unlimited", download_speed=5,
                 upload_speed=2, price=Decimal("20.00"), duration_value=3,
-                duration_unit="hours", monthly_data_cap_gb=0, is_hotspot=True,
+                duration_unit="hours", data_cap_mb=0, is_hotspot=True,
                 max_devices=1)
             self.two_device = Package.objects.create(
                 tenant=self.tenant, name="monthly unlimited", download_speed=10,
                 upload_speed=5, price=Decimal("1500.00"), duration_value=30,
-                duration_unit="days", monthly_data_cap_gb=0, is_hotspot=True,
+                duration_unit="days", data_cap_mb=0, is_hotspot=True,
                 max_devices=2)
 
     # ---- the real path ---------------------------------------------------

@@ -16,7 +16,7 @@ const INITIAL = {
   pppoe_password: "",
   hotspot_username: "",
   router: "",
-  custom_data_cap_gb: "",
+  custom_data_cap_mb: "",
   status: "active",
   // Selling at the counter. Optional: leave the package unset and this
   // behaves exactly as it did.
@@ -66,8 +66,8 @@ function validate(form) {
     errors.phone = "Enter a valid Kenyan phone number (e.g. 0712345678)";
   }
   if (!form.connection_type) errors.connection_type = "Connection type is required";
-  if (form.custom_data_cap_gb && isNaN(Number(form.custom_data_cap_gb))) {
-    errors.custom_data_cap_gb = "Must be a number";
+  if (form.custom_data_cap_mb && isNaN(Number(form.custom_data_cap_mb))) {
+    errors.custom_data_cap_mb = "Must be a number";
   }
   return errors;
 }
@@ -108,7 +108,7 @@ export default function CustomerForm() {
         pppoe_password:     "",
         hotspot_username:   existing.hotspot_username ?? "",
         router:             existing.router?.toString() ?? "",
-        custom_data_cap_gb: existing.custom_data_cap_gb?.toString() ?? "",
+        custom_data_cap_mb: existing.custom_data_cap_mb?.toString() ?? "",
         status:             existing.status           ?? "active",
       });
     }
@@ -162,7 +162,13 @@ export default function CustomerForm() {
     };
 
     if (form.router)             payload.router = Number(form.router);
-    if (form.custom_data_cap_gb) payload.custom_data_cap_gb = Number(form.custom_data_cap_gb);
+    // Sent when filled, including a deliberate 0 — which the backend
+    // reads as "uncapped, whatever the package says", not as "no
+    // override". A truthiness check would have dropped exactly that
+    // case and silently re-capped the subscriber being exempted.
+    if (form.custom_data_cap_mb !== "") {
+      payload.custom_data_cap_mb = Number(form.custom_data_cap_mb);
+    }
 
     if (form.connection_type === "pppoe") {
       if (form.pppoe_username) payload.pppoe_username = form.pppoe_username.trim();
@@ -464,12 +470,12 @@ export default function CustomerForm() {
                 Advanced
               </p>
               <div className="grid sm:grid-cols-2 gap-4">
-                <Field label="Custom Data Cap (GB)" error={errors.custom_data_cap_gb}>
+                <Field label="Custom Data Cap (MB)" error={errors.custom_data_cap_mb}>
                   <Input
                     type="number"
                     min="0"
-                    value={form.custom_data_cap_gb}
-                    onChange={set("custom_data_cap_gb")}
+                    value={form.custom_data_cap_mb}
+                    onChange={set("custom_data_cap_mb")}
                     placeholder="0 = use package default"
                   />
                 </Field>

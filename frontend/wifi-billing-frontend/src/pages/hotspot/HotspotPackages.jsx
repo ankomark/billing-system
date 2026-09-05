@@ -7,6 +7,7 @@ import {
   validateHotspotVoucher,
 } from "../../services/hotspot";
 import { PLATFORM_NAME } from "../../constants/brand";
+import { humanCapMb } from "../../utils/bytes";
 
 /**
  * The captive portal's landing page.
@@ -186,9 +187,9 @@ export default function HotspotPackages() {
                     <p className="mt-0.5 text-xs text-slate-500">
                       {pkg.download_speed}/{pkg.upload_speed} Mbps · {pkg.duration}
                     </p>
-                    {pkg.monthly_data_cap_gb > 0 && (
+                    {pkg.data_cap_mb > 0 && (
                       <p className="mt-0.5 text-xs text-slate-400">
-                        {pkg.monthly_data_cap_gb} GB included
+                        {humanCapMb(pkg.data_cap_mb)} included
                       </p>
                     )}
                   </div>

@@ -4,14 +4,8 @@ import { fetchPortal } from "../../services/customerPortal";
 import PPPoELiveStatus from "./PPPoEUsage";
 import PPPoEControls from "./PPPoEControls";
 import PPPoEUsageGraph from "../../components/usage/PPPoEUsageGraph";
+import { humanBytes, humanCapMb } from "../../utils/bytes";
 
-/** Bytes as something a person reads. */
-function humanBytes(bytes) {
-  const n = Number(bytes) || 0;
-  if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(2)} GB`;
-  if (n >= 1024 ** 2) return `${(n / 1024 ** 2).toFixed(1)} MB`;
-  return `${Math.round(n / 1024)} KB`;
-}
 
 export default function PPPoEPortal() {
   const [data, setData] = useState(null);
@@ -124,9 +118,18 @@ export default function PPPoEPortal() {
               <span className="ml-2 text-sm font-normal text-gray-500">
                 {data.usage.unlimited
                   ? "of unlimited"
-                  : `of ${data.usage.cap_gb} GB`}
+                  : `of ${humanCapMb(data.usage.cap_mb)}`}
               </span>
             </p>
+            {/* Why they are off, when they are off. Running out of data
+                and running out of time send a subscriber to different
+                places, and this is the screen where they find out. */}
+            {data.usage.capped && (
+              <p className="mt-2 rounded bg-red-50 px-3 py-2 text-sm font-medium text-red-700">
+                Your data bundle is used up, so you are offline. Buy a new
+                bundle to get back online.
+              </p>
+            )}
             {!data.usage.unlimited && data.usage.percent_used != null && (
               <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-gray-300">
                 <div

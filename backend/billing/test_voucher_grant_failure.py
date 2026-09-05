@@ -179,7 +179,7 @@ class VoucherGrantFailureTests(TestCase):
             self.package = Package.objects.create(
                 tenant=self.tenant, name="2hrs", download_speed=5,
                 upload_speed=2, price=Decimal("50.00"), duration_value=2,
-                duration_unit="hours", monthly_data_cap_gb=0, is_hotspot=True,
+                duration_unit="hours", data_cap_mb=0, is_hotspot=True,
                 max_devices=1)
             self.customer = Customer.objects.create(
                 tenant=self.tenant, full_name="Achieng", phone="254700333444",

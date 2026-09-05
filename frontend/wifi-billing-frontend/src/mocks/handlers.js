@@ -32,7 +32,7 @@ export const handlers = [
       total_pages: 1,
       current_page: 1,
       results: [
-        { id: 1, name: 'Basic 30d', download_speed: 5, upload_speed: 2, duration_value: 30, duration_unit: 'days', price: '500.00', monthly_data_cap_gb: 10, is_hotspot: false },
+        { id: 1, name: 'Basic 30d', download_speed: 5, upload_speed: 2, duration_value: 30, duration_unit: 'days', price: '500.00', data_cap_mb: 10240, is_hotspot: false },
       ],
     }))
   ),
@@ -41,7 +41,7 @@ export const handlers = [
     res(ctx.json({
       id: 1, name: 'Basic 30d', download_speed: 5, upload_speed: 2,
       duration_value: 30, duration_unit: 'days', price: '500.00',
-      monthly_data_cap_gb: 10, is_hotspot: false,
+      data_cap_mb: 10240, is_hotspot: false,
     }))
   ),
 

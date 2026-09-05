@@ -48,13 +48,13 @@ class UnpaidSubscriptionAccessTests(TestCase):
             self.small = Package.objects.create(
                 tenant=self.tenant, name="3hrs unlimited", download_speed=5,
                 upload_speed=2, price=Decimal("10.00"), duration_value=3,
-                duration_unit="hours", monthly_data_cap_gb=0, is_hotspot=True,
+                duration_unit="hours", data_cap_mb=0, is_hotspot=True,
                 max_devices=1)
             self.big = Package.objects.create(
                 tenant=self.tenant, name="5 GB unlimited highspeed",
                 download_speed=20, upload_speed=10, price=Decimal("100.00"),
                 duration_value=1, duration_unit="weeks",
-                monthly_data_cap_gb=0, is_hotspot=True, max_devices=1)
+                data_cap_mb=0, is_hotspot=True, max_devices=1)
             self.customer = Customer.objects.create(
                 tenant=self.tenant, full_name="Wanjiru", phone="254706568711",
                 connection_type="hotspot", router=self.router,

@@ -559,13 +559,24 @@
     }
   }
 
+
+  /** A cap held in megabytes, in whatever unit reads best. Binary MB, as the router counts. */
+  function humanCap(mb) {
+    var n = Number(mb) || 0;
+    if (n >= 1024) return (n / 1024).toFixed(n % 1024 === 0 ? 0 : 1) + ' GB';
+    return n + ' MB';
+  }
+
   function packageCard(pkg) {
     var card = document.createElement('div');
     card.className = 'pkg';
 
+    // Caps are megabytes now. As whole gigabytes a 300MB bundle could only
+    // be stored as 0, which means unlimited, so the packages these
+    // operators actually sell showed no allowance here at all.
     var speed = (pkg.download_speed || '?') + '/' + (pkg.upload_speed || '?') + ' Mbps';
     var meta = speed + ' · ' + (pkg.duration || '');
-    if (pkg.monthly_data_cap_gb > 0) { meta += ' · ' + pkg.monthly_data_cap_gb + ' GB'; }
+    if (pkg.data_cap_mb > 0) { meta += ' · ' + humanCap(pkg.data_cap_mb); }
 
     var main = document.createElement('div');
     main.className = 'pkg-main';

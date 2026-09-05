@@ -57,7 +57,7 @@ class MpesaCallbackSourceTests(TestCase):
             package = Package.objects.create(
                 tenant=self.tenant, name="1hr", download_speed=5, upload_speed=2,
                 price=Decimal("50.00"), duration_value=1, duration_unit="hours",
-                monthly_data_cap_gb=0, is_hotspot=True)
+                data_cap_mb=0, is_hotspot=True)
             customer = Customer.objects.create(
                 tenant=self.tenant, full_name="Asha", phone="254700000001",
                 connection_type="hotspot", router=router)
@@ -178,7 +178,7 @@ class BuyGoodsCallbackTests(TestCase):
             package = Package.objects.create(
                 tenant=self.tenant, name="5min", download_speed=5, upload_speed=2,
                 price=Decimal("5.00"), duration_value=5, duration_unit="minutes",
-                monthly_data_cap_gb=0, is_hotspot=True)
+                data_cap_mb=0, is_hotspot=True)
             customer = Customer.objects.create(
                 tenant=self.tenant, full_name="Till Payer", phone="254701071435",
                 connection_type="hotspot", router=router)

@@ -33,7 +33,7 @@ function renderEdit() {
 describe('PackageForm — create mode', () => {
   beforeEach(() => mockNavigate.mockReset())
 
-  test('renders all fields including monthly data cap and hotspot toggle', () => {
+  test('renders all fields including the data cap and hotspot toggle', () => {
     renderCreate()
     // Use exact placeholder strings (not regex) to avoid ambiguous matches
     expect(screen.getByPlaceholderText('e.g. Basic 5Mbps')).toBeInTheDocument()
@@ -41,7 +41,12 @@ describe('PackageForm — create mode', () => {
     expect(screen.getByPlaceholderText('e.g. 2')).toBeInTheDocument()   // upload_speed
     expect(screen.getByPlaceholderText('e.g. 30')).toBeInTheDocument()  // duration_value
     expect(screen.getByPlaceholderText('e.g. 500')).toBeInTheDocument() // price
-    expect(screen.getByPlaceholderText('0 = unlimited')).toBeInTheDocument()
+    // The cap is entered in MB now. As whole GB a 300MB bundle could only be
+    // stored as 0, which the same field treats as unlimited, so the placeholder
+    // names the unit and the case that used to be impossible.
+    expect(
+      screen.getByPlaceholderText('0 = unlimited — e.g. 300 for a 300MB bundle')
+    ).toBeInTheDocument()
     expect(screen.getByRole('checkbox')).toBeInTheDocument()
   })
 
@@ -81,12 +86,12 @@ describe('PackageForm — create mode', () => {
 describe('PackageForm — edit mode', () => {
   beforeEach(() => mockNavigate.mockReset())
 
-  test('pre-fills all fields from fetched data including monthly_data_cap_gb and is_hotspot', async () => {
+  test('pre-fills all fields from fetched data including data_cap_mb and is_hotspot', async () => {
     renderEdit()
     // One fetch fills every field, so waiting on the first covers the rest.
     expect(await screen.findByDisplayValue('Basic 30d')).toBeInTheDocument()
     expect(screen.getByDisplayValue('500.00')).toBeInTheDocument() // price
-    expect(screen.getByDisplayValue('10')).toBeInTheDocument()     // monthly_data_cap_gb
+    expect(screen.getByDisplayValue('10240')).toBeInTheDocument()  // data_cap_mb (10 GB)
     expect(screen.getByRole('checkbox')).not.toBeChecked()           // is_hotspot: false
   })
 
@@ -96,7 +101,7 @@ describe('PackageForm — edit mode', () => {
         res(ctx.json({
           id: 1, name: 'Hotspot 1hr', download_speed: 5, upload_speed: 2,
           duration_value: 1, duration_unit: 'hours', price: '50.00',
-          monthly_data_cap_gb: 0, is_hotspot: true,
+          data_cap_mb: 0, is_hotspot: true,
         }))
       )
     )

@@ -6,6 +6,7 @@ import { ArrowLeft, Save, Loader } from "lucide-react";
 import AdminLayout from "../../components/admin/AdminLayout";
 import { Skeleton } from "../../components/ui/Skeleton";
 import { fetchPackage, createPackage, updatePackage } from "../../services/packages";
+import { humanCapMb } from "../../utils/bytes";
 
 const DURATION_UNITS = [
   { value: "minutes", label: "Minutes" },
@@ -19,7 +20,7 @@ const DURATION_UNITS = [
 const EMPTY = {
   name: "", download_speed: "", upload_speed: "",
   duration_value: "", duration_unit: "days", price: "",
-  monthly_data_cap_gb: 0, is_hotspot: false, max_devices: 1,
+  data_cap_mb: 0, is_hotspot: false, max_devices: 1,
 };
 
 export default function PackageForm() {
@@ -47,7 +48,7 @@ export default function PackageForm() {
         duration_value:      existing.duration_value      ?? "",
         duration_unit:       existing.duration_unit       ?? "days",
         price:               existing.price               ?? "",
-        monthly_data_cap_gb: existing.monthly_data_cap_gb ?? 0,
+        data_cap_mb:         existing.data_cap_mb         ?? 0,
         is_hotspot:          existing.is_hotspot          ?? false,
         max_devices:         existing.max_devices         ?? 1,
       });
@@ -143,15 +144,26 @@ export default function PackageForm() {
           <div className="border-t border-white/5 pt-5 space-y-4">
             <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-[0.14em]">Advanced</p>
 
+            {/* Megabytes, because gigabytes could not express what
+                these operators sell. The field took whole GB, so a
+                300 MB bundle had to be entered as 0 — which the same
+                field treats as unlimited. Every sub-gigabyte package
+                was therefore sold capped and served uncapped. */}
             <Field
-              label="Monthly Data Cap (GB)"
+              label="Data Cap (MB)"
               type="number"
-              name="monthly_data_cap_gb"
-              value={form.monthly_data_cap_gb}
+              name="data_cap_mb"
+              value={form.data_cap_mb}
               onChange={handleChange}
-              placeholder="0 = unlimited"
+              placeholder="0 = unlimited — e.g. 300 for a 300MB bundle"
               min="0"
             />
+            {Number(form.data_cap_mb) > 0 && (
+              <p className="-mt-2 text-xs text-slate-400">
+                {humanCapMb(form.data_cap_mb)} — the subscriber is cut off
+                automatically once this is used up.
+              </p>
+            )}
 
             {/* What the router is told as shared-users, and what the redeem
                 path counts against. One means the first phone to use the code

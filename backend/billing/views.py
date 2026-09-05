@@ -2703,9 +2703,8 @@ class CustomerSuspendResumeView(APIView):
         action = request.data.get("action")  # "suspend" | "resume"
         customer = get_object_or_404(Customer, id=customer_id)
 
-        subscription = customer.subscriptions.filter(status="active").first()
-
         if action == "suspend":
+            subscription = customer.subscriptions.filter(status="active").first()
             if subscription:
                 subscription.status = "suspended"
                 subscription.save()
@@ -2719,8 +2718,30 @@ class CustomerSuspendResumeView(APIView):
             return Response({"detail": "Customer suspended"})
 
         if action == "resume":
+            # A *suspended* subscription, which is the only kind there is to
+            # resume. Both branches shared one lookup filtered on status
+            # "active", so resume searched for the state suspend had just
+            # removed, found nothing, and left the subscription suspended
+            # while reporting success and setting the customer back to active.
+            # enable_customer_access grants against an active subscription, so
+            # it then found none either: the button said "Customer resumed"
+            # and nobody came back online.
+            #
+            # Ordered by expiry so a subscriber with history resumes onto
+            # their most recent bundle rather than an arbitrary old one.
+            subscription = (
+                customer.subscriptions.filter(status="suspended")
+                .order_by("-expiry_date")
+                .first()
+            )
             if subscription:
                 subscription.status = "active"
+                # Cleared, because the row must not claim to be both live and
+                # cut off for data. If the allowance really is still spent the
+                # next collection cuts them off again — which is the correct
+                # outcome, and the operator's way past it is to raise the cap,
+                # not to press this twice.
+                subscription.capped_at = None
                 subscription.save()
 
             customer.status = "active"
@@ -2788,28 +2809,26 @@ def _subscriber_usage(customer, subscription):
     unlimited, and an unlimited plan still reports consumption — "how much have
     I used" is a fair question with or without a ceiling.
     """
-    from django.db.models import Sum
-
-    from .models import HotspotUsageRecord, PPPoEUsageRecord
-
-    cap_gb = customer.custom_data_cap_gb
-    if cap_gb is None and subscription and subscription.package_id:
-        cap_gb = subscription.package.monthly_data_cap_gb
-    cap_gb = cap_gb or 0
-
     # Through the shared reader, so this and the cap check can never disagree.
     # They were two separate sums of the same thing, and the way that drift
     # shows up is somebody being cut off while their own screen says they have
-    # data left.
-    from .services.usage import usage_since
+    # data left. The ceiling now comes from the same place for the same reason.
+    from .services.usage import cap_bytes_for, usage_since, window_start
 
-    used = usage_since(customer, getattr(subscription, "start_date", None))
-    cap_bytes = cap_gb * 1024 ** 3 if cap_gb else 0
+    cap_bytes = cap_bytes_for(customer, subscription)
+    used = usage_since(customer, window_start(subscription))
 
     return {
         "used_bytes": used,
-        "cap_gb": cap_gb,
-        "unlimited": cap_gb == 0,
+        "cap_bytes": cap_bytes,
+        "cap_mb": cap_bytes // (1024 ** 2),
+        "remaining_bytes": max(cap_bytes - used, 0) if cap_bytes else None,
+        "unlimited": cap_bytes == 0,
+        # Why they are off, when they are off. "Expired" and "out of data"
+        # send a subscriber to different places — one buys more time, the
+        # other buys more data — and a portal that cannot tell them apart
+        # leaves them guessing at the one screen where it matters most.
+        "capped": bool(getattr(subscription, "capped_at", None)),
         "percent_used": (
             round(min(used / cap_bytes * 100, 999), 1) if cap_bytes else None
         ),
@@ -4337,7 +4356,9 @@ class AdminUsageAlertsView(APIView):
     permission_classes = [IsTenantMember]
 
     def get(self, request):
-        from django.db.models import F
+        from django.db.models import F, Q
+
+        from .services.usage import cap_bytes_for
 
         # ── Step 1: one query — active subscriptions with customer + package ─
         # Deduplicate in Python to get one subscription per customer (most recent).
@@ -4348,25 +4369,44 @@ class AdminUsageAlertsView(APIView):
             .order_by("customer_id", "-expiry_date")
         )
 
-        # customer_id → (subscription, cap_gb)
+        # customer_id → (subscription, cap in bytes)
         sub_map: dict = {}
         for sub in active_subs:
             cid = sub.customer_id
             if cid in sub_map:
                 continue  # already have the most-recent active sub for this customer
-            cap_gb = sub.customer.custom_data_cap_gb or sub.package.monthly_data_cap_gb
-            if cap_gb:
-                sub_map[cid] = (sub, cap_gb)
+            # The shared resolver, not a fourth spelling of it. This one read
+            # `custom or package`, which takes a subscriber deliberately given
+            # an unlimited override and quietly re-caps them at the package's
+            # ceiling — so the alerts page warned about people who had been
+            # exempted on purpose.
+            cap_bytes = cap_bytes_for(sub.customer, sub)
+            if cap_bytes:
+                sub_map[cid] = (sub, cap_bytes)
 
         if not sub_map:
             return Response([])
 
-        customer_ids = list(sub_map.keys())
-
         # ── Step 2: bulk aggregate PPPoE usage (1 query) ──────────────────────
+        # Since each subscription started, not since the beginning of time.
+        #
+        # These summed every row the subscriber had ever written and compared
+        # it to the cap for the bundle they are on right now, so the totals
+        # only ever went up: a subscriber on their fifth 300 MB bundle was
+        # measured against 1.5 GB of history and reported at 500% before
+        # touching the bundle they had just paid for. Everyone with a cap
+        # eventually sat permanently in the alerts list, which is the same as
+        # having no alerts list.
+        #
+        # Expressed as one OR'd filter rather than a query per subscriber, so
+        # this stays the two bulk aggregates the comments below promise.
+        windows = Q()
+        for cid, (sub, _cap) in sub_map.items():
+            windows |= Q(customer_id=cid, period_start__gte=sub.start_date)
+
         pppoe_usage = dict(
             PPPoEUsageRecord.objects
-            .filter(customer_id__in=customer_ids)
+            .filter(windows)
             .values("customer_id")
             .annotate(total=Sum(F("download_bytes") + F("upload_bytes")))
             .values_list("customer_id", "total")
@@ -4375,7 +4415,7 @@ class AdminUsageAlertsView(APIView):
         # ── Step 3: bulk aggregate Hotspot usage (1 query) ───────────────────
         hotspot_usage = dict(
             HotspotUsageRecord.objects
-            .filter(customer_id__in=customer_ids)
+            .filter(windows)
             .values("customer_id")
             .annotate(total=Sum(F("download_bytes") + F("upload_bytes")))
             .values_list("customer_id", "total")
@@ -4383,23 +4423,24 @@ class AdminUsageAlertsView(APIView):
 
         # ── Step 4: join in Python — zero additional DB queries ───────────────
         nearing_limit = []
-        for cid, (sub, cap_gb) in sub_map.items():
+        for cid, (sub, cap_bytes) in sub_map.items():
             customer = sub.customer
             if customer.connection_type == "pppoe":
                 total_bytes = pppoe_usage.get(cid, 0) or 0
             else:
                 total_bytes = hotspot_usage.get(cid, 0) or 0
 
-            total_gb = total_bytes / (1024 ** 3)
-            percent  = (total_gb / cap_gb) * 100
+            percent = (total_bytes / cap_bytes) * 100
 
             if percent >= 80:
                 nearing_limit.append({
-                    "customer": customer.full_name,
-                    "phone":    customer.phone,
-                    "used_gb":  round(total_gb, 2),
-                    "cap_gb":   cap_gb,
-                    "percent":  round(percent, 1),
+                    "customer":    customer.full_name,
+                    "phone":       customer.phone,
+                    "used_bytes":  total_bytes,
+                    "used_mb":     round(total_bytes / (1024 ** 2), 1),
+                    "cap_bytes":   cap_bytes,
+                    "cap_mb":      cap_bytes // (1024 ** 2),
+                    "percent":     round(percent, 1),
                 })
 
         return Response(

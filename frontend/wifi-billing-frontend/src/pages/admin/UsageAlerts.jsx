@@ -4,6 +4,7 @@ import AdminLayout from "../../components/admin/AdminLayout";
 import { Skeleton } from "../../components/ui/Skeleton";
 import EmptyState from "../../components/ui/EmptyState";
 import api from "../../services/api";
+import { humanBytes, humanCapMb } from "../../utils/bytes";
 
 function AlertRow({ a }) {
   const critical = a.percent >= 100;
@@ -20,7 +21,9 @@ function AlertRow({ a }) {
           <p className={`text-lg font-bold ${critical ? "text-red-300" : "text-amber-300"}`}>
             {a.percent}%
           </p>
-          <p className="text-xs text-slate-400">{a.used_gb} GB / {a.cap_gb} GB</p>
+          <p className="text-xs text-slate-400">
+            {humanBytes(a.used_bytes)} / {humanCapMb(a.cap_mb)}
+          </p>
         </div>
       </div>
       <div className="mt-3">

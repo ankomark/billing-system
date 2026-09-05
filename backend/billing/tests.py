@@ -133,7 +133,7 @@ def make_package(name="Basic 30d", price="500.00",
         name=name, download_speed=5, upload_speed=2,
         price=Decimal(price),
         duration_value=duration_value, duration_unit=duration_unit,
-        monthly_data_cap_gb=0, is_hotspot=False,
+        data_cap_mb=0, is_hotspot=False,
         **kwargs,
     )
 
@@ -142,7 +142,7 @@ def make_hotspot_package(name="Hotspot 2hr", price="50.00"):
     return Package.objects.create(
         name=name, download_speed=5, upload_speed=2,
         price=Decimal(price), duration_value=2, duration_unit="hours",
-        monthly_data_cap_gb=0, is_hotspot=True,
+        data_cap_mb=0, is_hotspot=True,
     )
 
 
@@ -1467,7 +1467,7 @@ class TwoOperatorMixin:
                 package = Package.objects.create(
                     name=f"{tag}-package", download_speed=5, upload_speed=2,
                     price=Decimal("500.00"), duration_value=30, duration_unit="days",
-                    monthly_data_cap_gb=0, is_hotspot=False, tenant=tenant)
+                    data_cap_mb=0, is_hotspot=False, tenant=tenant)
                 customer = Customer.objects.create(
                     full_name=f"{tag}-customer", phone=f"2547{tag[-1]}0000001",
                     connection_type="pppoe", router=router, tenant=tenant)
@@ -2248,7 +2248,7 @@ class PublicHotspotPurchaseTests(TwoOperatorMixin, TestCase):
                     tenant=tenant, name=f"{tag}-hotspot-2hr",
                     download_speed=5, upload_speed=2, price=Decimal("50.00"),
                     duration_value=2, duration_unit="hours",
-                    monthly_data_cap_gb=0, is_hotspot=True)
+                    data_cap_mb=0, is_hotspot=True)
             for key, value in MPESA_KEYS.items():
                 SystemSetting.objects.create(tenant=tenant, key=key, value=f"{tag}-{value}")
 
@@ -2281,7 +2281,7 @@ class PublicHotspotPurchaseTests(TwoOperatorMixin, TestCase):
             set(resp.data["results"][0]),
             {"id", "name", "price", "download_speed", "upload_speed",
              "duration_value", "duration_unit", "duration",
-             "monthly_data_cap_gb", "max_devices"},
+             "data_cap_mb", "max_devices"},
         )
 
     def test_unknown_token_is_rejected(self):
@@ -2808,7 +2808,7 @@ class RestrictionScopeTests(PlatformBillingMixin, TestCase):
             Package.objects.create(
                 tenant=self.t1, name="hs", download_speed=5, upload_speed=2,
                 price=Decimal("50.00"), duration_value=2, duration_unit="hours",
-                monthly_data_cap_gb=0, is_hotspot=True)
+                data_cap_mb=0, is_hotspot=True)
         for key, value in MPESA_KEYS.items():
             SystemSetting.objects.create(tenant=self.t1, key=key, value=value)
 
@@ -7437,7 +7437,7 @@ class HotspotPortalPayloadTests(TwoOperatorMixin, TestCase):
             Package.objects.create(
                 tenant=self.t1, name="t1-hotspot", download_speed=5, upload_speed=5,
                 price=Decimal("50.00"), duration_value=24, duration_unit="hours",
-                monthly_data_cap_gb=0, is_hotspot=True)
+                data_cap_mb=0, is_hotspot=True)
 
     def portal(self, tenant):
         return APIClient().get(f"/api/hotspot/packages/?t={tenant.public_token}")
@@ -7862,7 +7862,7 @@ class HotspotPollTokenTests(TwoOperatorMixin, TestCase):
             pkg = Package.objects.create(
                 tenant=self.t1, name="poll-pkg", download_speed=5, upload_speed=5,
                 price=Decimal("50.00"), duration_value=1, duration_unit="hours",
-                monthly_data_cap_gb=0, is_hotspot=True)
+                data_cap_mb=0, is_hotspot=True)
         clear_settings_cache(tenant=self.t1)
 
         with patch("billing.views.initiate_stk_push_task.delay"):
@@ -7980,7 +7980,7 @@ class CustomerPortalTests(TwoOperatorMixin, TestCase):
                     tenant=d["tenant"], name=f"{tag}-hotspot",
                     download_speed=5, upload_speed=5, price=Decimal("50.00"),
                     duration_value=1, duration_unit="hours",
-                    monthly_data_cap_gb=0, is_hotspot=True)
+                    data_cap_mb=0, is_hotspot=True)
 
         self.sub_user = self.data["t1"]["user"]
 
@@ -8397,7 +8397,7 @@ class CounterSaleTests(TwoOperatorMixin, TestCase):
             self.pkg = Package.objects.create(
                 tenant=self.t1, name="t1-counter", download_speed=5, upload_speed=5,
                 price=Decimal("50.00"), duration_value=3, duration_unit="hours",
-                monthly_data_cap_gb=0, is_hotspot=True)
+                data_cap_mb=0, is_hotspot=True)
 
     def create(self, **extra):
         body = {
@@ -8468,7 +8468,7 @@ class CounterSaleTests(TwoOperatorMixin, TestCase):
             monthly = Package.objects.create(
                 tenant=self.t1, name="t1-home", download_speed=10, upload_speed=5,
                 price=Decimal("2500.00"), duration_value=30, duration_unit="days",
-                monthly_data_cap_gb=0, is_hotspot=False)
+                data_cap_mb=0, is_hotspot=False)
         resp = self.create(package=monthly.id, paid_with="cash")
         self.assertEqual(resp.status_code, 400, resp.data)
 
@@ -8522,7 +8522,7 @@ class PPPoESignUpTests(TwoOperatorMixin, TestCase):
             self.pkg = Package.objects.create(
                 tenant=self.t1, name="t1-home-10", download_speed=10, upload_speed=5,
                 price=Decimal("2500.00"), duration_value=30, duration_unit="days",
-                monthly_data_cap_gb=0, is_hotspot=False)
+                data_cap_mb=0, is_hotspot=False)
 
     def create(self, **extra):
         body = {
@@ -8583,7 +8583,7 @@ class PPPoESignUpTests(TwoOperatorMixin, TestCase):
             hourly = Package.objects.create(
                 tenant=self.t1, name="t1-hour", download_speed=5, upload_speed=5,
                 price=Decimal("50.00"), duration_value=3, duration_unit="hours",
-                monthly_data_cap_gb=0, is_hotspot=True)
+                data_cap_mb=0, is_hotspot=True)
         resp = self.create(package=hourly.id, paid_with="cash")
         self.assertEqual(resp.status_code, 400, resp.data)
         with tenant_context(self.t1):
@@ -8622,7 +8622,7 @@ class CompAccessTests(TwoOperatorMixin, TestCase):
             self.hs_pkg = Package.objects.create(
                 tenant=self.t1, name="t1-comp-hs", download_speed=5, upload_speed=5,
                 price=Decimal("50.00"), duration_value=3, duration_unit="hours",
-                monthly_data_cap_gb=0, is_hotspot=True)
+                data_cap_mb=0, is_hotspot=True)
         self.pppoe = d["customer"]
 
     def comp(self, customer, package=None, reason="Paid Tuesday, never got online",
@@ -8745,7 +8745,7 @@ class IssueVoucherTests(TwoOperatorMixin, TestCase):
             self.pkg = Package.objects.create(
                 tenant=self.t1, name="t1-counter", download_speed=5, upload_speed=5,
                 price=Decimal("50.00"), duration_value=3, duration_unit="hours",
-                monthly_data_cap_gb=0, is_hotspot=True)
+                data_cap_mb=0, is_hotspot=True)
 
     def issue(self, user=None, **body):
         payload = {"package_id": self.pkg.id, "phone": "0712000111",
@@ -8899,7 +8899,7 @@ class RouterAttributeNameTests(TestCase):
             self.package = Package.objects.create(
                 tenant=self.tenant, name="p", download_speed=10, upload_speed=5,
                 price=Decimal("100.00"), duration_value=1, duration_unit="days",
-                monthly_data_cap_gb=0, is_hotspot=True, max_devices=3)
+                data_cap_mb=0, is_hotspot=True, max_devices=3)
 
     def _profile_call(self, ensure):
         path = self.FakePath()
@@ -9167,11 +9167,11 @@ class DataUsageReportingTests(TwoOperatorMixin, TestCase):
         self.assertEqual(resp.status_code, 200, resp.data)
         return resp.data["data_usage"]
 
-    def set_cap(self, gb):
+    def set_cap(self, mb):
         with tenant_context(self.t1):
             pkg = self.sub.package
-            pkg.monthly_data_cap_gb = gb
-            pkg.save(update_fields=["monthly_data_cap_gb"])
+            pkg.data_cap_mb = mb
+            pkg.save(update_fields=["data_cap_mb"])
 
     # ---- consumption -------------------------------------------------------
 
@@ -9215,25 +9215,57 @@ class DataUsageReportingTests(TwoOperatorMixin, TestCase):
         self.assertEqual(u["used_bytes"], 2 * 1024 ** 3)
 
     def test_a_cap_reports_how_much_of_it_is_gone(self):
-        self.set_cap(10)
+        self.set_cap(10 * 1024)
         self.record(2 * 1024 ** 3, 0.5 * 1024 ** 3)
         u = self.usage()
         self.assertFalse(u["unlimited"])
-        self.assertEqual(u["cap_gb"], 10)
+        self.assertEqual(u["cap_mb"], 10 * 1024)
         self.assertEqual(u["percent_used"], 25.0)
+
+    def test_a_sub_gigabyte_cap_survives_the_round_trip(self):
+        """
+        The bundle these operators actually sell.
+
+        As whole gigabytes this cap could only be stored as 0, which the same
+        field defines as unlimited — so a 300MB package was sold capped and
+        served uncapped, and the smaller the bundle the more completely the
+        cap was ignored.
+        """
+        self.set_cap(300)
+        self.record(150 * 1024 ** 2, 0)
+        u = self.usage()
+        self.assertFalse(u["unlimited"])
+        self.assertEqual(u["cap_mb"], 300)
+        self.assertEqual(u["cap_bytes"], 300 * 1024 ** 2)
+        self.assertEqual(u["percent_used"], 50.0)
 
     def test_going_over_is_visible_rather_than_clamped_to_full(self):
         """100% and 300% are different conversations."""
-        self.set_cap(1)
+        self.set_cap(1024)
         self.record(3 * 1024 ** 3, 0)
         self.assertEqual(self.usage()["percent_used"], 300.0)
 
     def test_a_customers_own_cap_beats_the_packages(self):
-        self.set_cap(10)
+        self.set_cap(10 * 1024)
         with tenant_context(self.t1):
-            self.customer.custom_data_cap_gb = 2
-            self.customer.save(update_fields=["custom_data_cap_gb"])
-        self.assertEqual(self.usage()["cap_gb"], 2)
+            self.customer.custom_data_cap_mb = 2 * 1024
+            self.customer.save(update_fields=["custom_data_cap_mb"])
+        self.assertEqual(self.usage()["cap_mb"], 2 * 1024)
+
+    def test_a_customer_override_of_zero_means_unlimited(self):
+        """
+        Not "no override". Half the readers spelled this `custom or package`,
+        which falls through to the package's ceiling — so the one subscriber
+        an operator had deliberately uncapped was the one that spelling
+        re-capped.
+        """
+        self.set_cap(300)
+        with tenant_context(self.t1):
+            self.customer.custom_data_cap_mb = 0
+            self.customer.save(update_fields=["custom_data_cap_mb"])
+        u = self.usage()
+        self.assertTrue(u["unlimited"])
+        self.assertEqual(u["cap_bytes"], 0)
 
     # ---- devices -----------------------------------------------------------
 
@@ -9497,7 +9529,7 @@ class PackageDeletionTests(TwoOperatorMixin, TestCase):
             self.unused = Package.objects.create(
                 tenant=self.t1, name="never-sold", download_speed=5, upload_speed=5,
                 price=Decimal("100.00"), duration_value=1, duration_unit="days",
-                monthly_data_cap_gb=0, is_hotspot=True)
+                data_cap_mb=0, is_hotspot=True)
         self.in_use = self.data["t1"]["package"]
 
     def delete(self, package, user=None):
@@ -9588,7 +9620,7 @@ class PackageDeletionTests(TwoOperatorMixin, TestCase):
             hotspot = Package.objects.create(
                 tenant=self.t1, name="retiring", download_speed=5, upload_speed=5,
                 price=Decimal("50.00"), duration_value=1, duration_unit="hours",
-                monthly_data_cap_gb=0, is_hotspot=True)
+                data_cap_mb=0, is_hotspot=True)
 
         portal = f"/api/hotspot/packages/?t={self.t1.public_token}"
         self.assertIn("retiring",
@@ -9603,7 +9635,7 @@ class PackageDeletionTests(TwoOperatorMixin, TestCase):
             hotspot = Package.objects.create(
                 tenant=self.t1, name="retired", download_speed=5, upload_speed=5,
                 price=Decimal("50.00"), duration_value=1, duration_unit="hours",
-                monthly_data_cap_gb=0, is_hotspot=True, is_archived=True)
+                data_cap_mb=0, is_hotspot=True, is_archived=True)
 
         resp = self.auth(self.admin1).post(
             "/api/admin/vouchers/issue/",
@@ -9825,8 +9857,8 @@ class SubscriberFacingTests(TwoOperatorMixin, TestCase):
     def test_an_unlimited_plan_still_reports_consumption(self):
         """"How much have I used" is fair with or without a ceiling."""
         with tenant_context(self.t1):
-            self.sub.package.monthly_data_cap_gb = 0
-            self.sub.package.save(update_fields=["monthly_data_cap_gb"])
+            self.sub.package.data_cap_mb = 0
+            self.sub.package.save(update_fields=["data_cap_mb"])
             HotspotUsageRecord.objects.create(
                 tenant=self.t1, customer=self.customer,
                 period_start=timezone.now(), period_end=timezone.now(),
@@ -9839,15 +9871,15 @@ class SubscriberFacingTests(TwoOperatorMixin, TestCase):
 
     def test_a_capped_plan_reports_how_much_is_gone(self):
         with tenant_context(self.t1):
-            self.sub.package.monthly_data_cap_gb = 4
-            self.sub.package.save(update_fields=["monthly_data_cap_gb"])
+            self.sub.package.data_cap_mb = 4 * 1024
+            self.sub.package.save(update_fields=["data_cap_mb"])
             HotspotUsageRecord.objects.create(
                 tenant=self.t1, customer=self.customer,
                 period_start=timezone.now(), period_end=timezone.now(),
                 download_bytes=1024 ** 3, upload_bytes=0)
 
         usage = self.status().data["usage"]
-        self.assertEqual(usage["cap_gb"], 4)
+        self.assertEqual(usage["cap_mb"], 4 * 1024)
         self.assertEqual(usage["percent_used"], 25.0)
 
     def test_another_device_cannot_read_this_subscribers_usage(self):

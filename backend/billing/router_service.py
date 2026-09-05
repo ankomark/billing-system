@@ -136,7 +136,28 @@ def disable_pppoe(api, username):
             secrets.update(**{".id": s[".id"], "disabled": "yes"})
             return True
     return False
-def enable_hotspot(api, router, mac_address, package, expiry_date):
+def enable_hotspot(api, router, mac_address, package, expiry_date,
+                   limit_bytes=None):
+    """
+    Put one device onto the hotspot.
+
+    `limit_bytes` is what is left of the subscriber's data allowance, and None
+    means uncapped. It is written onto the user as `limit-bytes-total`, which
+    is the only enforcement in this system that happens at line rate.
+
+    Everything else that enforces a cap is a poll: the collectors read the
+    routers every five minutes, and between two reads a subscriber on a decent
+    link can pull several gigabytes. That is tolerable against a 50 GB monthly
+    package and absurd against a 300 MB bundle, which can be spent many times
+    over inside one collection interval — the poll would be reporting a cap
+    breach long after the entire bundle had been served.
+
+    RouterOS counts the bytes itself and drops the session the moment the
+    total is reached, with no round trip to us at all. The polled check stays
+    as the reconciler — it is what notices a user re-added by hand, a router
+    that lost its configuration, and PPPoE, which has no equivalent knob
+    without RADIUS — but on hotspot the hardware is now the thing that bites.
+    """
     if not mac_address:
         return
     profile = ensure_hotspot_profile(router, package)
@@ -177,6 +198,20 @@ def enable_hotspot(api, router, mac_address, package, expiry_date):
         "limit-uptime": f"{remaining_seconds}s",
         "comment": "AUTO | WIFI BILLING SYSTEM",
     }
+
+    # Only when there is a ceiling. Sending limit-bytes-total=0 does not mean
+    # unlimited to RouterOS on every version — omitting the attribute does,
+    # unambiguously, and an uncapped package must never be one release note
+    # away from cutting everybody off at zero bytes.
+    #
+    # Floored at 1 MB rather than 0. This is called on re-provisioning too —
+    # failover moves a subscriber mid-bundle — and a subscriber who has
+    # already spent their allowance would otherwise be handed a limit of 0,
+    # which RouterOS reads as no limit at all. The floor makes an exhausted
+    # allowance stay exhausted; the suspended subscription is what stops them
+    # reaching this code at all, and this is the second lock on that door.
+    if limit_bytes is not None:
+        attrs["limit-bytes-total"] = str(max(int(limit_bytes), 1024 * 1024))
 
     try:
         users.add(**attrs)
@@ -376,7 +411,8 @@ def enable_customer_access(customer):
             return False
 
     elif customer.connection_type == "hotspot":
-        _grant_hotspot(api, router, customer, package, subscription.expiry_date)
+        _grant_hotspot(api, router, customer, package, subscription.expiry_date,
+                       subscription=subscription)
 
     return True
 
@@ -607,7 +643,8 @@ def disable_customer_access(customer):
             )
 
 
-def _grant_hotspot(api, router, customer, package, expiry_date):
+def _grant_hotspot(api, router, customer, package, expiry_date,
+                   subscription=None):
     """
     Put every one of a customer's devices onto the router.
 
@@ -621,10 +658,48 @@ def _grant_hotspot(api, router, customer, package, expiry_date):
     from "provisioned everything".
     """
     granted = 0
+    limit = _remaining_data_bytes(customer, subscription)
     for mac in hotspot_macs_for(customer, include_blocked=False):
-        enable_hotspot(api, router, mac, package, expiry_date)
+        enable_hotspot(api, router, mac, package, expiry_date,
+                       limit_bytes=limit)
         granted += 1
     return granted
+
+
+def _remaining_data_bytes(customer, subscription):
+    """
+    How much of a subscriber's allowance is left, or None if it is unlimited.
+
+    Split per device, because limit-bytes-total is counted per hotspot user
+    and a package good for three phones creates three of them. Handing each
+    the whole remaining allowance would sell 300 MB and serve 900.
+
+    Falls back to None — uncapped on the hardware — if the allowance cannot be
+    read. The polled check still applies, so the failure mode is a cap that
+    reverts to being enforced within one collection interval, rather than a
+    paying subscriber refused service because a usage query went wrong.
+    """
+    if subscription is None:
+        return None
+
+    try:
+        from .services.usage import cap_bytes_for, usage_since, window_start
+
+        cap = cap_bytes_for(customer, subscription)
+        if not cap:
+            return None  # 0 = unlimited
+
+        used = usage_since(customer, window_start(subscription))
+        remaining = max(cap - used, 0)
+
+        devices = max(len(hotspot_macs_for(customer, include_blocked=False)), 1)
+        return remaining // devices
+    except Exception:
+        logger.exception(
+            "[hotspot] could not work out the data allowance left for "
+            "customer %s; provisioning without a byte limit", customer.pk,
+        )
+        return None
 def get_pppoe_live_usage(router, username):
     """
     Fetch live PPPoE session stats from MikroTik
@@ -930,7 +1005,8 @@ def provision_customer_on_router(api, router, customer, subscription):
         enable_pppoe(api, router, customer.pppoe_username, package)
 
     elif customer.connection_type == "hotspot":
-        _grant_hotspot(api, router, customer, package, subscription.expiry_date)
+        _grant_hotspot(api, router, customer, package, subscription.expiry_date,
+                       subscription=subscription)
 
     return True
 
@@ -1042,7 +1118,8 @@ def migrate_customer_router(customer, reason="manual_migration"):
 
     elif customer.connection_type == "hotspot":
         _grant_hotspot(
-            new_api, new_router, customer, package, subscription.expiry_date)
+            new_api, new_router, customer, package, subscription.expiry_date,
+            subscription=subscription)
 
     else:
         return False, "Unsupported connection type"

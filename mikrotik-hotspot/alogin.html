@@ -326,6 +326,33 @@
     }
   }());
 
+
+  /**
+   * Data volumes, for the one screen a connected subscriber actually sees.
+   *
+   * humanBytes was called here and defined nowhere in this file — a plain
+   * ReferenceError, thrown before the line that reveals the row, so the whole
+   * usage display was dead on the connected page rather than merely
+   * mis-formatted. This page is standalone HTML served by the router, so it
+   * cannot import the copy the React app has; it carries its own.
+   *
+   * Binary units, matching the backend and RouterOS. Decimal megabytes would
+   * tell somebody they had used 314 MB of a 300 MB bundle while still online.
+   */
+  function humanBytes(bytes) {
+    var n = Number(bytes) || 0;
+    if (n >= 1073741824) return (n / 1073741824).toFixed(2) + ' GB';
+    if (n >= 1048576) return (n / 1048576).toFixed(1) + ' MB';
+    return Math.round(n / 1024) + ' KB';
+  }
+
+  /** A cap held in megabytes, in whatever unit reads best. */
+  function humanCap(mb) {
+    var n = Number(mb) || 0;
+    if (n >= 1024) return (n / 1024).toFixed(n % 1024 === 0 ? 0 : 1) + ' GB';
+    return n + ' MB';
+  }
+
   function copyCode() {
     var el  = document.getElementById('code');
     var btn = document.getElementById('copyBtn');
@@ -404,7 +431,7 @@
       var u = d.usage;
       document.getElementById('used').textContent =
         humanBytes(u.used_bytes) +
-        (u.unlimited ? ' / ' + t('unlimited') : ' / ' + u.cap_gb + ' GB');
+        (u.unlimited ? ' / ' + t('unlimited') : ' / ' + humanCap(u.cap_mb));
       document.getElementById('usedRow').style.display = 'flex';
     }
 

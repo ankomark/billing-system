@@ -28,6 +28,60 @@ from django.utils import timezone
 logger = logging.getLogger(__name__)
 
 
+# One megabyte, as the routers and the operators both mean it: 1024 * 1024.
+#
+# Not 1,000,000. RouterOS `limit-bytes-total` counts binary megabytes, and if
+# the ceiling we enforce in Python is 4.9% smaller than the one we write onto
+# the hardware, the two disagree about when a 300 MB bundle is spent — and the
+# subscriber gets cut off by whichever is stingier while the other still says
+# they have data left.
+MB = 1024 * 1024
+
+
+def cap_bytes_for(customer, subscription=None):
+    """
+    The ceiling that applies to one subscriber, in bytes. 0 means unlimited.
+
+    Every caller used to spell this itself, and they did not agree. Some wrote
+    `customer.custom_data_cap or package.cap`, which reads a deliberate
+    unlimited override (0) as "no override" and falls back to the package's
+    ceiling — the one subscriber an operator has explicitly uncapped is the
+    one that spelling re-caps. Others tested `is None` and got it right. The
+    two live side by side in this codebase today, which is how a subscriber
+    ends up cut off by one code path while another tells them they are fine.
+
+    There is now one answer. `None` on the customer means inherit; `0` means
+    unlimited and is honoured as an override.
+    """
+    if customer is not None:
+        override = getattr(customer, "custom_data_cap_mb", None)
+        if override is not None:
+            return int(override) * MB
+
+    package = getattr(subscription, "package", None) if subscription else None
+    if package is None:
+        return 0
+
+    return int(package.data_cap_mb or 0) * MB
+
+
+def window_start(subscription):
+    """
+    The moment a subscriber's allowance started counting.
+
+    The subscription, not the calendar month. The cut-off used to count from
+    the first of the month while the subscriber's own screen counted from the
+    day they bought — so somebody who bought a 300 MB bundle on the 28th was
+    measured against traffic from the 1st and cut off before using any of it,
+    with the portal insisting the whole bundle was untouched.
+
+    A bundle is sold as a bundle. What it covers is what was bought, starting
+    when it was bought, and renewing creates a new row here — which is what
+    makes a renewal reset the allowance without anything having to clear it.
+    """
+    return getattr(subscription, "start_date", None)
+
+
 def _raw_model(customer):
     from billing.models import HotspotUsageRecord, PPPoEUsageRecord
 

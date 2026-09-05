@@ -23,6 +23,7 @@ import {
   migrateCustomer,
 } from "../../services/customers";
 import api from "../../services/api";
+import { humanCapMb } from "../../utils/bytes";
 
 export default function CustomerDetail() {
   const { id }     = useParams();
@@ -493,7 +494,7 @@ function DataUsage({ usage }) {
       <div className="flex items-baseline justify-between gap-3">
         <p className="text-2xl font-bold text-white">{fmt(usage.used_bytes)}</p>
         <p className="text-sm text-slate-400">
-          {usage.unlimited ? "of unlimited" : `of ${usage.cap_gb} GB`}
+          {usage.unlimited ? "of unlimited" : `of ${humanCapMb(usage.cap_mb)}`}
         </p>
       </div>
 

@@ -117,7 +117,7 @@ class PppoeExpiryTests(TestCase):
             self.package = Package.objects.create(
                 tenant=self.tenant, name="home 10mbps", download_speed=10,
                 upload_speed=5, price=Decimal("2500.00"), duration_value=1,
-                duration_unit="months", monthly_data_cap_gb=0,
+                duration_unit="months", data_cap_mb=0,
                 is_hotspot=False, max_devices=1)
             self.customer = Customer.objects.create(
                 tenant=self.tenant, full_name="Otieno", phone="254700900900",
@@ -197,7 +197,7 @@ class PppoeProvisioningHonestyTests(TestCase):
             self.package = Package.objects.create(
                 tenant=self.tenant, name="home 10mbps", download_speed=10,
                 upload_speed=5, price=Decimal("2500.00"), duration_value=1,
-                duration_unit="months", monthly_data_cap_gb=0,
+                duration_unit="months", data_cap_mb=0,
                 is_hotspot=False, max_devices=1)
             self.customer = Customer.objects.create(
                 tenant=self.tenant, full_name="Atieno", phone="254700900901",
@@ -301,7 +301,7 @@ class PppoeForcedExpiryTests(TestCase):
             self.package = Package.objects.create(
                 tenant=self.tenant, name="home 10mbps", download_speed=10,
                 upload_speed=5, price=Decimal("2500.00"), duration_value=1,
-                duration_unit="months", monthly_data_cap_gb=0,
+                duration_unit="months", data_cap_mb=0,
                 is_hotspot=False, max_devices=6)
             self.customer = Customer.objects.create(
                 tenant=self.tenant, full_name="Akinyi", phone="254700900902",
@@ -403,7 +403,7 @@ class PppoeProfileAddressTests(TestCase):
             self.package = Package.objects.create(
                 tenant=self.tenant, name="home 10mbps", download_speed=10,
                 upload_speed=5, price=Decimal("2500.00"), duration_value=1,
-                duration_unit="months", monthly_data_cap_gb=0,
+                duration_unit="months", data_cap_mb=0,
                 is_hotspot=False, max_devices=6)
 
     def _ensure(self, profiles):

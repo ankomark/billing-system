@@ -569,6 +569,27 @@ CELERY_BEAT_SCHEDULE = {
         "schedule": crontab(minute="2-59/5"),
         "options": {"expires": 240},
     },
+    # Cut off anyone who has spent their data allowance.
+    #
+    # This task has existed and been correct for a long time, and was never
+    # scheduled — the comment on it said automatic cut-off was a policy
+    # decision, left switched off. So an operator could set a data cap on a
+    # package, watch the usage climb past it on the dashboard, and nothing
+    # would ever happen. The cap was decoration.
+    #
+    # The collectors call check_cap() inline the moment a delta is written,
+    # which is what actually makes a cap bite; this sweep is the reconciler
+    # behind them. It catches subscribers whose router was unreachable during
+    # collection, usage that only appeared in a rollup, and anything that
+    # lands between two collections.
+    #
+    # Offset from both collectors (which run at */5 and 2-59/5) so it reads a
+    # settled picture rather than racing the writes it is checking.
+    "enforce-usage-caps": {
+        "task": "billing.tasks.usage_tasks.enforce_usage_caps",
+        "schedule": crontab(minute="4-59/5"),
+        "options": {"expires": 240},
+    },
     # Fold finished days of five-minute deltas into one row per subscriber per
     # day. Before the platform invoicing at 02:00, so a month's totals are
     # rolled up before anything bills against them.

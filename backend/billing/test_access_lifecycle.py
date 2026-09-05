@@ -140,7 +140,7 @@ class HotspotGrantAndRemoveTests(TestCase):
             self.package = Package.objects.create(
                 tenant=self.tenant, name="3 devices", download_speed=5,
                 upload_speed=2, price=Decimal("200.00"), duration_value=1,
-                duration_unit="days", monthly_data_cap_gb=0, is_hotspot=True,
+                duration_unit="days", data_cap_mb=0, is_hotspot=True,
                 max_devices=3)
             self.customer = Customer.objects.create(
                 tenant=self.tenant, full_name="Asha", phone="254700000002",
@@ -209,7 +209,7 @@ class VoucherFirstUseTests(TestCase):
             self.package = Package.objects.create(
                 tenant=self.tenant, name="1hr", download_speed=5,
                 upload_speed=2, price=Decimal("50.00"), duration_value=1,
-                duration_unit="hours", monthly_data_cap_gb=0, is_hotspot=True)
+                duration_unit="hours", data_cap_mb=0, is_hotspot=True)
             self.customer = Customer.objects.create(
                 tenant=self.tenant, full_name="Juma", phone="254700000003",
                 connection_type="hotspot", router=self.router)
@@ -270,7 +270,7 @@ class MacAllowedTests(TestCase):
             self.package = Package.objects.create(
                 tenant=self.tenant, name="p", download_speed=5, upload_speed=2,
                 price=Decimal("100.00"), duration_value=1, duration_unit="days",
-                monthly_data_cap_gb=0, is_hotspot=True, max_devices=3)
+                data_cap_mb=0, is_hotspot=True, max_devices=3)
             self.customer = Customer.objects.create(
                 tenant=self.tenant, full_name="Asha", phone="254700000004",
                 connection_type="hotspot", router=self.router,
