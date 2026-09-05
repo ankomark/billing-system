@@ -91,10 +91,11 @@ class Command(BaseCommand):
 
         from_when = caps_enforced_from()
         if from_when:
+            self.stdout.write("")
             self.stdout.write(
-                f"
-Caps apply to subscriptions bought from {from_when:%Y-%m-%d %H:%M %Z} "
-                f"onward. Earlier ones finish on the terms they were sold under."
+                f"Caps apply to subscriptions bought from "
+                f"{from_when:%Y-%m-%d %H:%M %Z} onward. Earlier ones finish "
+                f"on the terms they were sold under."
             )
 
         for sub in subscriptions.iterator(chunk_size=200):
