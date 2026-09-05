@@ -22,6 +22,7 @@ from billing.router_service import (
     tenant_sessions,
 )
 from billing.services.usage import (
+    cap_applies_to,
     cap_bytes_for,
     roll_up_day,
     usage_since,
@@ -580,6 +581,10 @@ def check_cap(customer, subscription=None):
     cap = cap_bytes_for(customer, subscription)
     if not cap:
         return False  # 0 = unlimited
+
+    # Sold before caps applied, so it finishes on the terms it was sold under.
+    if not cap_applies_to(subscription):
+        return False
 
     since = window_start(subscription)
     if since is None:

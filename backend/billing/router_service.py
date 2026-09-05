@@ -683,11 +683,19 @@ def _remaining_data_bytes(customer, subscription):
         return None
 
     try:
-        from .services.usage import cap_bytes_for, usage_since, window_start
+        from .services.usage import (
+            cap_applies_to, cap_bytes_for, usage_since, window_start,
+        )
 
         cap = cap_bytes_for(customer, subscription)
         if not cap:
             return None  # 0 = unlimited
+
+        # Sold before caps applied. Skipping this would be the quiet version
+        # of the bug: no task of ours decides anything, the router simply
+        # stops passing traffic once limit-bytes-total is reached.
+        if not cap_applies_to(subscription):
+            return None
 
         used = usage_since(customer, window_start(subscription))
         remaining = max(cap - used, 0)

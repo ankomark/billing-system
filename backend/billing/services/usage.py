@@ -65,6 +65,75 @@ def cap_bytes_for(customer, subscription=None):
     return int(package.data_cap_mb or 0) * MB
 
 
+def caps_enforced_from():
+    """
+    The moment data caps started applying, or None if they always have.
+
+    Set USAGE_CAPS_ENFORCE_FROM to an ISO timestamp and a subscription bought
+    before it is not measured against any cap.
+
+    This exists because of what a cap window means. The window is the
+    subscription, so switching caps on for the first time judges every bundle
+    already running against a ceiling that did not exist when it was sold --
+    and those bundles have been accumulating usage since nothing counted. On
+    2026-09-05 that disconnected 143 paying subscribers inside six minutes,
+    every one of them still inside the term they had paid for, several sitting
+    at 9GB against a 500MB cap they had never been told about.
+
+    Nobody was wrong to have used 9GB on a package sold as unlimited. The cap
+    is a promise about what you get *when you buy*, so it applies to what is
+    bought from here on, and the bundles already running finish on the terms
+    they were sold under. The longest of those is three weeks, after which this
+    setting stops mattering and can be removed.
+    """
+    import os
+
+    raw = os.getenv("USAGE_CAPS_ENFORCE_FROM", "").strip()
+    if not raw:
+        return None
+
+    from django.utils.dateparse import parse_datetime, parse_date
+
+    parsed = parse_datetime(raw)
+    if parsed is None:
+        day = parse_date(raw)
+        if day is None:
+            logger.error(
+                "[usage-caps] USAGE_CAPS_ENFORCE_FROM=%r is not an ISO date or "
+                "datetime; ignoring it and enforcing caps on every "
+                "subscription", raw,
+            )
+            return None
+        parsed = timezone.datetime.combine(day, timezone.datetime.min.time())
+
+    if timezone.is_naive(parsed):
+        parsed = timezone.make_aware(parsed, timezone.get_current_timezone())
+    return parsed
+
+
+def cap_applies_to(subscription):
+    """
+    Whether this subscription is subject to its package's data cap.
+
+    False for a bundle sold before caps were switched on -- see
+    caps_enforced_from(). Consulted by every path that can act on a cap: the
+    polled check, the sweep behind it, and the byte ceiling written onto a
+    hotspot user. Missing it in any one of them re-opens the hole in a
+    different place; the router one is the quiet one, because an exhausted
+    allowance there becomes a limit-bytes-total the subscriber hits without
+    anything of ours having decided to cut them off.
+    """
+    from_when = caps_enforced_from()
+    if from_when is None:
+        return True
+
+    started = window_start(subscription)
+    if started is None:
+        return True
+
+    return started >= from_when
+
+
 def window_start(subscription):
     """
     The moment a subscriber's allowance started counting.

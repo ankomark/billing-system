@@ -737,6 +737,85 @@ class DryRun(DataCapBase):
         self.assertFalse(usage_tasks.USAGE_CAPS_DRY_RUN)
 
 
+class TheCutover(DataCapBase):
+    """
+    A cap is a promise about what you get when you buy, so it binds what is
+    bought from here on.
+
+    Switching caps on for the first time judged every bundle already running
+    against a ceiling that did not exist when it was sold, and those bundles
+    had been accumulating usage while nothing counted. On 2026-09-05 that
+    disconnected 143 paying subscribers in six minutes, several sitting at 9GB
+    against a 500MB cap nobody had told them about.
+    """
+
+    def enforce_from(self, when):
+        return patch.dict(
+            "os.environ", {"USAGE_CAPS_ENFORCE_FROM": when.isoformat()})
+
+    def test_a_bundle_sold_before_the_cutover_is_not_capped(self):
+        self.record(400)  # well over the 300MB cap
+        with self.enforce_from(timezone.now() + timedelta(hours=1)),              patch("billing.tasks.usage_tasks.disable_customer_access") as disable,              patch("billing.tasks.usage_tasks.notify_customer"):
+            cut = check_cap(self.customer, self.sub)
+
+        self.assertFalse(cut, "a bundle sold before the cutover was cut off")
+        disable.assert_not_called()
+        self.sub.refresh_from_db()
+        self.assertEqual(self.sub.status, "active")
+
+    def test_a_bundle_sold_after_the_cutover_is_capped(self):
+        self.record(400)
+        with self.enforce_from(timezone.now() - timedelta(hours=1)),              patch("billing.tasks.usage_tasks.disable_customer_access") as disable,              patch("billing.tasks.usage_tasks.notify_customer"):
+            cut = check_cap(self.customer, self.sub)
+
+        self.assertTrue(cut)
+        disable.assert_called_once()
+
+    def test_the_sweep_honours_the_cutover_too(self):
+        self.record(400)
+        with self.enforce_from(timezone.now() + timedelta(hours=1)),              patch("billing.tasks.usage_tasks.disable_customer_access"),              patch("billing.tasks.usage_tasks.notify_customer"):
+            self.assertEqual(enforce_usage_caps(), 0)
+
+    def test_no_cutover_set_means_every_subscription_is_capped(self):
+        """The default must stay 'enforce', not 'enforce nothing'."""
+        self.record(400)
+        with patch.dict("os.environ", {}, clear=False),              patch("billing.tasks.usage_tasks.disable_customer_access"),              patch("billing.tasks.usage_tasks.notify_customer"):
+            import os
+            os.environ.pop("USAGE_CAPS_ENFORCE_FROM", None)
+            self.assertTrue(check_cap(self.customer, self.sub))
+
+    def test_a_malformed_cutover_does_not_silently_uncap_everyone(self):
+        """
+        A typo in an env var must not turn every cap off.
+
+        Failing open here would be indistinguishable from the original bug --
+        caps configured, nothing enforced, nobody told.
+        """
+        self.record(400)
+        with patch.dict("os.environ", {"USAGE_CAPS_ENFORCE_FROM": "not-a-date"}),              patch("billing.tasks.usage_tasks.disable_customer_access"),              patch("billing.tasks.usage_tasks.notify_customer"):
+            self.assertTrue(check_cap(self.customer, self.sub))
+
+
+class TheCutoverReachesTheRouter(HotspotCapsReachTheHardware):
+    """
+    The quiet half.
+
+    If the cutover is honoured by our tasks but not by the byte ceiling we
+    write onto the hotspot user, nothing of ours decides anything and the
+    router simply stops passing traffic. Same outcome, no log line.
+    """
+
+    def test_a_pre_cutover_bundle_gets_no_byte_limit(self):
+        with patch.dict("os.environ", {
+            "USAGE_CAPS_ENFORCE_FROM": (timezone.now() + timedelta(hours=1)).isoformat()
+        }):
+            enable, _ = self._grant()
+
+        self.assertIsNone(
+            enable.call_args.kwargs["limit_bytes"],
+            "a bundle sold before the cutover was given a router byte ceiling")
+
+
 class TheSweepIsScheduled(TestCase):
     """
     The cap was decoration for as long as nothing ran the check.

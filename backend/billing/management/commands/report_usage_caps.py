@@ -25,7 +25,10 @@ customers losing their connection and getting an SMS about it.
 from django.core.management.base import BaseCommand
 
 from billing.models import Subscription, Tenant
-from billing.services.usage import MB, cap_bytes_for, usage_since, window_start
+from billing.services.usage import (
+    MB, cap_applies_to, cap_bytes_for, caps_enforced_from, usage_since,
+    window_start,
+)
 
 
 def _human(n):
@@ -84,6 +87,15 @@ class Command(BaseCommand):
         seen = set()
         rows = []
         capped_total = 0
+        grandfathered = 0
+
+        from_when = caps_enforced_from()
+        if from_when:
+            self.stdout.write(
+                f"
+Caps apply to subscriptions bought from {from_when:%Y-%m-%d %H:%M %Z} "
+                f"onward. Earlier ones finish on the terms they were sold under."
+            )
 
         for sub in subscriptions.iterator(chunk_size=200):
             # One subscription per customer -- the longest-lived paid one,
@@ -95,6 +107,13 @@ class Command(BaseCommand):
             cap = cap_bytes_for(sub.customer, sub)
             if not cap:
                 continue  # unlimited
+
+            if not cap_applies_to(sub):
+                # Bought before caps applied. Counted so the number is visible
+                # rather than silently missing from the total.
+                grandfathered += 1
+                continue
+
             capped_total += 1
 
             used = usage_since(sub.customer, window_start(sub))
@@ -109,7 +128,12 @@ class Command(BaseCommand):
 
         self.stdout.write("")
         self.stdout.write(
-            f"{capped_total} active paid subscriber(s) have a data cap.")
+            f"{capped_total} active paid subscriber(s) have a cap that applies.")
+        if grandfathered:
+            self.stdout.write(
+                f"{grandfathered} more are on a capped package but were sold "
+                f"before the cutover, so no cap is enforced on them."
+            )
         self.stdout.write(
             self.style.WARNING(
                 f"{len(over)} of them are ALREADY OVER it and would be "
