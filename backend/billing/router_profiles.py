@@ -18,7 +18,11 @@ keys these calls send, because the failure is silent — the router simply does
 not do what it was never asked to do.
 """
 
+import logging
+
 from librouteros import connect
+
+logger = logging.getLogger(__name__)
 
 
 # ======================================================
@@ -140,8 +144,36 @@ def ensure_hotspot_profile(router, package):
     devices = max(1, getattr(package, "max_devices", 1) or 1)
     profile_name = f"HOTSPOT_PKG_{package.id}_D{devices}"
 
+    wanted = {
+        "rate-limit": _rate_limit(package),
+        # How many devices one voucher may be used from at once.
+        "shared-users": str(devices),
+    }
+
     for p in profiles:
         if p.get("name") == profile_name:
+            # Repaired, not merely reused — the same thing ensure_pppoe_profile
+            # does, and for the same reason.
+            #
+            # This returned on sight of the name, so a profile already on the
+            # router was never looked at again. The name carries the package id
+            # and the device count, neither of which changes when an operator
+            # edits a *speed* — so changing a package from 6M to 2M updated the
+            # database, reported success on the dashboard, and left every
+            # router still handing out 6M. Nothing anywhere said the two
+            # disagreed, and the only way to land the new rate was to delete
+            # the profile on each router by hand.
+            #
+            # Found while throttling every hotspot package to 2M for capacity
+            # on 2026-09-05: the speed change would have been silently
+            # cosmetic on every router in the estate.
+            stale = {k: v for k, v in wanted.items() if p.get(k) != v}
+            if stale:
+                profiles.update(**{".id": p[".id"], **stale})
+                logger.info(
+                    "[hotspot] profile %s on %s updated: %s",
+                    profile_name, router, stale,
+                )
             return profile_name
 
     # No comment. RouterOS has no comment property on
@@ -157,11 +189,6 @@ def ensure_hotspot_profile(router, package):
     # Nothing is lost. The name already carries what the comment said and
     # more — HOTSPOT_PKG_<package>_D<devices> identifies the package and the
     # device allowance, which is what makes these rebuildable.
-    profiles.add(**{
-        "name": profile_name,
-        "rate-limit": _rate_limit(package),
-        # How many devices one voucher may be used from at once.
-        "shared-users": str(max(1, getattr(package, "max_devices", 1) or 1)),
-    })
+    profiles.add(name=profile_name, **wanted)
 
     return profile_name
