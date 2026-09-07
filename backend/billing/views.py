@@ -981,6 +981,111 @@ class RevenueDashboardView(APIView):
             "customer_stats": customer_stats(),
         })
 
+class ActiveClientsByStationView(APIView):
+    """
+    How many clients are on right now, grouped by site.
+
+    The question an operator actually has, and until now the only way to answer
+    it was to log into each MikroTik and look at /ip/hotspot/active by hand —
+    per box, on a phone, while standing somewhere else.
+
+    Reads cached counters and contacts nothing. The numbers come from the health
+    sweep, which already connects to every router every two minutes; see
+    RouterDevice.active_sessions for why the count cannot be taken here instead.
+    This is the page every operator opens first, and one unreachable router
+    would otherwise hang it for all of them.
+
+    Grouped by station because that is the unit an operator thinks in — "how
+    many at Kilifi", not "how many on the box called skylink3". Stations are
+    optional and most operators have none, so routers without one are returned
+    under a null station rather than being hidden or given an invented name.
+
+    A count is only meaningful with its age and the state of the box it came
+    from, so both travel with it. An offline router reports `stale`, never a
+    number that looks live: the last thing it said before it went down would
+    otherwise read as the number of people on it now, which is the one answer
+    that must not be given by mistake.
+    """
+
+    permission_classes = [IsTenantMember]
+
+    # Beyond this the number is old enough to mislead. The sweep runs every two
+    # minutes, so anything past three sweeps has missed more than it caught --
+    # a worker backlog, a probe expiring, a box that stopped answering between
+    # sweeps without yet crossing the offline threshold.
+    STALE_AFTER_SECONDS = 6 * 60
+
+    def get(self, request):
+        from django.utils import timezone
+
+        now = timezone.now()
+        routers = (
+            RouterDevice.objects.filter(is_active=True)
+            .select_related("station")
+            .order_by("station__name", "name")
+        )
+
+        groups = {}
+        for router in routers:
+            station = router.station
+            key = station.id if station else None
+            group = groups.setdefault(key, {
+                "station_id": key,
+                "station_name": station.name if station else None,
+                "station_code": (station.code or "") if station else "",
+                "active_clients": 0,
+                "routers": [],
+                # False the moment any router in this group cannot be believed.
+                # A site total assembled from one live box and one that stopped
+                # reporting is not the number of people at that site, and
+                # presenting it as one would be worse than saying so.
+                "complete": True,
+            })
+
+            age = ((now - router.active_sessions_at).total_seconds()
+                   if router.active_sessions_at else None)
+            fresh = (
+                router.is_online
+                and router.active_sessions is not None
+                and age is not None
+                and age <= self.STALE_AFTER_SECONDS
+            )
+
+            if fresh:
+                group["active_clients"] += router.active_sessions
+            else:
+                group["complete"] = False
+
+            group["routers"].append({
+                "id": router.id,
+                "name": router.name,
+                "is_online": router.is_online,
+                # The number itself is still returned when it is stale, so the
+                # operator can see what it last was and when. It is the group
+                # total it must not silently join.
+                "active_clients": router.active_sessions,
+                "counted_at": router.active_sessions_at,
+                "age_seconds": int(age) if age is not None else None,
+                "fresh": fresh,
+            })
+
+        # Named sites first, alphabetically; the unassigned group last, because
+        # it is a leftover rather than a place.
+        ordered = sorted(
+            groups.values(),
+            key=lambda g: (g["station_name"] is None,
+                           (g["station_name"] or "").lower()),
+        )
+
+        return Response({
+            "stations": ordered,
+            "total_active_clients": sum(
+                g["active_clients"] for g in ordered),
+            "complete": all(g["complete"] for g in ordered),
+            "as_of": now,
+        })
+
+
 class UnpaidInvoicesView(APIView):
     permission_classes = [IsTenantMember]
 

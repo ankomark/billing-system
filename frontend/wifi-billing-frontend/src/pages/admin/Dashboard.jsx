@@ -4,6 +4,7 @@ import {
   Activity, CreditCard, Clock, RefreshCw, Users, Wallet,
 } from "lucide-react";
 import AdminLayout from "../../components/admin/AdminLayout";
+import ActiveClientsPanel from "../../components/admin/ActiveClientsPanel";
 import AdminUsageGraph from "../../components/usage/AdminUsageGraph";
 import AnalyticsPanels from "../../components/admin/AnalyticsPanels";
 import CustomerQuickSearch from "../../components/admin/CustomerQuickSearch";
@@ -184,6 +185,12 @@ export default function Dashboard() {
             those, and the same number twice on one screen makes a reader stop
             to check whether they disagree. */}
         <AnalyticsPanels compact defaultDays={30} />
+
+        {/* Last, deliberately. It is the figure an operator checks rather than
+            acts on — the reason to open a MikroTik at all, now that it is
+            here — and putting it above the takings would make the page about
+            monitoring instead of about the business. */}
+        <ActiveClientsPanel />
       </div>
     </AdminLayout>
   );

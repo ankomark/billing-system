@@ -5,6 +5,23 @@ export const fetchDashboardSummary = async () => {
   return res.data;
 };
 
+/**
+ * How many clients are on each site right now.
+ *
+ * Its own request rather than part of the revenue summary, because it ages
+ * differently: revenue is a settled figure and this is a live one, refreshed
+ * on the server every two minutes by the health sweep. Folding it into the
+ * summary would either hold the live number back to the summary's cadence or
+ * drag the whole summary along at this one's.
+ *
+ * Contacts no router. The server answers from counters the sweep has already
+ * written -- see RouterDevice.active_sessions.
+ */
+export const fetchActiveClients = async () => {
+  const res = await api.get("dashboard/active-clients/");
+  return res.data;
+};
+
 export const fetchUnpaidInvoices = async () => {
   const res = await api.get("dashboard/invoices/unpaid/");
   return res.data;

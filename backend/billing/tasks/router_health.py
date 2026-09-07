@@ -80,8 +80,10 @@ def check_single_router_health(router_id):
     runs again in two minutes regardless, which is a better recovery than a
     retry storm against hardware that is already struggling.
     """
+    from django.utils import timezone
+
     from billing.models import RouterDevice
-    from billing.router_service import safe_connect_router
+    from billing.router_service import count_active_sessions, safe_connect_router
 
     with all_tenants():
         router = (
@@ -98,6 +100,31 @@ def check_single_router_health(router_id):
     # matters, and what it cost when twenty-six callers all had a vote.
     api = safe_connect_router(router, count_failure=True)
     if api:
+        # Count while we are here. The dashboard cannot do this itself — one
+        # connection per router inside an HTTP request blocks a worker for the
+        # connect timeout apiece — so this sweep is the only thing already
+        # standing in front of every box often enough to answer it.
+        #
+        # Never allowed to affect health. A router that logs in is online, and
+        # a session list we could not read is a missing number, not an outage;
+        # letting this raise would condemn a reachable box and hand its
+        # subscribers to auto-failover on the strength of a failed count.
+        try:
+            count = count_active_sessions(api)
+        except Exception:
+            logger.debug(
+                "[router-health] %s: session count failed", router.name)
+            count = None
+
+        # Written only when there is an answer. Leaving the old count and its
+        # old timestamp in place is what lets the dashboard say "as of 11:04"
+        # and be believed; overwriting the timestamp with a NULL count would
+        # throw away the last thing we did know.
+        if count is not None:
+            with all_tenants():
+                RouterDevice.objects.all_tenants().filter(id=router.id).update(
+                    active_sessions=count, active_sessions_at=timezone.now())
+
         # The old loop never closed these. One leaked connection per reachable
         # router per two minutes is nothing at two routers and is a RouterOS
         # session table full of dead entries at a hundred — MikroTik holds them
@@ -106,7 +133,9 @@ def check_single_router_health(router_id):
             api.close()
         except Exception:
             logger.debug("[router-health] %s: close failed", router.name)
-        logger.info(f"[router-health] {router.name} ONLINE")
+        logger.info(
+            f"[router-health] {router.name} ONLINE"
+            + (f" ({count} active)" if count is not None else ""))
         return True
 
     logger.warning(

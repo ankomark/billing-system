@@ -600,6 +600,35 @@ class RouterDevice(TenantScopedModel):
     consecutive_failures = models.PositiveSmallIntegerField(default=0)
     max_pppoe_sessions = models.PositiveIntegerField(default=0)  # 0 = unlimited
 
+    # How many clients this box is actually serving, as of the last health
+    # probe. Hotspot sessions and PPPoE sessions together, because an operator
+    # asking "how many people are on at Kilifi" does not mean one or the other.
+    #
+    # Cached deliberately, and this is the whole reason the field exists rather
+    # than the dashboard counting sessions itself. Reading it means connecting
+    # to the router, and doing that inside an HTTP request blocks a Gunicorn
+    # worker for up to the connect timeout per router — the dashboard is the
+    # one page every operator loads first, and an estate with one dead router
+    # would hang it for everybody. AdminRouterListView carries the same warning
+    # about is_online for the same reason.
+    #
+    # The health sweep already connects to every router every two minutes and
+    # closes the connection again. Counting sessions while it is there costs
+    # one extra API call on a connection that has already been paid for.
+    #
+    # NULL means unknown, not zero. A router that has never been probed, or
+    # whose session read failed while the login succeeded, has no number — and
+    # showing that as "0 clients" would read as a working site with nobody on
+    # it, which is the one answer the operator must not be given by mistake.
+    active_sessions = models.PositiveIntegerField(null=True, blank=True)
+
+    # When that count was taken. Its own field rather than reading last_seen,
+    # because the two can diverge: the probe can log in (setting last_seen) and
+    # still fail to read the session list. A count with no timestamp of its own
+    # cannot be shown as stale, and a stale number presented as live is worse
+    # than no number.
+    active_sessions_at = models.DateTimeField(null=True, blank=True)
+
     # Which site this box is at. NULL means the operator has not divided their
     # estate into sites, which is the normal case for a single-location
     # business — router selection then behaves exactly as it always has.

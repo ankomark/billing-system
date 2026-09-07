@@ -1449,3 +1449,31 @@ def safe_disconnect_pppoe(customer):
 
     disconnect_pppoe_session(api, customer.pppoe_username)
     return True
+
+def count_active_sessions(api):
+    """
+    How many clients this router is serving right now, hotspot and PPPoE.
+
+    Returns None when either list could not be read, and never a partial sum.
+    "Nobody is online" and "I could not find out" are opposite answers, and the
+    dashboard this feeds shows the second as unknown rather than as a working
+    site with nobody on it — see RouterDevice.active_sessions.
+
+    Both types are counted together on purpose. An operator asking how many
+    people are on at a site does not mean one or the other, and a box that
+    serves both would otherwise report half its load.
+
+    Takes an open api rather than a router, because its one caller is the
+    health probe, which is already connected. Reading this on a connection of
+    its own would double the sweep's connections to every box on the platform
+    to answer a question the sweep is standing in front of anyway.
+    """
+    total = 0
+    for path in (("ip", "hotspot", "active"), ("ppp", "active")):
+        try:
+            total += sum(1 for _ in api.path(*path))
+        except Exception as exc:
+            logger.debug(
+                "[router] could not read /%s: %s", "/".join(path), exc)
+            return None
+    return total
