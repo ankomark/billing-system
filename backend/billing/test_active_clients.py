@@ -27,7 +27,9 @@ from billing.models import RouterDevice, Station, Tenant, User
 from billing.tenancy import tenant_context
 
 
-class ActiveClientsViewTests(APITestCase):
+class _ActiveClientsBase(APITestCase):
+    """Setup shared by the suites below; holds no tests of its own."""
+
     def setUp(self):
         self.tenant = Tenant.objects.get(slug="skylink")
         with tenant_context(self.tenant):
@@ -57,6 +59,8 @@ class ActiveClientsViewTests(APITestCase):
         self._counter[0] += 1
         return self._counter[0]
 
+
+class ActiveClientsViewTests(_ActiveClientsBase):
     def test_no_router_is_contacted(self):
         """
         The point of caching the count. If this view ever grows a probe, the
@@ -112,19 +116,25 @@ class ActiveClientsViewTests(APITestCase):
                          "still shown, so the operator can see what it was")
         self.assertFalse(down["fresh"])
 
-    def test_a_stale_count_from_an_online_router_is_also_excluded(self):
+    def test_a_stale_count_is_flagged_but_not_discarded(self):
         """
-        Online is not the same as reporting. A box that has not been swept for
-        three intervals has missed more than it caught.
+        Online is not the same as reporting, and a late count is still marked
+        not-fresh so the page can say so.
+
+        It is no longer dropped from the total. That was the original rule and
+        it produced the 2026-09-07 failure: the worker pool filled, the health
+        sweep stopped running, every count aged out, and two live routers were
+        reported as an estate with nobody on it.
         """
         self._router("lagging", station=self.kilifi, count=30,
                      age_seconds=20 * 60)
 
         res = self.client.get(self.url)
         station = res.data["stations"][0]
-        self.assertEqual(station["active_clients"], 0)
+        self.assertEqual(station["active_clients"], 30)
         self.assertFalse(station["complete"])
         self.assertFalse(station["routers"][0]["fresh"])
+        self.assertEqual(station["routers"][0]["state"], "stale")
 
     def test_a_never_probed_router_reports_unknown_not_zero(self):
         """
@@ -192,3 +202,52 @@ class SessionCountingTests(APITestCase):
         api = MagicMock()
         api.path.side_effect = path
         self.assertIsNone(count_active_sessions(api))
+
+
+class StaleIsNotOfflineTests(_ActiveClientsBase):
+    """
+    A late count must never be reported as an outage.
+
+    On 2026-09-07 the worker pool filled, check_router_health_task (expires=90)
+    stopped being scheduled, and every count aged past the threshold. Both
+    routers were up and serving; the panel excluded them from the total,
+    reported 0 active across the estate, and told the operator their live
+    network was offline while they were looking at the running hardware.
+    """
+
+    def test_a_late_count_from_a_live_router_still_counts(self):
+        self._router("lagging", station=self.kilifi, count=63, age_seconds=20 * 60)
+
+        res = self.client.get(self.url)
+        station = res.data["stations"][0]
+        self.assertEqual(station["active_clients"], 63,
+                         "an online router's figure is the best anyone has")
+        self.assertEqual(res.data["total_active_clients"], 63)
+        self.assertFalse(station["complete"], "still flagged as lagging")
+        self.assertEqual(station["routers"][0]["state"], "stale")
+        self.assertFalse(station["routers"][0]["fresh"])
+
+    def test_an_offline_routers_count_is_still_excluded(self):
+        """The exclusion that was right: nobody can reach that box."""
+        self._router("down", station=self.kilifi, count=12, online=False)
+
+        res = self.client.get(self.url)
+        station = res.data["stations"][0]
+        self.assertEqual(station["active_clients"], 0)
+        self.assertEqual(station["routers"][0]["state"], "offline")
+
+    def test_state_names_the_four_cases_apart(self):
+        with tenant_context(self.tenant):
+            other = Station.objects.create(tenant=self.tenant, name="Zed")
+        self._router("ok",      station=self.kilifi, count=5)
+        self._router("late",    station=other, count=7, age_seconds=20 * 60)
+        self._router("dead",    station=other, count=9, online=False)
+        self._router("nocount", station=other, count=None)
+
+        res = self.client.get(self.url)
+        states = {r["name"]: r["state"]
+                  for s in res.data["stations"] for r in s["routers"]}
+        self.assertEqual(states["ok"], "fresh")
+        self.assertEqual(states["late"], "stale")
+        self.assertEqual(states["dead"], "offline")
+        self.assertEqual(states["nocount"], "unknown")

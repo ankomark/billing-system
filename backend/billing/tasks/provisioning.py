@@ -18,10 +18,29 @@ from celery import shared_task
 
 logger = logging.getLogger(__name__)
 
-# Roughly one minute, then four, then sixteen. Long enough to ride out a reboot
-# or a brief outage; short enough that a customer standing at a hotspot is not
-# waiting on the last attempt.
-MAX_ATTEMPTS = 4
+# How long to wait before each retry, in seconds.
+#
+# This was 60s, 240s, 960s -- one minute, four, sixteen. The outer end of that
+# is right and is kept: it rides out a reboot or a power cut, and skylink was
+# observed restarting mid-evening with every hotspot session cleared.
+#
+# The near end was wrong, and wrong in the case that actually happens. A first
+# attempt does not only fail because a router is down; it fails because the
+# link to it dropped a packet. skylink3 reaches the internet over 5G measured
+# at 33% loss and 600ms round trip, and an API login is several round trips --
+# so the first attempt fails routinely against a router that is sitting there
+# working, and answers a few seconds later.
+#
+# Against that, a 60-second first retry is a minute of a customer standing at
+# a hotspot having paid, associated to the Wi-Fi, and holding no authorised
+# session: connected, no internet, which is precisely the complaint this was
+# traced from. Two fast attempts cost one worker slot for a few seconds and
+# recover the common case in about five.
+#
+# The last attempt still lands sixteen minutes out, so nothing that used to be
+# ridden out stops being ridden out.
+RETRY_SCHEDULE = (5, 20, 60, 240, 960)
+MAX_ATTEMPTS = len(RETRY_SCHEDULE) + 1
 
 
 @shared_task(bind=True, max_retries=MAX_ATTEMPTS - 1)
@@ -64,8 +83,9 @@ def ensure_customer_access_task(self, customer_id, reason="payment"):
             return True
 
         if self.request.retries < self.max_retries:
-            # 60s, 240s, 960s.
-            countdown = 60 * (4 ** self.request.retries)
+            # Indexed rather than computed, so the schedule reads as the list
+            # of waits it is and cannot drift from MAX_ATTEMPTS.
+            countdown = RETRY_SCHEDULE[self.request.retries]
             logger.warning(
                 "[provisioning] no router for %s, retrying in %ss", customer, countdown)
             raise self.retry(countdown=countdown)

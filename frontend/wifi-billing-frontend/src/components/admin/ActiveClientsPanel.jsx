@@ -39,32 +39,49 @@ function age(seconds) {
   return `${Math.round(seconds / 86400)}d ago`;
 }
 
+/**
+ * A router's state, as one word.
+ *
+ * "offline" is reserved for a router the health sweep has condemned. A live
+ * router whose count is merely late is "stale" and keeps its number: on
+ * 2026-09-07 the worker pool filled, the health sweep stopped being scheduled,
+ * and every count aged out — the panel struck both routers through and showed
+ * a total of 0 while the hardware sat there serving. The operator was told
+ * their network was down by a page describing a working network.
+ */
+const STATE = {
+  offline: { dot: "bg-red-400",     label: "offline",   strike: true  },
+  unknown: { dot: "bg-slate-500",   label: "no count",  strike: true  },
+  stale:   { dot: "bg-amber-400",   label: null,        strike: false },
+  fresh:   { dot: "bg-emerald-400", label: null,        strike: false },
+};
+
+function stateOf(router) {
+  return STATE[router.state] || (router.fresh ? STATE.fresh : STATE.stale);
+}
+
 function RouterRow({ router }) {
-  const offline = !router.is_online;
+  const st = stateOf(router);
   const unknown = router.active_clients == null;
 
   return (
     <div className="flex items-center justify-between gap-3 py-1.5 pl-4 text-sm">
       <span className="flex items-center gap-2 min-w-0">
-        <span
-          className={`h-1.5 w-1.5 flex-shrink-0 rounded-full ${
-            router.fresh ? "bg-emerald-400" : offline ? "bg-red-400" : "bg-amber-400"
-          }`}
-          aria-hidden="true"
-        />
+        <span className={`h-1.5 w-1.5 flex-shrink-0 rounded-full ${st.dot}`}
+              aria-hidden="true" />
         <span className="truncate text-slate-300">{router.name}</span>
       </span>
 
       <span className="flex items-center gap-2 flex-shrink-0">
         <span
           className={`tabular-nums ${
-            router.fresh ? "text-slate-200" : "text-slate-500 line-through"
+            st.strike ? "text-slate-500 line-through" : "text-slate-200"
           }`}
         >
           {unknown ? "—" : num(router.active_clients)}
         </span>
         <span className="text-[11px] text-slate-500 w-20 text-right">
-          {offline ? "offline" : age(router.age_seconds)}
+          {st.label ?? age(router.age_seconds)}
         </span>
       </span>
     </div>
@@ -152,18 +169,14 @@ export default function ActiveClientsPanel() {
                       {lone && (
                         <span
                           className={`mr-0.5 inline-block h-1.5 w-1.5 rounded-full align-middle ${
-                            lone.fresh
-                              ? "bg-emerald-400"
-                              : !lone.is_online
-                              ? "bg-red-400"
-                              : "bg-amber-400"
+                            stateOf(lone).dot
                           }`}
                           aria-hidden="true"
                         />
                       )}
                       <span
                         className={`text-lg font-semibold tabular-nums ${
-                          lone && !lone.fresh
+                          lone && stateOf(lone).strike
                             ? "text-slate-500 line-through"
                             : "text-emerald-300"
                         }`}
@@ -181,7 +194,7 @@ export default function ActiveClientsPanel() {
                       <span className="text-[11px] text-slate-500">
                         active
                         {lone
-                          ? ` · ${!lone.is_online ? "offline" : age(lone.age_seconds)}`
+                          ? ` · ${stateOf(lone).label ?? age(lone.age_seconds)}`
                           : !s.complete && " · partial"}
                       </span>
                     </span>
@@ -219,9 +232,9 @@ export default function ActiveClientsPanel() {
               <p className="flex items-start gap-1.5 text-[11px] text-amber-300/80">
                 <WifiOff size={12} className="mt-0.5 flex-shrink-0" />
                 <span>
-                  A router is offline or has not reported recently, so its
-                  clients are not in these totals. The struck-out figure is the
-                  last count it gave.
+                  A count here is older than usual, so these totals may lag.
+                  Anything struck out is a router the health check cannot
+                  reach; its figure is the last one it gave.
                 </span>
               </p>
             )}

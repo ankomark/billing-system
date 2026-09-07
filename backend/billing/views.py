@@ -1044,16 +1044,32 @@ class ActiveClientsByStationView(APIView):
 
             age = ((now - router.active_sessions_at).total_seconds()
                    if router.active_sessions_at else None)
+            have_count = router.active_sessions is not None
             fresh = (
-                router.is_online
-                and router.active_sessions is not None
-                and age is not None
-                and age <= self.STALE_AFTER_SECONDS
+                router.is_online and have_count
+                and age is not None and age <= self.STALE_AFTER_SECONDS
             )
 
-            if fresh:
+            # Late is not the same as down, and conflating them was a real
+            # fault rather than a wording quibble. On 2026-09-07 the worker
+            # pool filled, the health sweep -- expires=90 -- stopped being
+            # scheduled, and these counts aged past the threshold while both
+            # routers were up and serving. Everything late was excluded, the
+            # estate total came out 0, and the operator was told their live
+            # network was offline while looking at the running hardware.
+            #
+            # So an online router's count still counts. It is the best figure
+            # anyone has, it is labelled with its age, and the alternative --
+            # reporting nought — is not more honest, it is differently wrong
+            # and reads as an outage.
+            #
+            # A router the sweep has actually condemned is still excluded. Its
+            # last figure may be hours old and describes a box nobody can
+            # reach, which is the case the exclusion was written for.
+            counts = router.is_online and have_count
+            if counts:
                 group["active_clients"] += router.active_sessions
-            else:
+            if not fresh:
                 group["complete"] = False
 
             group["routers"].append({
@@ -1067,6 +1083,13 @@ class ActiveClientsByStationView(APIView):
                 "counted_at": router.active_sessions_at,
                 "age_seconds": int(age) if age is not None else None,
                 "fresh": fresh,
+                # What the row should say about itself. "stale" is an online
+                # router whose count is late -- shown with its age, not struck
+                # out, and not called offline.
+                "state": ("offline" if not router.is_online
+                          else "unknown" if not have_count
+                          else "fresh" if fresh else "stale"),
+                "counts_toward_total": bool(counts),
             })
 
         # Named sites first, alphabetically; the unassigned group last, because
@@ -1280,17 +1303,56 @@ def _online_macs(customer, *, max_idle_seconds=None):
     customer's place on the silence of a second router they are not on is the
     failure this is here to end.
     """
-    from billing.router_service import active_hotspot_macs
+    from billing.router_service import _tenant_routers, active_hotspot_macs
 
-    online = set()
-    answered = False
-    for router in _routers_to_ask(customer):
-        macs = active_hotspot_macs(router, max_idle_seconds=max_idle_seconds)
-        if macs is None:
-            continue
-        answered = True
-        online.update(normalize_mac(m) for m in macs)
+    def ask(routers):
+        found, replied = set(), False
+        for router in routers:
+            macs = active_hotspot_macs(router, max_idle_seconds=max_idle_seconds)
+            if macs is None:
+                continue
+            replied = True
+            found.update(normalize_mac(m) for m in macs)
+        return found, replied
 
+    primary = list(_routers_to_ask(customer))
+    online, answered = ask(primary)
+    if answered:
+        return online
+
+    # Nobody answered, so ask the rest of the operator's estate before giving
+    # the answer that costs a paying customer their own device place.
+    #
+    # _routers_to_ask returns the assigned router alone whenever one is set,
+    # so on a normal subscriber this loop asked exactly one box -- and a
+    # single unreachable box became "I could not find out", which
+    # _evict_idle_device turns into "the device limit stands". The links these
+    # operators run flap as a matter of course; safe_connect_router exists
+    # because twenty-six callers failing during one thirty-second drop was
+    # enough to move the whole estate. A subscriber refused their own phone
+    # for the length of a satellite handover is the same drop, billed to them.
+    #
+    # Second, not first, and that ordering is the point. Asking every router
+    # up front would put N connect timeouts on the redeem path, which a
+    # customer waits on synchronously after paying; asking them only when the
+    # assigned one is silent costs nothing on the normal path and is exactly
+    # the case where the extra opinion is worth having.
+    #
+    # This is what the paragraph above already claimed the function did.
+    tried = {r.pk for r in primary}
+    try:
+        rest = [r for r in _tenant_routers(customer.tenant_id)
+                if r.pk not in tried]
+    except Exception:
+        logger.warning(
+            "[hotspot] no router answered for customer %s and their "
+            "operator's routers could not be listed", customer.pk)
+        return None
+
+    if not rest:
+        return None
+
+    online, answered = ask(rest)
     return online if answered else None
 
 
@@ -2127,6 +2189,13 @@ def _kick_device(customer, mac_address):
         routers = []
 
     for router in routers:
+        # Same reason kick_device_task skips these: a router the health sweep
+        # has condemned will not answer, and the connect timeout it costs is a
+        # worker slot that the health sweep itself needs. Not counted as
+        # unfinished either, or every eviction would queue an hour of retries
+        # against a box that has been dead since August.
+        if not router.is_online:
+            continue
         try:
             api = connect_router(router)
             if disable_hotspot(api, mac_address):

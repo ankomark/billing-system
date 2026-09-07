@@ -2,12 +2,33 @@ from librouteros import connect
 from django.utils import timezone
 from django.db.models import Q
 import re
+import os
 import socket
 from .router_profiles import ensure_pppoe_profile, ensure_hotspot_profile
 from .utils import normalize_mac
 from django.db import transaction
 import logging
 logger = logging.getLogger(__name__)
+# How long one API connection may take before the slot it holds is worth more
+# than the answer.
+#
+# librouteros defaults to ten seconds, and this ran with that. A worker has
+# four slots; a task blocking ten seconds on a router that is not going to
+# answer is a quarter of the pool held for ten seconds, and the health sweep
+# carries expires=90 -- so enough of those in a row and the probes are
+# discarded without a word, is_online goes stale, and everything reading it
+# believes a working estate is down. That happened on 2026-09-07: 152
+# provisioning retries and 14 kick retries against a router dead since 19
+# August emptied the pool, the sweep stopped, and the dashboard reported both
+# live routers offline.
+#
+# Five, not three: skylink3 reaches the internet over 5G measured at 600ms
+# round trip and 33% loss, and an API login is several round trips. Three
+# would fail a router that was about to answer, which is the opposite mistake
+# and the more expensive one -- it costs a paying customer their provisioning.
+ROUTER_API_TIMEOUT = int(os.getenv("ROUTER_API_TIMEOUT", "5"))
+
+
 def connect_router(router):
     """Connect to MikroTik Router."""
     return connect(
@@ -15,6 +36,7 @@ def connect_router(router):
         username=router.username,
         password=router.password,
         port=router.api_port,
+        timeout=ROUTER_API_TIMEOUT,
     )
 def create_pppoe_secret(api, router, customer, package, expiry_date=None):
     """

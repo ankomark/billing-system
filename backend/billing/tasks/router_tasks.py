@@ -221,9 +221,38 @@ def kick_device_task(self, customer_id, mac_address):
 
     with tenant_context(customer.tenant_id):
         routers = list(_tenant_routers(customer.tenant_id))
+
+        # A router the health sweep has already condemned is not worth an hour
+        # of retries. fiber1 has been unreachable since 19 August and answers
+        # nothing; every eviction still queued ten attempts against it, each
+        # blocking a worker slot on a connect timeout. On 2026-09-07 that ran
+        # alongside 152 provisioning retries and emptied a four-slot pool, at
+        # which point the health sweep -- which carries expires=90 -- stopped
+        # being scheduled at all, is_online went stale, and the dashboard
+        # reported two live routers as offline.
+        #
+        # Nothing is lost by skipping it. A device left behind on a router
+        # nobody can reach is exactly what disable_orphan_hotspot_users exists
+        # to find, and it says so: "a router that comes back after an outage
+        # serves whatever it had when it left, so re-run this once it is up."
+        # This defers the cleanup to the thing designed for it instead of
+        # spending the pool proving the router is still down.
+        #
+        # Declared offline, not merely failing: record_health needs
+        # ROUTER_OFFLINE_AFTER_FAILURES in a row before it condemns anything,
+        # so a link that dropped one probe is still tried here.
+        reachable = [r for r in routers if r.is_online]
+        skipped = [r.name for r in routers if not r.is_online]
+        if skipped:
+            logger.info(
+                "[kick_device_task] skipping %s for %s — declared offline by "
+                "the health sweep; disable_orphan_hotspot_users covers it",
+                ", ".join(skipped), mac_address)
+        routers = reachable
+
         if not routers:
             logger.warning(
-                "[kick_device_task] No active router for customer %s, so "
+                "[kick_device_task] No reachable router for customer %s, so "
                 "there is nothing holding %s online", customer_id, mac_address)
             return False
 
