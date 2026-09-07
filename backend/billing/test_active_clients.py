@@ -28,11 +28,6 @@ from billing.tenancy import tenant_context
 
 
 class ActiveClientsViewTests(APITestCase):
-    # secure=True on every request. This deployment sets SECURE_SSL_REDIRECT,
-    # so a plain-HTTP test request is answered with a 301 to the https URL and
-    # never reaches the view -- which is what most of the existing suite's
-    # failures in this environment are. Production serves this over TLS, so
-    # asking over TLS is also the truer test.
     def setUp(self):
         self.tenant = Tenant.objects.get(slug="skylink")
         with tenant_context(self.tenant):
@@ -70,7 +65,7 @@ class ActiveClientsViewTests(APITestCase):
         self._router("r1", station=self.kilifi, count=7)
         with patch("billing.router_service.connect_router") as connect, \
              patch("billing.router_service.safe_connect_router") as safe:
-            res = self.client.get(self.url, secure=True)
+            res = self.client.get(self.url)
         self.assertEqual(res.status_code, 200)
         connect.assert_not_called()
         safe.assert_not_called()
@@ -79,7 +74,7 @@ class ActiveClientsViewTests(APITestCase):
         self._router("box-a", station=self.kilifi, count=7)
         self._router("box-b", station=self.kilifi, count=5)
 
-        res = self.client.get(self.url, secure=True)
+        res = self.client.get(self.url)
         station = res.data["stations"][0]
         self.assertEqual(station["station_name"], "Kilifi Town")
         self.assertEqual(station["station_code"], "KLF")
@@ -93,7 +88,7 @@ class ActiveClientsViewTests(APITestCase):
         """
         self._router("lonely", station=None, count=4)
 
-        res = self.client.get(self.url, secure=True)
+        res = self.client.get(self.url)
         groups = res.data["stations"]
         self.assertEqual(len(groups), 1)
         self.assertIsNone(groups[0]["station_name"])
@@ -107,7 +102,7 @@ class ActiveClientsViewTests(APITestCase):
         self._router("up", station=self.kilifi, count=9)
         self._router("down", station=self.kilifi, count=12, online=False)
 
-        res = self.client.get(self.url, secure=True)
+        res = self.client.get(self.url)
         station = res.data["stations"][0]
         self.assertEqual(station["active_clients"], 9)
         self.assertFalse(station["complete"])
@@ -125,7 +120,7 @@ class ActiveClientsViewTests(APITestCase):
         self._router("lagging", station=self.kilifi, count=30,
                      age_seconds=20 * 60)
 
-        res = self.client.get(self.url, secure=True)
+        res = self.client.get(self.url)
         station = res.data["stations"][0]
         self.assertEqual(station["active_clients"], 0)
         self.assertFalse(station["complete"])
@@ -138,7 +133,7 @@ class ActiveClientsViewTests(APITestCase):
         """
         self._router("brand-new", station=self.kilifi, count=None)
 
-        res = self.client.get(self.url, secure=True)
+        res = self.client.get(self.url)
         router = res.data["stations"][0]["routers"][0]
         self.assertIsNone(router["active_clients"])
         self.assertFalse(router["fresh"])
@@ -146,7 +141,7 @@ class ActiveClientsViewTests(APITestCase):
 
     def test_a_deactivated_router_is_not_listed(self):
         self._router("retired", station=self.kilifi, count=3, active=False)
-        res = self.client.get(self.url, secure=True)
+        res = self.client.get(self.url)
         self.assertEqual(res.data["stations"], [])
 
     def test_the_total_adds_up_across_sites(self):
@@ -156,7 +151,7 @@ class ActiveClientsViewTests(APITestCase):
         self._router("k1", station=self.kilifi, count=6)
         self._router("m1", station=malindi, count=11)
 
-        res = self.client.get(self.url, secure=True)
+        res = self.client.get(self.url)
         self.assertEqual(res.data["total_active_clients"], 17)
         self.assertTrue(res.data["complete"])
 
@@ -164,7 +159,7 @@ class ActiveClientsViewTests(APITestCase):
         self._router("loose", station=None, count=1)
         self._router("sited", station=self.kilifi, count=1)
 
-        res = self.client.get(self.url, secure=True)
+        res = self.client.get(self.url)
         names = [s["station_name"] for s in res.data["stations"]]
         self.assertEqual(names, ["Kilifi Town", None])
 

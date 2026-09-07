@@ -127,6 +127,14 @@ if not DEBUG:
     SECURE_CONTENT_TYPE_NOSNIFF = True
     X_FRAME_OPTIONS = "DENY"               # clickjacking protection
 
+# The suite runs in deployed containers, where DEBUG is off and the redirect
+# above is therefore on. Django's test client speaks plain HTTP, so every
+# request was answered 301 and no view under test ever ran -- 578 of the 654
+# failures, none of them a real defect. BillingTestRunner turns that one
+# setting off for the duration of a test run and changes nothing else; see it
+# for why this is not done by inspecting sys.argv here.
+TEST_RUNNER = "backend.test_runner.BillingTestRunner"
+
 # =====================================================
 # APPLICATIONS
 # =====================================================
