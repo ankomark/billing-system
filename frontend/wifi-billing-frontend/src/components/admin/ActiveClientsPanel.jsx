@@ -20,6 +20,15 @@ import { fetchActiveClients } from "../../services/dashboard";
  * Stations are optional on this platform and most operators have none, so
  * routers without one are shown under "Unassigned" rather than being hidden or
  * given an invented site name.
+ *
+ * A site with one router shows one line. The per-router breakdown under a site
+ * total is only information when there is more than one box to break down;
+ * with one it is the same number printed twice, a line apart, which reads as a
+ * bug in the arithmetic. This was how it shipped, and how it looked on the
+ * estate it was built for — both sites there run a single router, which is the
+ * normal shape rather than the exception. The router's name, its status dot
+ * and the age of its count all survive onto the collapsed line; only the
+ * repetition goes.
  */
 
 function age(seconds) {
@@ -112,34 +121,82 @@ export default function ActiveClientsPanel() {
 
         {!isLoading && !isError && stations.length > 0 && (
           <div className="space-y-4">
-            {stations.map((s) => (
-              <div key={s.station_id ?? "unassigned"}>
-                <div className="flex items-baseline justify-between gap-3 border-b border-white/5 pb-1.5">
-                  <h3 className="text-sm font-semibold text-slate-200 truncate">
-                    {s.station_name ?? "Unassigned"}
-                    {s.station_code && (
-                      <span className="ml-2 text-[11px] font-normal text-slate-500">
-                        {s.station_code}
-                      </span>
-                    )}
-                  </h3>
-                  <span className="flex items-baseline gap-1.5 flex-shrink-0">
-                    <span className="text-lg font-semibold tabular-nums text-emerald-300">
-                      {num(s.active_clients)}
-                    </span>
-                    <span className="text-[11px] text-slate-500">
-                      active {!s.complete && "· partial"}
-                    </span>
-                  </span>
-                </div>
+            {stations.map((s) => {
+              // A breakdown of one is the same number twice, a line apart.
+              // Most operators run a single box per site, so this is the
+              // normal shape rather than the exception -- the per-router list
+              // earns its place only when there is something to break down.
+              const lone = s.routers.length === 1 ? s.routers[0] : null;
 
-                <div className="mt-1 divide-y divide-white/5">
-                  {s.routers.map((r) => (
-                    <RouterRow key={r.id} router={r} />
-                  ))}
+              return (
+                <div key={s.station_id ?? "unassigned"}>
+                  <div className="flex items-baseline justify-between gap-3 border-b border-white/5 pb-1.5">
+                    <h3 className="text-sm font-semibold text-slate-200 truncate">
+                      {s.station_name ?? "Unassigned"}
+                      {s.station_code && (
+                        <span className="ml-2 text-[11px] font-normal text-slate-500">
+                          {s.station_code}
+                        </span>
+                      )}
+                      {/* Which box it is, kept even when its row is gone --
+                          the site and the router rarely share a name, and the
+                          operator still needs to know what to log into. */}
+                      {lone && (
+                        <span className="ml-2 text-[11px] font-normal text-slate-500">
+                          · {lone.name}
+                        </span>
+                      )}
+                    </h3>
+
+                    <span className="flex items-baseline gap-1.5 flex-shrink-0">
+                      {lone && (
+                        <span
+                          className={`mr-0.5 inline-block h-1.5 w-1.5 rounded-full align-middle ${
+                            lone.fresh
+                              ? "bg-emerald-400"
+                              : !lone.is_online
+                              ? "bg-red-400"
+                              : "bg-amber-400"
+                          }`}
+                          aria-hidden="true"
+                        />
+                      )}
+                      <span
+                        className={`text-lg font-semibold tabular-nums ${
+                          lone && !lone.fresh
+                            ? "text-slate-500 line-through"
+                            : "text-emerald-300"
+                        }`}
+                      >
+                        {/* The router's own figure when there is only one of
+                            them. The station total excludes anything stale, so
+                            a single stale box would read "0 active" beside a
+                            struck-out number it disagreed with. */}
+                        {lone
+                          ? lone.active_clients == null
+                            ? "—"
+                            : num(lone.active_clients)
+                          : num(s.active_clients)}
+                      </span>
+                      <span className="text-[11px] text-slate-500">
+                        active
+                        {lone
+                          ? ` · ${!lone.is_online ? "offline" : age(lone.age_seconds)}`
+                          : !s.complete && " · partial"}
+                      </span>
+                    </span>
+                  </div>
+
+                  {!lone && (
+                    <div className="mt-1 divide-y divide-white/5">
+                      {s.routers.map((r) => (
+                        <RouterRow key={r.id} router={r} />
+                      ))}
+                    </div>
+                  )}
                 </div>
-              </div>
-            ))}
+              );
+            })}
 
             {/* Only worth showing when there is more than one site to add up.
                 A single-site operator already has the total above. */}
