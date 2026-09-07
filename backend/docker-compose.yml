@@ -162,7 +162,28 @@ services:
 
   worker:
     <<: *app
-    command: celery -A backend worker -l info
+    # Concurrency well above the core count, deliberately.
+    #
+    # Celery defaults to one process per CPU, which is right for work that
+    # burns CPU and wrong for every task in this system: provisioning, the
+    # health sweep, usage collection, evictions and STK pushes all spend their
+    # time waiting on a socket. Four slots on a four-core box meant four
+    # concurrent network waits for the whole platform.
+    #
+    # On 2026-09-07 that was not enough to keep the estate provisioned. An API
+    # call to skylink3 -- 5G, measured at 600ms round trip and 33% loss -- can
+    # hold a slot for many seconds, and a backlog of paid customers waiting to
+    # be put on the network filled all four. check_router_health_task carries
+    # expires=90, so once it could not get a slot within ninety seconds it was
+    # discarded silently: is_online went stale and the dashboard reported two
+    # live routers as offline while subscribers who had paid sat unprovisioned.
+    #
+    # Sixteen is bounded by what these tasks actually consume. They are waits,
+    # not work; the memory is one fork each against a box with ample headroom,
+    # and the database pool is not the constraint because the waiting happens
+    # outside any query. Raise it further only with evidence -- the useful
+    # signal is queue depth against successful provisioning, not CPU.
+    command: celery -A backend worker -l info --concurrency=${CELERY_CONCURRENCY:-16}
     restart: unless-stopped
     depends_on:
       postgres:
