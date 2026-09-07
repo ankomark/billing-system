@@ -39,6 +39,7 @@ from .reminder_tasks import send_expiry_reminders
 from .router_health import check_router_health_task, check_single_router_health
 from .router_tasks import (
     disable_customer_task,
+    disable_orphan_hotspot_users_task,
     disconnect_pppoe_task,
     enable_customer_task,
     kick_device_task,
@@ -79,6 +80,7 @@ __all__ = [
     "check_router_health_task",
     "check_single_router_health",
     "disable_customer_task",
+    "disable_orphan_hotspot_users_task",
     "disconnect_pppoe_task",
     "enable_customer_task",
     "enforce_subscription_expiry",

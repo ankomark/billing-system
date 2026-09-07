@@ -1254,7 +1254,6 @@ def _evict_idle_device(customer, devices, *, reclaiming=False, deliberate=False)
     longest ago is the likelier to be the phone somebody replaced.
     """
     from billing.models import AccessAuditLog
-    from billing.router_service import disable_hotspot, safe_connect_router
 
     if not devices:
         return None
@@ -1298,19 +1297,37 @@ def _evict_idle_device(customer, devices, *, reclaiming=False, deliberate=False)
     # the evicted device log straight back in and retake a place it no longer
     # holds in the database — and, because a session nobody ends keeps showing
     # up as active, would make it unevictable from then on.
-    for router in _routers_to_ask(customer):
-        api = safe_connect_router(router)
-        if api is None:
-            continue
-        try:
-            disable_hotspot(api, victim.mac_address)
-        except Exception:
-            logger.warning(
-                "[hotspot] evicted %s for customer %s but could not remove it "
-                "from %s", victim.mac_address, customer.pk, router,
-            )
-
+    #
+    # _kick_device rather than a loop of our own, and the difference is the
+    # whole of the leak found on 2026-09-07: 44 hotspot accounts across two
+    # routers, still enabled, belonging to nobody, 7.30GB served between them.
+    # Every one of them was an eviction whose router half did not land.
+    #
+    # The loop that used to be here asked `_routers_to_ask`, which is the
+    # *assigned* router alone. Subscribers move — 126 failover rows, including
+    # a mass migration on 2026-08-31 — so it cleaned the router they were on
+    # now and left the account on the one they had been on before. That was 20
+    # of the 44. The other 24 asked the right router and still missed, because
+    # `safe_connect_router` returning None was a bare `continue`: no log, no
+    # retry, and the row deleted immediately afterwards regardless.
+    #
+    # _kick_device asks every router the operator owns, reports what it could
+    # not confirm, and hands the rest to kick_device_task for about an hour of
+    # retries. It is what the admin device-removal path has always done; this
+    # one is the path that runs on its own, unwatched, which is the worse one
+    # to have had doing less.
     freed = victim.mac_address
+    _kick_device(customer, freed)
+
+    # Deleted even when the kick could not be confirmed, and deliberately so.
+    # The place is the customer's, and holding it hostage to a router that is
+    # not answering refuses a paying subscriber the device they are entitled
+    # to, to punish them for our outage. kick_device_task carries the router
+    # half from here and needs only the address, not this row.
+    #
+    # An outage longer than that hour is what disable_orphan_hotspot_users is
+    # scheduled for — the reconciler behind the retry, the same shape as the
+    # cap sweep behind the polled check.
     victim.delete()
 
     # This field is what the public status and reconnect endpoints resolve a

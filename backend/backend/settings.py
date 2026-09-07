@@ -590,6 +590,26 @@ CELERY_BEAT_SCHEDULE = {
         "schedule": crontab(minute="4-59/5"),
         "options": {"expires": 240},
     },
+    # Disable hotspot accounts on the routers that belong to no customer.
+    #
+    # The reconciler behind kick_device_task. Eviction hands an unconfirmed
+    # removal to that task, which retries for about an hour; this catches what
+    # outlasts the hour — fiber1 has been down since 19 August — and whatever
+    # else learns to leave an account behind.
+    #
+    # It matters because nothing else can see one. An account with no customer
+    # is invisible to enforce_usage_caps, which iterates Subscription; it has no
+    # password, because hotspot users authenticate by MAC; and `limit-uptime`
+    # counts session time, so it does not lapse on its own either. On 2026-09-07
+    # there were 44 of them, 7.30GB served.
+    #
+    # 03:40, after the rollup and the prune, when a disabled account inconveniences
+    # the fewest people and an operator reading the log next morning finds one
+    # night's work rather than a week's.
+    "disable-orphan-hotspot-users": {
+        "task": "billing.tasks.router_tasks.disable_orphan_hotspot_users_task",
+        "schedule": crontab(hour=3, minute=40),
+    },
     # Fold finished days of five-minute deltas into one row per subscriber per
     # day. Before the platform invoicing at 02:00, so a month's totals are
     # rolled up before anything bills against them.

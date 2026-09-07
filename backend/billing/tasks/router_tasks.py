@@ -251,3 +251,50 @@ def kick_device_task(self, customer_id, mac_address):
             )
 
         return True
+
+
+@shared_task(name="billing.tasks.router_tasks.disable_orphan_hotspot_users_task")
+def disable_orphan_hotspot_users_task():
+    """
+    The nightly reconciler behind kick_device_task.
+
+    Eviction now asks every router the operator owns and hands what it cannot
+    confirm to kick_device_task, which retries for about an hour. That closes
+    the leak found on 2026-09-07 — 44 enabled hotspot accounts belonging to
+    nobody, 7.30GB served — at its source, and an hour covers the link flap
+    that caused most of it.
+
+    It does not cover an outage longer than an hour. fiber1 has been down since
+    19 August; a device evicted against a router in that state is beyond every
+    retry this system has. Nor does it cover the next path that learns to leave
+    an account behind, which is the failure this whole class keeps repeating:
+    the router goes on serving what the database stopped tracking, and nothing
+    anywhere disagrees.
+
+    So the sweep stays, for the same reason enforce_usage_caps stays behind the
+    inline check and sync_router_profiles stays behind provisioning. A
+    reconciler that finds nothing every night is the evidence that the thing in
+    front of it is working — not a reason to remove it.
+
+    Disables, never deletes, and refuses a router with more orphans than
+    --max-disable rather than acting on a number that means its own database
+    query is wrong. See the command for both.
+    """
+    from django.core.management import call_command
+    from io import StringIO
+
+    out = StringIO()
+    try:
+        call_command("disable_orphan_hotspot_users", fix=True, stdout=out,
+                     stderr=out)
+    except Exception:
+        logger.exception("[orphan-sweep] failed")
+        raise
+
+    report = out.getvalue()
+    # Logged whole, at info, and not summarised. It is a handful of lines on a
+    # normal night and the only record that this ran at all; an operator asked
+    # why a device stopped working needs to be able to find the line that says
+    # this disabled it.
+    logger.info("[orphan-sweep]\n%s", report.strip() or "(nothing to report)")
+    return report
