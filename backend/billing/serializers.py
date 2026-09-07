@@ -750,6 +750,14 @@ class RouterSerializer(serializers.ModelSerializer):
     # this alone" and "this was never set".
     has_password = serializers.SerializerMethodField()
 
+    # How many subscribers this box is carrying.
+    #
+    # The Routers page listed the hardware and said nothing about the load on
+    # it, so "which router is carrying the estate" was a question you answered
+    # by exporting customers and counting by hand. It is the first thing
+    # anybody asks when capacity runs short.
+    active_clients = serializers.SerializerMethodField()
+
     class Meta:
         model = RouterDevice
         fields = [
@@ -758,6 +766,7 @@ class RouterSerializer(serializers.ModelSerializer):
             "is_online", "last_seen", "last_error",
             "max_pppoe_sessions", "station", "station_name",
             "identity", "serial_number", "public_token",
+            "active_clients",
         ]
         read_only_fields = [
             # Written by the health sweep and the credential test, from what the
@@ -774,6 +783,29 @@ class RouterSerializer(serializers.ModelSerializer):
 
     def get_has_password(self, obj):
         return bool(obj.password)
+
+    def get_active_clients(self, obj):
+        """
+        Active subscribers assigned to this router.
+
+        Reads an annotation when the caller supplied one, and falls back to
+        counting. The list view annotates, because a method field that queries
+        is a query per router on a page whose whole purpose is showing all of
+        them — the same N+1 the data panel on the customer list was written to
+        avoid. The fallback exists so the detail and create responses carry a
+        real number rather than null.
+        """
+        annotated = getattr(obj, "active_client_count", None)
+        if annotated is not None:
+            return annotated
+
+        from .models import Customer
+
+        return (
+            Customer.objects.all_tenants()
+            .filter(tenant_id=obj.tenant_id, router_id=obj.id, status="active")
+            .count()
+        )
 
     def validate_ip_address(self, value):
         refusal = unreachable_by_policy(value)

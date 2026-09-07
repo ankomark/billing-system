@@ -124,6 +124,7 @@ export default function Routers() {
                 <th className="px-5 py-3 text-left text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Name</th>
                 <th className="px-5 py-3 text-left text-[11px] font-semibold text-slate-400 uppercase tracking-wider">IP Address</th>
                 <th className="px-5 py-3 text-left text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Station</th>
+                <th className="px-5 py-3 text-left text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Subscribers</th>
                 <th className="px-5 py-3 text-left text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Priority</th>
                 <th className="px-5 py-3 text-left text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Status</th>
                 <th className="px-5 py-3 text-right text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Actions</th>
@@ -131,10 +132,10 @@ export default function Routers() {
             </thead>
             <tbody className="divide-y divide-white/5">
               {isLoading ? (
-                <SkeletonTable rows={4} cols={6} />
+                <SkeletonTable rows={4} cols={7} />
               ) : routers.length === 0 ? (
                 <tr>
-                  <td colSpan="6" className="px-6 py-10 text-center text-slate-500 text-sm">
+                  <td colSpan="7" className="px-6 py-10 text-center text-slate-500 text-sm">
                     No routers yet. Add the first one to start connecting subscribers.
                   </td>
                 </tr>
@@ -156,6 +157,23 @@ export default function Routers() {
                     <td className="px-6 py-4 text-slate-300">
                       {/* Blank is the normal single-site case, not missing data. */}
                       {router.station_name || <span className="text-slate-500">—</span>}
+                    </td>
+                    <td className="px-6 py-4">
+                      {/* Active subscribers ASSIGNED to this box, from the
+                          database -- not who is connected to it now. The
+                          dashboard's "Active clients" panel counts live
+                          sessions off the router itself and will show a much
+                          smaller number; these answer different questions and
+                          the column is named to keep them apart. Zero is a
+                          real answer worth showing plainly -- a router
+                          carrying nobody is either new or a problem, and both
+                          are things to notice. */}
+                      <span className="font-medium text-white tabular-nums">
+                        {router.active_clients ?? 0}
+                      </span>
+                      <span className="text-slate-500 text-xs ml-1">
+                        {router.active_clients === 1 ? "subscriber" : "subscribers"}
+                      </span>
                     </td>
                     <td className="px-6 py-4">
                       <span className="inline-flex items-center px-2.5 py-0.5 rounded-md text-xs font-medium bg-blue-500/10 text-blue-300 border border-blue-500/30">

@@ -3959,9 +3959,25 @@ class AdminRouterListView(APIView):
         # Use cached is_online from the background health task — do NOT make
         # live socket probes here. Probing N routers synchronously during an
         # HTTP request blocks a Gunicorn worker for N × timeout seconds.
+        from django.db.models import Count, Q
+
         from .serializers import RouterSerializer
 
-        routers = RouterDevice.objects.all().select_related("station").order_by("priority")
+        # Counted in the database, in the same query that fetches the routers.
+        # Letting the serializer count per row would be a query per router on
+        # the one page guaranteed to show every router an operator owns.
+        routers = (
+            RouterDevice.objects.all()
+            .select_related("station")
+            .annotate(
+                active_client_count=Count(
+                    "customer",
+                    filter=Q(customer__status="active"),
+                    distinct=True,
+                )
+            )
+            .order_by("priority")
+        )
         return Response(RouterSerializer(routers, many=True).data)
 
     def post(self, request):
