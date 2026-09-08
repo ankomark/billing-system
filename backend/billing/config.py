@@ -52,6 +52,17 @@ ALL_SETTING_KEYS = [
     # still be carrying rules that stop traffic. It is what the off path reads
     # before deciding to dial anybody. See tethering.BLOCK_MARKER.
     "TETHERING_BLOCK_INSTALLED",
+    # What the captive portal shows. Both were missing from this list, which
+    # is the trap MPESA_SHORTCODE_TYPE above is annotated for: the write lands
+    # in the database, the purge does not name the key, and the old value is
+    # served until the TTL runs out.
+    #
+    # It matters most for the notice, whose entire purpose is being taken down
+    # quickly. An operator switching off a message that has stopped being true
+    # would watch it stay on every portal and reasonably conclude the switch
+    # was broken.
+    "HOTSPOT_TERMS_URL",
+    "HOTSPOT_NOTICE",
 ]
 
 
