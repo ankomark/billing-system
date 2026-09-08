@@ -621,6 +621,19 @@ class SystemSettingSerializer(serializers.Serializer):
     # nowhere to put them.
     HOTSPOT_TERMS_URL = serializers.URLField(required=False, allow_blank=True)
 
+    # A short message shown at the top of the captive portal, above the
+    # reconnect field. Blank takes it down.
+    #
+    # Length-capped rather than unbounded: this renders on a phone, above the
+    # thing the page exists to do, and a notice long enough to push the packages
+    # off the screen costs sales to say something nobody reads to the end.
+    #
+    # Plain text, and the portal writes it with textContent for the same reason
+    # every other operator-supplied string there does -- an operator types this
+    # themselves and those pages have no framework escaping anything.
+    HOTSPOT_NOTICE = serializers.CharField(
+        required=False, allow_blank=True, max_length=400)
+
     SUPPORT_PHONE   = serializers.CharField(max_length=20, required=False, allow_blank=True)
     SUPPORT_PHONE_2 = serializers.CharField(max_length=20, required=False, allow_blank=True)
 

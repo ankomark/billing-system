@@ -31,6 +31,7 @@ const EMPTY = {
   SUPPORT_PHONE: "",
   SUPPORT_PHONE_2: "",
   HOTSPOT_TERMS_URL: "",
+  HOTSPOT_NOTICE: "",
   SMS_TEMPLATE_VOUCHER: "",
   SMS_TEMPLATE_PPPOE: "",
   SMS_TEMPLATE_WELCOME_HOTSPOT: "",
@@ -104,6 +105,13 @@ export default function SystemSettings() {
   // "failed to save settings" throws that reason away.
   const [fieldErrors, setFieldErrors] = useState({});
 
+  // The wording, kept while the notice is switched off.
+  //
+  // Off is an empty saved value -- that is what takes the banner down on every
+  // router. Without somewhere to hold the text, switching off would discard
+  // what the operator wrote and switching back on would mean retyping it.
+  const [noticeDraft, setNoticeDraft] = useState("");
+
   const { data: settings, isLoading } = useQuery({
     queryKey: ["system-settings"],
     queryFn: fetchSystemSettings,
@@ -120,7 +128,12 @@ export default function SystemSettings() {
   });
 
   useEffect(() => {
-    if (settings) setForm({ ...EMPTY, ...settings });
+    if (settings) {
+      setForm({ ...EMPTY, ...settings });
+      // Seed the draft from whatever is saved, so a notice that is already up
+      // can be switched off and back on without being retyped.
+      if (settings.HOTSPOT_NOTICE) setNoticeDraft(settings.HOTSPOT_NOTICE);
+    }
   }, [settings]);
 
   const handleChange = (e) => {
@@ -392,6 +405,37 @@ export default function SystemSettings() {
             <TestBtn label="Test WhatsApp" color="violet" loading={testing === "whatsapp"} onClick={() => runTest("whatsapp")} />
           </Section>
 
+          {/* Portal notice */}
+          <Section title="Portal notice">
+            <p className="text-sm text-slate-400">
+              Shown at the top of your captive portal, above the box people
+              paste their code into. For the thing every walk-up needs to read
+              once — an outage you are working on, a change of till number, a
+              closure.
+            </p>
+
+            <NoticeField
+              value={form.HOTSPOT_NOTICE}
+              onChange={handleChange}
+              onToggle={(on) =>
+                setForm((f) => ({
+                  ...f,
+                  // Off keeps the wording in the box so it can be put back
+                  // without retyping; it is the saved value that empties.
+                  HOTSPOT_NOTICE: on ? (noticeDraft || "") : "",
+                }))
+              }
+              draft={noticeDraft}
+              setDraft={setNoticeDraft}
+            />
+
+            <p className="text-xs text-slate-500">
+              Reaches every router at once and needs no upload. Turn it off and
+              it disappears from all of them — worth remembering for a message
+              that stops being true.
+            </p>
+          </Section>
+
           {/* Terms */}
           <Section title="Terms of service">
             <p className="text-sm text-slate-400">
@@ -589,6 +633,95 @@ function TemplateEditor({ name, spec, value, error, onChange }) {
     </div>
   );
 }
+
+/**
+ * The portal notice: a switch, the wording, and what it will look like.
+ *
+ * The switch and the text are one control rather than two settings. Empty is
+ * what takes the banner down on every router, so "off" and "no wording" are
+ * the same saved state -- but an operator switching off for the evening should
+ * not lose what they wrote, so the wording is held in a draft while off.
+ *
+ * The preview is the point of the panel. This text lands on a phone above the
+ * thing the page exists to do, and the difference between two lines and six is
+ * the packages being pushed off the screen.
+ */
+function NoticeField({ value, onChange, onToggle, draft, setDraft }) {
+  const on = Boolean(value);
+  const shown = on ? value : draft;
+  const MAX = 400;
+
+  return (
+    <div className="rounded-lg border border-white/10 bg-slate-950/40 p-4">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <label className="text-sm font-medium text-slate-300">
+          Show a notice on the portal
+        </label>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={on}
+          onClick={() => onToggle(!on)}
+          className={`relative h-6 w-11 flex-shrink-0 rounded-full transition-colors ${
+            on ? "bg-emerald-500" : "bg-slate-600"
+          }`}
+        >
+          <span
+            className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-transform ${
+              on ? "translate-x-[1.375rem]" : "translate-x-0.5"
+            }`}
+          />
+        </button>
+      </div>
+
+      <textarea
+        name="HOTSPOT_NOTICE"
+        value={shown}
+        maxLength={MAX}
+        rows={3}
+        disabled={!on}
+        placeholder="e.g. If you get disconnected, use your M-Pesa message to reconnect."
+        onChange={(e) => {
+          setDraft(e.target.value);
+          onChange(e);
+        }}
+        className={`w-full rounded-lg border bg-slate-950 px-3 py-2 text-sm leading-relaxed text-slate-100 focus:outline-none focus:ring-2 ${
+          on
+            ? "border-white/15 focus:ring-blue-500"
+            : "border-white/5 text-slate-500 cursor-not-allowed"
+        }`}
+      />
+
+      <div className="mt-1 flex items-baseline justify-between gap-3">
+        <span className="text-[11px] text-slate-500">
+          {on ? "Showing on every portal" : "Not shown"}
+        </span>
+        <span className={`text-[11px] tabular-nums ${
+          shown.length > MAX - 40 ? "text-amber-400" : "text-slate-500"
+        }`}>
+          {shown.length}/{MAX}
+        </span>
+      </div>
+
+      {/* What the customer sees, in the colours they see it in. Worth drawing
+          rather than describing: the length is only a problem once you look
+          at it on the width of a phone. */}
+      {on && shown.trim() && (
+        <div className="mt-3">
+          <p className="mb-1 text-[11px] uppercase tracking-wider text-slate-500">
+            On the portal
+          </p>
+          <div className="max-w-sm rounded-lg border border-amber-300 border-l-[3px] border-l-amber-500 bg-amber-50 px-3 py-2">
+            <p className="m-0 whitespace-pre-wrap break-words text-[13px] leading-snug text-amber-900">
+              {shown}
+            </p>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 function Field({ label, name, value, onChange, placeholder = "", hint = "" }) {
   return (

@@ -3503,6 +3503,7 @@ class SystemSettingsView(APIView):
         "WHATSAPP_TOKEN",
         "WHATSAPP_PHONE_ID",
         "HOTSPOT_TERMS_URL",
+        "HOTSPOT_NOTICE",
         "SMS_TEMPLATE_VOUCHER",
         "SMS_TEMPLATE_PPPOE",
         "SMS_TEMPLATE_WELCOME_HOTSPOT",
