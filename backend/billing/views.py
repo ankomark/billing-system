@@ -3116,6 +3116,10 @@ class HotspotProviderView(APIView):
                 n for n in (tenant.support_phone, tenant.support_phone_2) if n
             ],
             "terms_url": get_setting("HOTSPOT_TERMS_URL", default="", tenant=tenant) or None,
+            # Same notice as the login page carries, so a subscriber who is
+            # already connected sees it too. They are the ones who will be
+            # dropped by whatever the notice is about.
+            "notice": get_setting("HOTSPOT_NOTICE", default="", tenant=tenant) or None,
         })
 
 
@@ -5238,6 +5242,19 @@ class HotspotPackagesView(APIView):
             "support_phone": tenant.support_phone or "",   # kept for older portals
             "support_phones": support,
             "terms_url": get_setting("HOTSPOT_TERMS_URL", default="", tenant=tenant) or None,
+            # A short message the operator wants every walk-up to read, shown
+            # at the top of the portal. Served from here rather than written
+            # into config.js on each router, and the reason is operational
+            # rather than aesthetic: the portal files are uploaded to each
+            # MikroTik by hand, so a notice living in config.js takes a
+            # site visit to put up and another to take down. This one is a
+            # setting -- it reaches every router at once, and clearing it
+            # removes the notice everywhere without touching hardware.
+            #
+            # That matters most for the message it was added for: "we are
+            # working on it" has to come down promptly once it is no longer
+            # true, and a notice nobody can remove quickly is worse than none.
+            "notice": get_setting("HOTSPOT_NOTICE", default="", tenant=tenant) or None,
             "results": PublicPackageSerializer(packages, many=True).data,
         })
 

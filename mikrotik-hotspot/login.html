@@ -317,11 +317,15 @@
   <div class="router-error">$(error)</div>
   $(endif)
 
-  <!-- The operator's own notice. Filled and revealed by config.js when
-       NOTICE_TEXT is set there; stays hidden otherwise, so a portal with
-       nothing to say does not show an empty box. Above the reconnect field
-       on purpose: it is telling somebody who has just been dropped to use
-       exactly that field. -->
+  <!-- The operator's own notice, sent by the backend with the package list
+       and revealed only when there is one. Above the reconnect field on
+       purpose: it is telling somebody who has just been dropped to use
+       exactly that field.
+
+       Not in config.js, because these files are uploaded to each router by
+       hand -- a notice living there would take a site visit to put up and
+       another to take down, and "we are working on it" has to come down
+       promptly once it stops being true. -->
   <div class="notice" id="notice" hidden>
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#b45309"
          stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -880,6 +884,19 @@
         link.href = data.terms_url;
         el('terms').hidden = false;
       }
+      // Written as text, never HTML: an operator types this themselves and
+      // this page has no framework escaping anything for them. Stays hidden
+      // when the backend sends nothing, so a portal with nothing to say
+      // shows no empty box -- and an older backend that does not know the
+      // field at all behaves exactly the same way.
+      if (data && data.notice) {
+        var noticeText = el('noticeText');
+        if (noticeText) {
+          noticeText.textContent = data.notice;
+          el('notice').hidden = false;
+        }
+      }
+
       // Older backends send one number under the old key.
       renderSupport((data && data.support_phones) ||
                     (data && data.support_phone ? [data.support_phone] : []));
