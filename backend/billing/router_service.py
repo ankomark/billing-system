@@ -774,17 +774,34 @@ def get_pppoe_live_usage(router, username):
         return None
 
     try:
-        active = api.path("ppp", "active")
-        for session in active:
-            if session.get("name") == username:
-                return {
-                    "connected": True,
-                    "ip_address": session.get("address"),
-                    "uptime": session.get("uptime"),
-                    "rx_bytes": int(session.get("rx-bytes", 0)),
-                    "tx_bytes": int(session.get("tx-bytes", 0)),
-                    "interface": session.get("interface"),
-                }
+        for session in api.path("ppp", "active"):
+            if session.get("name") != username:
+                continue
+            # From the session's interface, because /ppp/active carries no
+            # byte counters -- the third reader of the same thing to have
+            # trusted it, and the third to have reported zero. See
+            # get_pppoe_sessions for what RouterOS actually returns there.
+            rx = tx = 0
+            iface_name = session.get("interface")
+            try:
+                for iface in api.path("interface"):
+                    if str(iface.get("name") or "").strip("<>") == f"pppoe-{username}":
+                        rx = int(iface.get("rx-byte") or 0)
+                        tx = int(iface.get("tx-byte") or 0)
+                        iface_name = iface.get("name")
+                        break
+            except Exception:
+                # A live session with no counters is still a live session.
+                pass
+            return {
+                "connected": True,
+                "ip_address": session.get("address"),
+                "uptime": session.get("uptime"),
+                # Router's rx is the subscriber's upload; see _sessions_by_user.
+                "rx_bytes": rx,
+                "tx_bytes": tx,
+                "interface": iface_name,
+            }
     except Exception:
         return None
 
@@ -848,21 +865,50 @@ def reconnect_pppoe_user(customer):
     enable_customer_access(customer)
 def get_all_pppoe_sessions(router):
     """
-    Fetch all active PPPoE sessions from MikroTik
+    Every active PPPoE session on one router, for the operator's session page.
+
+    The byte counters come from each session's interface. /ppp/active has none
+    -- see get_pppoe_sessions, which had the same fault and the same fix -- so
+    this reported 0 up and 0 down against every subscriber on the page whose
+    entire purpose is showing what they are using.
+
+    Two readers of the same thing is why this survived one fix: the collector
+    and this page ask different functions, and correcting the collector alone
+    left the number an operator actually looks at still reading zero.
     """
     api = connect_router(router)
-    active = api.path("ppp", "active")
+
+    # username -> (rx, tx). RouterOS names the interface after the session,
+    # decorated: `marksilas` is `<pppoe-marksilas>`. Stripped rather than
+    # formatted, because the brackets are its own and not always present.
+    counters = {}
+    try:
+        for iface in api.path("interface"):
+            name = str(iface.get("name") or "").strip("<>")
+            if not name.startswith("pppoe-"):
+                continue
+            counters[name[len("pppoe-"):]] = (
+                int(iface.get("rx-byte") or 0),
+                int(iface.get("tx-byte") or 0),
+            )
+    except Exception as exc:
+        logger.warning(
+            "[pppoe] could not read session counters on %s: %s", router, exc)
 
     sessions = []
-
-    for s in active:
+    for s in api.path("ppp", "active"):
+        name = str(s.get("name") or "")
+        rx, tx = counters.get(name, (0, 0))
         sessions.append({
             "username": s.get("name"),
             "ip_address": s.get("address"),
             "uptime": s.get("uptime"),
-            "rx_bytes": int(s.get("rx-bytes", 0)),
-            "tx_bytes": int(s.get("tx-bytes", 0)),
-            "interface": s.get("interface"),
+            # The router's rx is the subscriber's upload; see
+            # _sessions_by_user, which spells out why reading these the
+            # obvious way is a bug that hides.
+            "rx_bytes": rx,
+            "tx_bytes": tx,
+            "interface": f"<pppoe-{name}>" if name in counters else s.get("interface"),
             "caller_id": s.get("caller-id"),
         })
 
@@ -1315,9 +1361,76 @@ def _sessions_by_user(router, path, name_field, rx_field, tx_field):
 
 
 def get_pppoe_sessions(router):
-    """Live PPPoE sessions on one router, keyed by username."""
-    return _sessions_by_user(
-        router, ("ppp", "active"), "name", "rx-bytes", "tx-bytes")
+    """
+    Live PPPoE sessions on one router, keyed by username.
+
+    The byte counters come from the session's own interface, not from
+    /ppp/active, because /ppp/active does not have any. Asked for rx-bytes and
+    tx-bytes there, RouterOS returns nothing and the reader defaulted both to
+    zero -- so every PPPoE subscriber recorded 0.00MB of traffic on every
+    five-minute collection since this was written. On 2026-09-08 a client with
+    1.2GB through their session had nine consecutive usage rows of zero.
+
+    That is not only a reporting gap. A data cap on PPPoE is poll-enforced --
+    it has no limit-bytes-total to fall back on, as the cap work notes when it
+    says PPPoE "stays poll-enforced" -- and a poll that always reads zero
+    enforces nothing. A capped PPPoE package was effectively unlimited.
+
+    RouterOS names the interface after the session: a subscriber `marksilas`
+    appears as `<pppoe-marksilas>`, angle brackets and all. Matched by
+    stripping those rather than by formatting a name, because the brackets are
+    RouterOS's own decoration and it has not always used them.
+
+    rx and tx stay the router's, not the subscriber's -- the same convention
+    _sessions_by_user documents, and the interface counters follow it: what the
+    router receives on a pppoe-in interface is what the subscriber uploaded.
+
+    One connection for both reads. Opening a second would double this
+    operator's connections to every router on a five-minute schedule to answer
+    one question.
+    """
+    api = safe_connect_router(router)
+    if api is None:
+        return None
+
+    try:
+        rows = list(api.path("ppp", "active"))
+    except Exception as exc:
+        logger.warning("[usage] could not read PPPoE sessions on %s: %s", router, exc)
+        return None
+
+    # username -> (rx, tx), from the interface table.
+    counters = {}
+    try:
+        for iface in api.path("interface"):
+            name = str(iface.get("name") or "").strip("<>")
+            if not name.startswith("pppoe-"):
+                continue
+            counters[name[len("pppoe-"):]] = (
+                int(iface.get("rx-byte") or 0),
+                int(iface.get("tx-byte") or 0),
+            )
+    except Exception as exc:
+        # A session with no counters is left at zero rather than dropped: the
+        # subscriber is still connected, and reporting them absent would have
+        # the collector treat a live session as gone.
+        logger.warning("[usage] could not read PPPoE counters on %s: %s", router, exc)
+
+    sessions = {}
+    for row in rows:
+        name = row.get("name")
+        if not name:
+            continue
+        rx, tx = counters.get(str(name), (0, 0))
+        sessions[name] = {
+            "connected": True,
+            "ip_address": row.get("address"),
+            "uptime": row.get("uptime"),
+            "rx_bytes": rx,
+            "tx_bytes": tx,
+            "interface": f"<pppoe-{name}>" if str(name) in counters else None,
+        }
+    return sessions
 
 
 def get_hotspot_sessions(router):

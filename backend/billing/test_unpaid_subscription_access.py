@@ -140,7 +140,14 @@ class UnpaidSubscriptionAccessTests(TestCase):
 
     def test_reconnect_still_works_for_somebody_who_paid(self):
         """The refusal must be about payment, not about reconnecting."""
-        with patch("billing.views.enable_customer_task.delay") as task:
+        # Provisioning is stubbed because this test is about the authorization
+        # decision, not about reaching hardware. The endpoint provisions inline
+        # now -- the caller logs in the moment it reads "allowed", so queuing
+        # the work raced the login and told a paying customer their own access
+        # was invalid. With no router in a test, the real call cannot succeed,
+        # and an unstubbed one would fail this on the one thing it does not ask.
+        with patch("billing.views.enable_customer_access",
+                   return_value=True) as grant:
             resp = APIClient().post("/api/hotspot/reconnect/", {
                 "t": self.tenant.public_token, "mac": PHONE_MAC},
                 format="json")
@@ -150,7 +157,22 @@ class UnpaidSubscriptionAccessTests(TestCase):
         self.assertEqual(
             resp.data["expires_at"], self.paid.expiry_date,
             "reconnect reported the abandoned purchase's time")
-        task.assert_called_once()
+        grant.assert_called_once()
+
+    def test_reconnect_says_pending_when_the_router_could_not_be_reached(self):
+        """
+        Not "allowed". The portal submits the hotspot login the moment it
+        reads that, and a login against an account that was never written
+        reads to the customer as a refusal rather than as our outage.
+        """
+        with patch("billing.views.enable_customer_access", return_value=False),              patch("billing.tasks.provisioning.ensure_customer_access_task.delay") as retry:
+            resp = APIClient().post("/api/hotspot/reconnect/", {
+                "t": self.tenant.public_token, "mac": PHONE_MAC},
+                format="json")
+
+        self.assertEqual(resp.status_code, 503, resp.data)
+        self.assertEqual(resp.data["status"], "pending")
+        retry.assert_called_once()
 
     def test_a_comped_subscription_still_grants(self):
         """

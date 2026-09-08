@@ -10048,9 +10048,13 @@ class DeviceTokenTests(TwoOperatorMixin, TestCase):
         through the gate with it.
         """
         self.redeem()
-        resp = APIClient().post(
-            "/api/hotspot/reconnect/",
-            {"t": self.t1.public_token, "mac": self.mac}, format="json")
+        # Provisioning stubbed: the subject here is what the response carries,
+        # not whether a router answered. The endpoint provisions inline now and
+        # there is no router in a test.
+        with patch("billing.views.enable_customer_access", return_value=True):
+            resp = APIClient().post(
+                "/api/hotspot/reconnect/",
+                {"t": self.t1.public_token, "mac": self.mac}, format="json")
         self.assertEqual(resp.data["status"], "allowed")
         self.assertNotIn("device_token", resp.data)
 
