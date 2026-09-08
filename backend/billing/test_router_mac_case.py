@@ -45,6 +45,19 @@ class FakePath(list):
         self.removed = []
         self.added = []
 
+
+    def select(self, *keys):
+        """
+        Narrow the reply to named fields, as the real Path does.
+
+        Provisioning and removal ask only for the fields they compare rather
+        than pulling every attribute of several hundred rows over a lossy
+        link. The double models it so these tests keep exercising the code
+        that ships; the rows themselves are unchanged, which is all the
+        callers read.
+        """
+        return self
+
     def remove(self, *ids):
         self.removed.extend(ids)
 

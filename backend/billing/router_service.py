@@ -1,4 +1,5 @@
 from librouteros import connect
+from librouteros.query import Key
 from django.utils import timezone
 from django.db.models import Q
 import re
@@ -195,7 +196,30 @@ def enable_hotspot(api, router, mac_address, package, expiry_date,
     # refused, and a refusal is a customer who has paid and is not provisioned.
     wanted = normalize_mac(mac_address)
 
-    for u in users:
+    # Two fields, not the whole row.
+    #
+    # This walked every hotspot user with all eleven of its attributes to find
+    # at most one of them by name. A busy router carries several hundred --
+    # 433 on skylink when this was written -- and the rest of each row is
+    # profile, comment, byte counters and uptime limits that nothing here
+    # reads. Measured against the live router: 0.84s for the full list against
+    # 0.28s for these two fields, the same 433 rows.
+    #
+    # It matters because of where it sits. Provisioning runs this on the path a
+    # customer waits on after paying, and ROUTER_API_TIMEOUT bounds the socket
+    # for reads as well as connects -- so on 2026-09-07 this read timed out
+    # part-way through the list on skylink3, whose 5G uplink measures 600ms
+    # round trip and 33% loss, and customers who had paid were left with no
+    # account on the hardware.
+    #
+    # Still compared canonically in Python rather than filtered by the router.
+    # RouterOS is inconsistent about the case and separators it reports an
+    # address in, so an exact server-side match on `name` would silently miss a
+    # row spelled differently -- and a miss here leaves the stale user behind,
+    # which makes the add below either duplicate it or fail. A refusal there is
+    # a customer who has paid and is not provisioned, which is the whole reason
+    # the comparison is canonical.
+    for u in users.select(Key(".id"), Key("name")):
         if normalize_mac(u.get("name")) == wanted:
             # Positional. librouteros' Path.remove takes ids as *args, so a
             # `.id` keyword raises TypeError — a Python error, not a router
@@ -267,7 +291,8 @@ def enable_hotspot(api, router, mac_address, package, expiry_date,
             "[hotspot] %s was added while this grant was running — "
             "replacing it", mac_address,
         )
-        for u in api.path("ip", "hotspot", "user"):
+        for u in list(api.path("ip", "hotspot", "user")
+                      .select(Key(".id"), Key("name"))):
             if normalize_mac(u.get("name")) == wanted:
                 users.remove(u[".id"])
         users.add(**attrs)
@@ -320,7 +345,14 @@ def disable_hotspot(api, mac_address):
     session_ended = False
     try:
         actives = api.path("ip", "hotspot", "active")
-        for session in list(actives):
+        # Three fields rather than the whole session row, for the reason
+        # enable_hotspot gives: this runs on expiry and on every eviction, and
+        # a session row carries counters and timers nothing here reads.
+        # Materialised before removing, because mutating the path while
+        # iterating a live response is not safe.
+        sessions = list(actives.select(
+            Key(".id"), Key("user"), Key("mac-address")))
+        for session in sessions:
             if wanted in (normalize_mac(session.get("user")),
                           normalize_mac(session.get("mac-address"))):
                 actives.remove(session[".id"])
@@ -333,7 +365,7 @@ def disable_hotspot(api, mac_address):
         logger.warning("[hotspot] could not end the live session for %s", mac_address)
 
     users = api.path("ip", "hotspot", "user")
-    for u in users:
+    for u in list(users.select(Key(".id"), Key("name"))):
         if normalize_mac(u.get("name")) == wanted:
             users.remove(u[".id"])
             break

@@ -1,4 +1,5 @@
 from celery import shared_task
+from django.conf import settings
 import logging
 from django.utils import timezone
 
@@ -238,11 +239,19 @@ def kick_device_task(self, customer_id, mac_address):
         # This defers the cleanup to the thing designed for it instead of
         # spending the pool proving the router is still down.
         #
-        # Declared offline, not merely failing: record_health needs
-        # ROUTER_OFFLINE_AFTER_FAILURES in a row before it condemns anything,
-        # so a link that dropped one probe is still tried here.
-        reachable = [r for r in routers if r.is_online]
-        skipped = [r.name for r in routers if not r.is_online]
+        # Condemned by evidence, not merely flagged. is_online is False on a
+        # router nobody has probed yet -- the column default -- so reading the
+        # flag alone would skip a newly added box, and skip every box for the
+        # first two minutes after a restart, silently doing nothing. The
+        # failure count is positive evidence: record_health increments it on
+        # each miss and only condemns at ROUTER_OFFLINE_AFTER_FAILURES, so a
+        # never-probed router sits at 0 and is tried, while fiber1 sits in the
+        # thousands and is not.
+        threshold = settings.ROUTER_OFFLINE_AFTER_FAILURES
+        condemned = lambda r: (not r.is_online
+                               and r.consecutive_failures >= threshold)
+        reachable = [r for r in routers if not condemned(r)]
+        skipped = [r.name for r in routers if condemned(r)]
         if skipped:
             logger.info(
                 "[kick_device_task] skipping %s for %s — declared offline by "

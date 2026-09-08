@@ -48,6 +48,10 @@ class FakeHotspotRouter:
         def __iter__(self):
             return iter(list(self.rows))
 
+        def select(self, *keys):
+            """Narrow the reply to named fields, as the real Path does."""
+            return self
+
         def add(self, **kwargs):
             self.owner.counter += 1
             row = {".id": f"*{self.owner.counter}", **kwargs}

@@ -2188,13 +2188,20 @@ def _kick_device(customer, mac_address):
     except Exception:
         routers = []
 
+    # Condemned by evidence, not merely flagged. is_online is False on a
+    # router nobody has probed yet -- the column default -- so reading the flag
+    # alone would skip a newly added box, and skip every box for the first two
+    # minutes after a restart, silently doing nothing. The failure count only
+    # reaches the threshold after record_health has actually watched it miss.
+    threshold = settings.ROUTER_OFFLINE_AFTER_FAILURES
+
     for router in routers:
         # Same reason kick_device_task skips these: a router the health sweep
         # has condemned will not answer, and the connect timeout it costs is a
         # worker slot that the health sweep itself needs. Not counted as
         # unfinished either, or every eviction would queue an hour of retries
         # against a box that has been dead since August.
-        if not router.is_online:
+        if not router.is_online and router.consecutive_failures >= threshold:
             continue
         try:
             api = connect_router(router)

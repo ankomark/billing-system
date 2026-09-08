@@ -34,6 +34,23 @@ class FakePath(list):
     def __init__(self, rows):
         super().__init__(rows)
         self.removed = []
+        self.selected = None
+
+    def select(self, *keys):
+        """
+        Narrow the reply to named fields, as the real Path does.
+
+        Provisioning and removal ask for only the two or three fields they
+        compare, rather than pulling every attribute of several hundred rows
+        over a link that drops a third of its packets. The double has to model
+        it or it stops exercising the code that ships.
+
+        Returns the same rows: this fake is not big enough for the projection
+        to matter, and the caller's canonical comparison reads `name`, `user`
+        and `mac-address` off whatever it is handed.
+        """
+        self.selected = [str(k) for k in keys]
+        return self
 
     def remove(self, *ids):
         self.removed.extend(ids)

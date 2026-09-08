@@ -5605,8 +5605,21 @@ class ProvisioningRetryTests(TwoOperatorMixin, TestCase):
             with self.assertRaises(Retry):
                 ensure_customer_access_task(self.customer.id)
         self.assertTrue(retry.called)
-        # Backs off rather than hammering a box that is rebooting.
-        self.assertGreaterEqual(retry.call_args.kwargs["countdown"], 60)
+
+        # The first wait is deliberately short now, and this used to require
+        # 60s. That number assumed the reason for failure was a router being
+        # down, and the reason that actually happens on this estate is a
+        # dropped packet: skylink3 reaches the internet over 5G at 600ms round
+        # trip and 33% loss, so a first attempt fails against a box that
+        # answers seconds later. Sixty seconds of that is a customer who has
+        # paid, sitting on the Wi-Fi holding no session.
+        #
+        # What matters here is that it retries at all, and that the schedule
+        # still backs off far enough to ride out a reboot.
+        from billing.tasks.provisioning import RETRY_SCHEDULE
+
+        self.assertEqual(retry.call_args.kwargs["countdown"], RETRY_SCHEDULE[0])
+        self.assertGreaterEqual(RETRY_SCHEDULE[-1], 960)
 
     def test_when_it_finally_gives_up_a_person_is_told(self):
         """
@@ -8879,6 +8892,10 @@ class RouterAttributeNameTests(TestCase):
         def __iter__(self):
             return iter([])
 
+        def select(self, *keys):
+            """Narrow the reply to named fields, as the real Path does."""
+            return self
+
         def add(self, **kwargs):
             self.added.append(kwargs)
             return "*1"
@@ -8980,12 +8997,30 @@ class RouterAttributeNameTests(TestCase):
             def __iter__(self):
                 return iter([{".id": "*9", "user": "AA:BB:CC:DD:EE:FF"}])
 
+            def select(self, *keys):
+                """
+                Narrow the reply to named fields, as the real Path does.
+
+                Worth a double of its own rather than a MagicMock: the session
+                sweep in disable_hotspot is wrapped in try/except so that
+                losing it cannot stop the account being removed, which means a
+                double that raises here does not fail loudly -- it silently
+                stops ending sessions, and the test reports "the live session
+                was left running". That is exactly the symptom this class
+                exists to catch, so it has to model the call.
+                """
+                return self
+
             def remove(self, *ids, **kwargs):
                 removed.append(("active", ids or kwargs))
 
         class Users:
             def __iter__(self):
                 return iter([{".id": "*1", "name": "AA:BB:CC:DD:EE:FF"}])
+
+            def select(self, *keys):
+                """Narrow the reply to named fields, as the real Path does."""
+                return self
 
             def remove(self, *ids, **kwargs):
                 removed.append(("user", ids or kwargs))

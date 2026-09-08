@@ -70,6 +70,30 @@ class KickSkipsCondemnedRoutersTests(TestCase):
                 reached = _kick_device(self.customer, "11:22:33:44:55:66")
         self.assertEqual(reached, 1)
 
+    def test_a_router_nobody_has_probed_yet_is_still_tried(self):
+        """
+        is_online is False by column default, so the flag alone cannot mean
+        condemned. A newly added router -- and every router for the first two
+        minutes after a restart -- must still be contacted, or device kicks
+        silently stop estate-wide.
+        """
+        from billing.views import _kick_device
+        with tenant_context(self.tenant):
+            fresh = RouterDevice.objects.create(
+                tenant=self.tenant, name="fresh", ip_address="10.0.0.43",
+                username="u", password="p",
+                is_online=False, consecutive_failures=0)
+
+        asked = []
+        with patch("billing.router_service.connect_router",
+                   side_effect=lambda r: asked.append(r.name) or object()),              patch("billing.router_service.disable_hotspot", return_value=True),              patch("billing.tasks.router_tasks.kick_device_task.delay"):
+            with tenant_context(self.tenant):
+                _kick_device(self.customer, "11:22:33:44:55:66")
+
+        self.assertIn("fresh", asked,
+                      "never probed is not the same as condemned")
+        self.assertNotIn("dead", asked)
+
     def test_an_unconfirmed_removal_on_a_live_router_still_retries(self):
         """The retry must survive for the case it was written for."""
         from billing.views import _kick_device
