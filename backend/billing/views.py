@@ -5087,8 +5087,44 @@ class HotspotReconnectView(APIView):
                 status=403,
             )
 
-        # ✅ Re-enable access (ASYNC)
-        enable_customer_task.delay(customer.id)
+        # Provisioned here rather than queued, because the caller logs in the
+        # moment this returns.
+        #
+        # This was enable_customer_task.delay(), and asynchronous is right when
+        # nobody is waiting. Somebody is: the portal submits the hotspot login
+        # form as soon as it sees "allowed", and RouterOS authenticates against
+        # a user this call is responsible for creating. Queued, the two race,
+        # and the customer is told their own code is invalid while the task
+        # that would have made it valid is still sitting in a worker queue.
+        #
+        # The same shape as HotspotVoucherValidateView, and for the same
+        # reason its own comment gives -- it provisions inline and only falls
+        # back to the queue when the call raises.
+        provisioned = False
+        try:
+            provisioned = bool(enable_customer_access(customer))
+        except Exception:
+            logger.exception(
+                "[hotspot] reconnect provisioning for customer %s raised; "
+                "falling back to the retry queue", customer.pk,
+            )
+
+        if not provisioned:
+            # Not "allowed": saying so would have the portal submit a login
+            # against a router account that is not there, and a failed login
+            # reads to the customer as a refusal rather than as our outage.
+            # The retry still runs, so this often fixes itself before they
+            # have finished reading the page.
+            try:
+                from billing.tasks.provisioning import ensure_customer_access_task
+                ensure_customer_access_task.delay(customer.pk, reason="reconnect")
+            except Exception:
+                logger.exception(
+                    "[hotspot] could not queue reconnect retry for %s", customer.pk)
+            return Response(
+                {"status": "pending", "reason": "not_provisioned"},
+                status=503,
+            )
 
         # Deliberately no device token here, though it would be convenient.
         # This endpoint takes the MAC from the request body and cannot check

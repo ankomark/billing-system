@@ -573,6 +573,52 @@
       });
   }
 
+  /* ── Getting back on without being asked for anything ──────
+     Somebody whose session dropped is the same paid device that was online a
+     moment ago, and the router knows its address. Making them find their
+     M-Pesa message and paste it again is asking them to prove something we
+     can already see -- and on this estate it is asked often, because the
+     uplink at one site drops sessions on its own.
+
+     So the page tries first and says nothing unless it works. The code box
+     stays exactly where it is for everyone this does not cover: a device that
+     never paid, one whose bundle has run out, and one whose router could not
+     be reached.
+
+     Only when RouterOS gave us an address to try. Without $(mac) there is
+     nothing to identify the device by, and the request would be a guess. */
+  function tryAutoReconnect() {
+    if (!MAC) { return; }
+
+    // Not after a login that just failed. RouterOS sends the browser back
+    // here with $(error) filled in, and retrying the same credentials that
+    // were refused a second ago would put the page in a loop the customer
+    // cannot get out of -- the one state worse than asking them to type.
+    if (document.querySelector('.router-error')) { return; }
+
+    // Once per landing, for the same reason. sessionStorage rather than a
+    // variable: each failed login is a fresh page load, so a variable would
+    // reset and the guard above is the only other thing standing in the way.
+    try {
+      if (window.sessionStorage.getItem('rc_tried') === MAC) { return; }
+      window.sessionStorage.setItem('rc_tried', MAC);
+    } catch (e) { /* private mode: the $(error) guard still holds */ }
+
+    api('POST', '/hotspot/reconnect/',
+      { mac: MAC, t: TENANT_TOKEN, r: ROUTER_TOKEN },
+      function (data) {
+        if (data && data.status === 'allowed') {
+          waitDone(t('wait.connected'), logIn);
+        }
+        // Anything else is not an error worth showing. The page behind this
+        // is the answer: buy, or paste a code.
+      },
+      function () {
+        // Denied, expired, or the router could not be reached. All three end
+        // the same way -- the page they are already looking at.
+      });
+  }
+
   el('connectBtn').addEventListener('click', connect);
   el('code').addEventListener('keydown', function (e) {
     if (e.key === 'Enter') { e.preventDefault(); connect(); }
@@ -871,6 +917,11 @@
     }
     el('support').hidden = false;
   }
+
+  // Started before the package list, because it is the faster answer for
+  // somebody who already has a bundle: if it works they never see the page,
+  // and if it does not the packages are arriving behind it anyway.
+  tryAutoReconnect();
 
   api('GET', '/hotspot/packages/?t=' + encodeURIComponent(TENANT_TOKEN), null,
     function (data) {
