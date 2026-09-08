@@ -44,6 +44,46 @@ var TENANT_TOKEN = 'YOUR-OPERATOR-TOKEN';
    as it did before. */
 var ROUTER_TOKEN = 'YOUR-ROUTER-TOKEN';
 
+/* ═══════════════════════════════════════════════════════════════════════
+   NOTICE
+
+   A temporary message shown at the top of the portal, above the reconnect
+   field. Meant for the thing an operator needs every walk-up to read once —
+   an outage being worked on, a change of till number, a closure.
+
+   Set NOTICE to false (or clear the strings) to take it down. It is written
+   here rather than in login.html because config.js is the only file an
+   operator is expected to edit, and a notice is the most likely thing to
+   change in a hurry.
+
+   The text lives in STRINGS below so it appears in the reader's own language.
+   A notice nobody can read is not a notice.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+var NOTICE = true;
+
+/**
+ * Show the notice, if there is one to show.
+ *
+ * Written as text, never as HTML: an operator types this themselves, and
+ * these pages have no framework escaping anything for them.
+ */
+function applyNotice() {
+  if (!NOTICE) { return; }
+  var box = document.getElementById('notice');
+  var text = document.getElementById('noticeText');
+  if (!box || !text) { return; }
+
+  var message = t('notice.text');
+  // t() hands back the key when a string is missing. Showing "notice.text"
+  // to a customer is worse than showing nothing.
+  if (!message || message === 'notice.text') { return; }
+
+  text.textContent = message;
+  box.hidden = false;
+}
+
+
 /* ═══════════════════════════════════════════════════════════════════════ */
 
 /**
@@ -103,6 +143,10 @@ function applyProviderName(elementId, name) {
 var STRINGS = {
   en: {
     'brand.tagline':    'Fast, reliable internet access',
+    'notice.text':      'If you get disconnected, use your M-Pesa message to '
+                        + 'reconnect. We are experiencing network stability '
+                        + 'problems and are working to resolve them soon. '
+                        + 'Thank you for your patience.',
     'code.placeholder': 'Code or M-Pesa message',
     'code.connect':     'Connect',
     'code.hint':        "Already paid? Paste the whole M-Pesa message — we'll find it.",
@@ -152,6 +196,9 @@ var STRINGS = {
   },
   sw: {
     'brand.tagline':    'Intaneti ya haraka na ya kutegemewa',
+    'notice.text':      'Ukikatikiwa, tumia ujumbe wako wa M-Pesa '
+                        + 'kuunganisha tena. Tunakabiliwa na tatizo la '
+                        + 'mtandao na tunalifanyia kazi. Asante kwa subira.',
     'code.placeholder': 'Msimbo au ujumbe wa M-Pesa',
     'code.connect':     'Unganisha',
     'code.hint':        'Umeshalipa? Bandika ujumbe mzima wa M-Pesa — tutaupata msimbo.',
@@ -226,6 +273,12 @@ function applyLanguage() {
     holders[j].placeholder = t(holders[j].getAttribute('data-i18n-placeholder'));
   }
   document.documentElement.setAttribute('lang', LANG);
+
+  // From here rather than from page startup, so the notice follows the
+  // language toggle like everything else. It cannot carry a data-i18n
+  // attribute of its own: the element stays hidden until there is something
+  // to say, and the loop above would have filled it and left it hidden.
+  applyNotice();
 }
 
 function setLanguage(lang) {
