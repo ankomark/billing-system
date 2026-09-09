@@ -2146,6 +2146,47 @@ class PPPoEUsageState(TenantScopedModel):
     last_tx_bytes = models.BigIntegerField(default=0)
     last_seen_at = models.DateTimeField(null=True, blank=True)
 
+    # How long the session we last read had been up.
+    #
+    # This is what tells a reconnect apart from a quiet interval, and the
+    # counters cannot do it on their own. A PPPoE session's byte counters live
+    # on its interface, and RouterOS destroys that interface when the session
+    # ends and builds a new one at zero when it comes back — so after a
+    # reconnect the collector saw a number smaller than the one it stored and
+    # could not tell whether the subscriber had reconnected or the router had
+    # rebooted. It assumed the worst, rebaselined, and discarded the interval.
+    #
+    # Uptime rises monotonically within a session and restarts with it, so a
+    # value below the stored one is a new session and nothing else. Nullable
+    # because a router that will not report uptime must keep working — the
+    # collector falls back to the old counter comparison when it is None.
+    last_uptime_seconds = models.BigIntegerField(null=True, blank=True)
+
+    # Everything this subscriber has ever used, across every session.
+    #
+    # The per-interval rows in PPPoEUsageRecord are the ledger and stay the
+    # source of truth for billing and caps. These are the running totals, kept
+    # here because that is the question being asked when somebody reconnects
+    # and wants to know what they have used — answering it by summing every
+    # delta row a subscriber has ever produced is a table scan on the one table
+    # that grows fastest.
+    #
+    # A reconnect does not reset them. That is the whole point: the session
+    # counters restart at zero and these do not.
+    total_download_bytes = models.BigIntegerField(default=0)
+    total_upload_bytes = models.BigIntegerField(default=0)
+    total_uptime_seconds = models.BigIntegerField(default=0)
+
+    # How many times the collector has seen this subscriber's session restart.
+    #
+    # Reconnects observed, not sessions held: the first session a subscriber
+    # ever has is not a reconnect and does not count, and a drop that begins
+    # and ends between two polls is invisible to a poller and cannot count
+    # either. It is a floor, and it is useful as one — a line that flaps
+    # produces a rising number here with very little traffic against it, which
+    # is the shape of a fault rather than of usage.
+    reconnect_count = models.PositiveIntegerField(default=0)
+
     def __str__(self):
         return f"UsageState({self.customer_id})"
 
@@ -2161,6 +2202,23 @@ class PPPoEUsageRecord(TenantScopedModel):
 
     download_bytes = models.BigIntegerField(default=0)  # rx delta
     upload_bytes = models.BigIntegerField(default=0)    # tx delta
+
+    # Seconds the subscriber was actually connected during this interval.
+    #
+    # Not the same as period_end - period_start, which is only how long it was
+    # between two polls. A subscriber who drops for four of the five minutes
+    # between them has one interval of wall-clock time and one minute of
+    # connection, and billing a time-based package on the former would charge
+    # for an outage.
+    uptime_seconds = models.BigIntegerField(default=0)
+
+    # Whether the session this row covers had restarted since the last poll.
+    #
+    # Worth a column rather than being inferred later: it marks the rows whose
+    # byte counts are a whole young session rather than a delta between two
+    # readings, and it is the only record that a reconnect happened at all —
+    # /ppp/active forgets a session the moment it ends.
+    session_restarted = models.BooleanField(default=False)
 
     created_at = models.DateTimeField(auto_now_add=True)
 

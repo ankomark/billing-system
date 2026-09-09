@@ -19,6 +19,7 @@ from billing.router_service import (
     disable_customer_access,
     get_hotspot_sessions,
     get_pppoe_sessions,
+    ros_duration_seconds,
     tenant_sessions,
 )
 from billing.services.usage import (
@@ -183,17 +184,57 @@ def collect_pppoe_usage_for_tenant(self, tenant_id):
         # subscriber's — see the note above download_bytes below.
         rx = int(usage.get("rx_bytes", 0))
         tx = int(usage.get("tx_bytes", 0))
+        uptime = ros_duration_seconds(usage.get("uptime"))
 
-        # 🔄 Handle router reboot / counter reset
-        if rx < state.last_rx_bytes or tx < state.last_tx_bytes:
+        # Did this session restart since the last poll?
+        #
+        # Uptime is the only reliable witness. A PPPoE session's counters live
+        # on its interface, which RouterOS destroys at disconnect and rebuilds
+        # at zero on reconnect, so "the number went down" describes a reconnect
+        # and a router reboot identically — and this used to treat both as a
+        # reboot, rebaseline, and `continue`.
+        #
+        # That discarded the young session's traffic as well as the old
+        # session's tail. A subscriber who dropped and came back lost
+        # everything they had used since the previous poll AND everything they
+        # used before the next one, and the meter appeared to start over.
+        #
+        # The tail is genuinely gone — the interface carrying those counters no
+        # longer exists by the time anything looks, and only PPP accounting or
+        # RADIUS could have caught it. The head is not, and this keeps it: on a
+        # restart the live counters ARE the delta, because the session began at
+        # zero.
+        restarted = (
+            uptime is not None
+            and state.last_uptime_seconds is not None
+            and uptime < state.last_uptime_seconds
+        )
+
+        if restarted:
+            rx_delta, tx_delta = rx, tx
+            uptime_delta = uptime
+        elif rx < state.last_rx_bytes or tx < state.last_tx_bytes:
+            # Counters fell without uptime falling: a router reboot, a cleared
+            # interface counter, or a router that does not report uptime at
+            # all. Nothing here can say how much was missed, so rebaseline and
+            # claim nothing rather than invent a delta the size of the whole
+            # counter.
             state.last_rx_bytes = rx
             state.last_tx_bytes = tx
+            state.last_uptime_seconds = uptime
             state.last_seen_at = now
-            state.save(update_fields=["last_rx_bytes", "last_tx_bytes", "last_seen_at"])
+            state.save(update_fields=[
+                "last_rx_bytes", "last_tx_bytes", "last_uptime_seconds",
+                "last_seen_at",
+            ])
             continue
-
-        rx_delta = rx - state.last_rx_bytes
-        tx_delta = tx - state.last_tx_bytes
+        else:
+            rx_delta = rx - state.last_rx_bytes
+            tx_delta = tx - state.last_tx_bytes
+            uptime_delta = (
+                max(uptime - (state.last_uptime_seconds or 0), 0)
+                if uptime is not None else 0
+            )
 
         if rx_delta < 0 or tx_delta < 0:
             continue
@@ -213,12 +254,29 @@ def collect_pppoe_usage_for_tenant(self, tenant_id):
             # subscriber on the platform at once.
             download_bytes=tx_delta,
             upload_bytes=rx_delta,
+            uptime_seconds=uptime_delta,
+            session_restarted=restarted,
         )
 
         state.last_rx_bytes = rx
         state.last_tx_bytes = tx
+        state.last_uptime_seconds = uptime
         state.last_seen_at = now
-        state.save(update_fields=["last_rx_bytes", "last_tx_bytes", "last_seen_at"])
+
+        # The running totals, which a reconnect must not reset. Accumulated
+        # from the same deltas that were just written, so the two can never
+        # disagree about what happened in this interval.
+        state.total_download_bytes += tx_delta
+        state.total_upload_bytes += rx_delta
+        state.total_uptime_seconds += uptime_delta
+        if restarted:
+            state.reconnect_count += 1
+
+        state.save(update_fields=[
+            "last_rx_bytes", "last_tx_bytes", "last_uptime_seconds",
+            "last_seen_at", "total_download_bytes", "total_upload_bytes",
+            "total_uptime_seconds", "reconnect_count",
+        ])
 
         processed += 1
 
