@@ -11,14 +11,52 @@ function fmtMB(bytes) {
   return (bytes / (1024 * 1024)).toFixed(2) + " MB";
 }
 
+// Seconds from a RouterOS duration, which is a string and not a number.
+//
+// This read `parseInt(raw)`, and parseInt stops at the first character that is
+// not a digit -- so "1h17m17s" came back as 1, "15m" as 15, and "2d3h4m5s" as
+// 2. Every one of those is under a minute once treated as seconds, so the
+// column showed 0m for every session on the page, always. The only uptimes it
+// could have rendered are ones RouterOS does not emit: it writes 90 minutes as
+// "1h30m", never "90m".
+//
+// RouterOS drops any unit that is zero, so every part here is optional. Some
+// builds report a bare integer of seconds or an "h:mm:ss" clock instead, and
+// both are accepted rather than read as zero. billing/router_service.py has
+// the same parser on the Python side, for the same reason.
+export function uptimeSeconds(raw) {
+  const text = String(raw ?? "").trim().toLowerCase();
+  if (!text) return 0;
+
+  if (/^\d+$/.test(text)) return parseInt(text, 10);
+
+  if (text.includes(":")) {
+    const parts = text.split(":");
+    if (parts.length > 3 || !parts.every((p) => /^\d+$/.test(p))) return 0;
+    return parts.reduce((total, p) => total * 60 + parseInt(p, 10), 0);
+  }
+
+  const m = text.match(
+    /^(?:(\d+)w)?(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/
+  );
+  if (!m) return 0;
+
+  const [w, d, h, min, s] = m.slice(1).map((v) => parseInt(v || "0", 10));
+  return w * 604800 + d * 86400 + h * 3600 + min * 60 + s;
+}
+
 function fmtUptime(raw) {
-  const seconds = parseInt(raw) || 0;
+  const seconds = uptimeSeconds(raw);
   const d = Math.floor(seconds / 86400);
   const h = Math.floor((seconds % 86400) / 3600);
   const m = Math.floor((seconds % 3600) / 60);
   if (d > 0) return `${d}d ${h}h`;
   if (h > 0) return `${h}h ${m}m`;
-  return `${m}m`;
+  // Seconds matter at this end of the scale: a session that has just come up
+  // is the interesting case on this page, and rounding it to "0m" is what
+  // made a working reconnect look like a dead one.
+  if (m > 0) return `${m}m`;
+  return `${seconds}s`;
 }
 
 export default function PPPoESessions() {
