@@ -1196,9 +1196,23 @@ def migrate_customer_router(customer, reason="manual_migration"):
     # --------------------------------------------------
     # 1️⃣ Validate active subscription
     # --------------------------------------------------
+    # Paid, not merely active — the same rule enable_customer_access states at
+    # length, and for the same reason. Every subscription is born `active` with
+    # an unpaid invoice, so "active" says nothing about whether money arrived.
+    #
+    # Ordering by expiry without it inverts the intent: an abandoned M-Pesa
+    # prompt for a 250/- three-week package outranks a paid 10/- three-hour
+    # one, because it runs longer. Migration then rebuilds the subscriber on
+    # the hardware against the purchase they walked away from, and hands them a
+    # fresh limit-uptime measured from now — so the longer the unpaid package,
+    # the more free service a re-home is worth.
+    #
+    # Found on 2026-09-09 re-homing subscribers after an OLT cable moved: 14 of
+    # 90 were provisioned from a subscription nobody had paid for, 11 of whom
+    # had no paid subscription at all.
     subscription = (
         customer.subscriptions
-        .filter(status="active")
+        .filter(status="active", invoice__payment_status="paid")
         .order_by("-expiry_date")
         .first()
     )
@@ -1244,11 +1258,21 @@ def migrate_customer_router(customer, reason="manual_migration"):
         customer.router = new_router
         customer.save(update_fields=["router"])
 
+    # Explicit tenant, for the reason enable_customer_access states where it
+    # writes the same row: this runs from Celery tasks and management commands
+    # where no middleware has set a context, so the model default has nothing
+    # to resolve and raises once a second operator exists.
+    #
+    # Unguarded here, unlike there, and the order is what made that expensive —
+    # the hardware has been provisioned and customer.router already saved by
+    # this point, so a raise reports failure for a move that has fully
+    # happened. The caller then retries a migration that is already done.
     RouterFailoverLog.objects.create(
-    customer=customer,
-    from_router=old_router,
-    to_router=new_router,
-    reason=reason,
+        tenant_id=customer.tenant_id,
+        customer=customer,
+        from_router=old_router,
+        to_router=new_router,
+        reason=reason,
     )
 
     return True, f"Migrated to {new_router.name}"
