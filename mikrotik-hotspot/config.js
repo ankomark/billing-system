@@ -119,6 +119,21 @@ var STRINGS = {
     'pay.submit':       'Submit',
     'pay.note':         'You will get a prompt on this number. Approve it to get online.',
     'pay.badnumber':    'That does not look like a Safaricom number.',
+    // Buying for a television. A smart TV usually cannot open this page
+    // at all, so the set's address is typed here on the phone instead and
+    // the voucher binds straight to it.
+    'tv.toggle':        'Buying for a TV?',
+    'tv.label':         "TV's device address (MAC)",
+    // NOT the sticker. 95% of devices on this estate present a randomised
+    // address, so the burned-in one on the back of the set is not what the
+    // router sees. The address in use only exists once the TV has joined this
+    // network, which is why the instruction is in that order.
+    'tv.note':          'First connect the TV to this WiFi (it will say no internet '
+                        + '— that is fine). Then on the TV: Settings → Network '
+                        + '→ Status, and copy the Wi‑Fi MAC shown there. '
+                        + 'Do not use the sticker on the back.',
+    'tv.badmac':        'That address needs twelve characters, like AA:BB:CC:DD:EE:FF.',
+    'tv.done':          'Paid. Your TV is connected — switch it on and join the WiFi.',
     'pay.sending':      'Sending the prompt…',
     'pay.approve':      'Check your phone and approve the M-Pesa prompt.',
     'pay.paid':         'Paid. Connecting you now…',
@@ -168,6 +183,14 @@ var STRINGS = {
     'pay.submit':       'Tuma',
     'pay.note':         'Utapokea ujumbe kwenye nambari hii. Ikubali ili uunganishwe.',
     'pay.badnumber':    'Hii haionekani kuwa nambari sahihi.',
+    'tv.toggle':        'Unanunulia TV?',
+    'tv.label':         'Anwani ya TV (MAC)',
+    'tv.note':          'Kwanza unganisha TV kwenye WiFi hii (itasema hakuna intaneti '
+                        + '— ni sawa). Kisha kwenye TV: Settings → Network '
+                        + '→ Status, nakili Wi‑Fi MAC inayoonyeshwa hapo. '
+                        + 'Usitumie kibandiko nyuma ya TV.',
+    'tv.badmac':        'Anwani inahitaji herufi kumi na mbili, kama AA:BB:CC:DD:EE:FF.',
+    'tv.done':          'Imelipwa. TV yako imeunganishwa — iwashe na uunganishe WiFi.',
     'pay.sending':      'Inatuma ombi…',
     'pay.approve':      'Angalia simu yako na ukubali ombi la M-Pesa.',
     'pay.paid':         'Imelipwa. Tunakuunganisha sasa…',

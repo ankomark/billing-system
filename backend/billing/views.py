@@ -5,7 +5,7 @@ from django.conf import settings
 from django.http import HttpResponse
 from django.db import IntegrityError, transaction
 from celery import chain
-from .utils import mac_variants, normalize_mac
+from .utils import is_real_mac, mac_variants, normalize_mac
 from .auth_tokens import TenantTokenObtainPairView, TenantTokenObtainPairSerializer
 from rest_framework.filters import SearchFilter
 from .permissions import (
@@ -1780,6 +1780,27 @@ class HotspotVoucherValidateView(APIView):
         if not code or not mac_address:
             return Response(
                 {"detail": "code and mac_address are required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Refused here rather than bound and forgotten.
+        #
+        # The portal substitutes this from RouterOS for the device in front of
+        # it, and that is always an address. It is not always the portal: a
+        # subscriber buying for a television types the set's address in by
+        # hand, off a settings screen or a sticker on the back, and a digit
+        # dropped there is invisible everywhere afterwards. normalize_mac
+        # passes an unparseable value through unchanged by design — see its
+        # docstring — so without this the grant succeeds against a device that
+        # does not exist. The router is configured, the voucher is spent, and
+        # the only symptom is a television that never connects while its owner
+        # is certain they paid.
+        if not is_real_mac(mac_address):
+            return Response(
+                {"detail": "That device address doesn't look right. It should "
+                           "be twelve characters like AA:BB:CC:DD:EE:FF — check "
+                           "it in the TV's network settings, or on the sticker "
+                           "at the back."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 

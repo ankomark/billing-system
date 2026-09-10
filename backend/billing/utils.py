@@ -38,6 +38,28 @@ def normalize_mac(value):
     return ":".join(hex_only[i:i + 2] for i in range(0, 12, 2))
 
 
+def is_real_mac(value):
+    """
+    Whether this is an address at all, rather than something typed wrong.
+
+    normalize_mac deliberately does not reject: it runs on lookup paths, where
+    a value we cannot parse must at least still match itself. That contract is
+    right there and wrong at a keyboard.
+
+    A television's address is read off a settings screen or a sticker on the
+    back and typed in by hand, and the two failures are silent. Eleven digits
+    binds a device that does not exist, so the customer pays and the set never
+    connects. Twelve wrong digits binds a device that might exist and belong to
+    somebody else. Neither shows up as an error anywhere — the grant succeeds,
+    the router is configured, and the only symptom is a television that stays
+    off while its owner is certain they paid.
+
+    So anything a person typed goes through here first, and is refused with
+    something they can act on.
+    """
+    return len(_NOT_HEX.sub("", (value or "").strip().upper())) == 12
+
+
 def mac_variants(value):
     """
     The spellings a stored address might already be in, for a lookup.

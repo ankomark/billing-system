@@ -212,6 +212,22 @@
     }
     .pay-row button:disabled { opacity: .55; cursor: default; }
     .pay-note { font-size: .6875rem; color: #6b7280; margin-top: .3125rem; }
+    /* Buying for a television. Understated until it is wanted -- most
+       customers are buying for the phone in their hand. */
+    .tv-toggle { background: none; border: 0; padding: .375rem 0; margin-top: .25rem;
+                 font-size: .75rem; color: #4f46e5; cursor: pointer; text-align: left; }
+    .tv-toggle.on { font-weight: 600; }
+    .tv-toggle::before { content: 'F4FA'; margin-right: .3125rem; }
+    .tv-box { margin-top: .375rem; padding: .5rem; background: #f8fafc;
+              border: 1px solid #e2e8f0; border-radius: .375rem; }
+    .tv-label { display: block; font-size: .75rem; font-weight: 600;
+                color: #334155; margin-bottom: .25rem; }
+    .tv-mac { width: 100%; box-sizing: border-box; padding: .5rem;
+              border: 1px solid #cbd5e1; border-radius: .375rem;
+              font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+              font-size: .875rem; letter-spacing: .04em; }
+    .tv-mac:focus { outline: 2px solid #6366f1; outline-offset: 1px; }
+    .tv-note { margin-top: .375rem; }
 
     .pkg-status { display: none; margin-top: .5rem; font-size: .75rem; }
     .pkg-status.show { display: flex; align-items: center; gap: .375rem; }
@@ -693,14 +709,49 @@
         '<button type="button">' + t('pay.submit') + '</button>' +
       '</div>' +
       '<p class="pay-note">' + t('pay.note') + '</p>' +
+      // Buying for a television.
+      //
+      // A smart TV usually cannot open this page: many have no captive-portal
+      // browser at all, and the ones that do cannot be typed into. So the set
+      // never gets to present a code, and the auto_bound displacement that
+      // exists for exactly this case never fires -- the customer pays on their
+      // phone and the television stays dark.
+      //
+      // Typing the TV's address here binds the voucher straight to it, so the
+      // set has to do nothing but join the WiFi.
+      '<button type="button" class="tv-toggle">' + t('tv.toggle') + '</button>' +
+      '<div class="tv-box" hidden>' +
+        '<label class="tv-label">' + t('tv.label') + '</label>' +
+        '<input type="text" class="tv-mac" inputmode="latin" autocomplete="off" ' +
+               'spellcheck="false" placeholder="AA:BB:CC:DD:EE:FF" maxlength="17">' +
+        '<p class="pay-note tv-note">' + t('tv.note') + '</p>' +
+      '</div>' +
       '<div class="pkg-status"></div>';
 
     card.appendChild(main);
     card.appendChild(pay);
 
-    var input  = pay.querySelector('input');
-    var submit = pay.querySelector('button');
+    var input  = pay.querySelector('input[type="tel"]');
+    var submit = pay.querySelector('.pay-row button');
     var status = pay.querySelector('.pkg-status');
+    var tvToggle = pay.querySelector('.tv-toggle');
+    var tvBox    = pay.querySelector('.tv-box');
+    var tvMac    = pay.querySelector('.tv-mac');
+
+    tvToggle.addEventListener('click', function () {
+      tvBox.hidden = !tvBox.hidden;
+      tvToggle.className = tvBox.hidden ? 'tv-toggle' : 'tv-toggle on';
+      if (!tvBox.hidden) { tvMac.focus(); }
+    });
+
+    // Colons as they type, so the address on the sticker can be copied
+    // straight across without wondering whether the separators matter.
+    tvMac.addEventListener('input', function () {
+      var hex = tvMac.value.toUpperCase().replace(/[^0-9A-F]/g, '').slice(0, 12);
+      var out = [];
+      for (var i = 0; i < hex.length; i += 2) { out.push(hex.slice(i, i + 2)); }
+      tvMac.value = out.join(':');
+    });
 
     buy.addEventListener('click', function () {
       // One open at a time — two prompts on screen is two chances to type a
@@ -721,7 +772,19 @@
         setStatus(status, t('pay.badnumber'), 'bad');
         return;
       }
-      buyPackage(pkg, phone, submit, status);
+      // Checked here as well as on the server. The server refusal arrives
+      // after the money has moved; this one arrives before it.
+      var forTv = '';
+      if (!tvBox.hidden) {
+        forTv = tvMac.value.replace(/[^0-9A-Fa-f]/g, '');
+        if (forTv.length !== 12) {
+          setStatus(status, t('tv.badmac'), 'bad');
+          tvMac.focus();
+          return;
+        }
+        forTv = tvMac.value;
+      }
+      buyPackage(pkg, phone, submit, status, forTv);
     });
 
     return card;
@@ -738,7 +801,7 @@
     node.appendChild(document.createTextNode(text));
   }
 
-  function buyPackage(pkg, phone, submit, status) {
+  function buyPackage(pkg, phone, submit, status, forTv) {
     // Only one purchase can be in flight. Starting a second used to leave the
     // first card disabled and stuck on "waiting" for ever, because the poll
     // timer is shared -- so the customer sat watching a package that was no
@@ -762,7 +825,7 @@
         // packages behind this are worth more to them than a spinner.
         waitHide();
         setStatus(status, t('pay.approve'), 'waiting');
-        awaitPayment(data && data.reference, data && data.poll_token, submit, status);
+        awaitPayment(data && data.reference, data && data.poll_token, submit, status, forTv);
       },
       function (detail) {
         waitHide();
@@ -777,7 +840,7 @@
      customer has already paid on this phone; making them read a code off
      one screen and type it into another is a step that exists only
      because nothing did it for them. */
-  function awaitPayment(reference, pollToken, submit, status) {
+  function awaitPayment(reference, pollToken, submit, status, forTv) {
     if (!reference) {
       active = null;
       submit.disabled = false;
@@ -824,12 +887,33 @@
               // code bought on a phone can still be entered on a television:
               // the binding this makes yields to one somebody types, instead
               // of holding the only place on the package for ever.
-              api('POST', '/hotspot/validate/',
-                { code: data.voucher_code, mac_address: MAC, t: TENANT_TOKEN,
-                  r: ROUTER_TOKEN, auto: true },
+              // Whose device is this voucher for?
+              //
+              // Normally this one -- the phone that paid, bound `auto` so a
+              // set someone later types the code on can take the place back.
+              //
+              // When the customer said they were buying for a television, the
+              // binding goes to the address they typed and is NOT auto: they
+              // named that device deliberately, so it must not be displaced by
+              // whatever happens to present the code next. This phone is then
+              // not connected, which is correct -- they bought for the TV.
+              var target = forTv ? forTv : MAC;
+              var body = { code: data.voucher_code, mac_address: target,
+                           t: TENANT_TOKEN, r: ROUTER_TOKEN };
+              if (!forTv) { body.auto = true; }
+              api('POST', '/hotspot/validate/', body,
                 function (ok) {
-                  if (ok && ok.device_token) { saveDeviceToken(MAC, ok.device_token); }
-                  waitDone(t('wait.connected'), logIn);
+                  if (!forTv && ok && ok.device_token) { saveDeviceToken(MAC, ok.device_token); }
+                  if (forTv) {
+                    // Nothing to log this phone in to, so say what happens
+                    // next instead of spinning on a connection it will not get.
+                    waitHide();
+                    setStatus(status, t('tv.done'), 'ok');
+                    active = null;
+                    submit.disabled = false;
+                  } else {
+                    waitDone(t('wait.connected'), logIn);
+                  }
                 },
                 function (detail, code) {
                   // Paid, but binding failed.
