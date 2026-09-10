@@ -110,3 +110,47 @@ class ProvingTheReplacementLosesNothing(TestCase):
     def test_an_empty_router_copy_loses_nothing(self):
         """A file that is not on the router yet cannot lose anything."""
         self.assertEqual(portal_files.lost_lines("", "a\nb\n"), [])
+
+
+class LineEndingsAreNotADifference(TestCase):
+    """
+    Every portal file on the routers was reported as drifted, for ever,
+    because a copy uploaded from a Windows checkout has CRLF and the server's
+    checkout has LF. Content was identical in all four cases -- confirmed by
+    fetching them -- and browsers do not care. A status command whose output
+    you learn to ignore is worse than no status command.
+    """
+
+    def test_crlf_and_lf_are_the_same_file(self):
+        self.assertTrue(portal_files.same_content(b"a\r\nb\r\n", b"a\nb\n"))
+
+    def test_a_real_change_is_still_a_change(self):
+        self.assertFalse(portal_files.same_content(b"a\r\nb\r\n", b"a\nc\n"))
+
+    def test_both_byte_counts_are_accepted(self):
+        """
+        compare() reads sizes over the API and cannot normalise, so it has to
+        know that the same text is one byte per line longer as CRLF.
+        """
+        allowed, lf = portal_files.sizes_that_mean_unchanged(b"a\nb\nc\n")
+        self.assertEqual(lf, 6)
+        self.assertEqual(allowed, {6, 9})
+
+    def test_the_real_md5_js_case(self):
+        """
+        172 lines, 8864 bytes as LF, 9036 on the router. Reported as drift on
+        both routers until this.
+        """
+        raw = b"x\n" * 172
+        allowed, lf = portal_files.sizes_that_mean_unchanged(raw)
+        self.assertEqual(lf, 344)
+        self.assertIn(344 + 172, allowed)
+
+    def test_a_file_with_no_newlines_has_one_answer(self):
+        allowed, _ = portal_files.sizes_that_mean_unchanged(b"binary-ish")
+        self.assertEqual(len(allowed), 1)
+
+    def test_starting_from_crlf_gives_the_same_pair(self):
+        """The local checkout may itself be CRLF; the answer must not change."""
+        self.assertEqual(portal_files.sizes_that_mean_unchanged(b"a\r\nb\r\n"),
+                         portal_files.sizes_that_mean_unchanged(b"a\nb\n"))

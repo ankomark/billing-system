@@ -104,6 +104,41 @@ def build_config(router, api_base, template=None):
     return built
 
 
+CRLF = bytes([13, 10])
+LF = bytes([10])
+
+
+def same_content(a, b):
+    """
+    Whether two files differ by anything more than line endings.
+
+    They routinely differ by exactly that and nothing else. A copy uploaded
+    from a Windows checkout lands on the router with CRLF, the server's
+    checkout has LF, and every byte comparison then reports drift for ever.
+    Browsers do not care, so neither does this -- but a status command whose
+    output you learn to ignore is worse than no status command, so it has to
+    be quiet about differences that are not differences.
+    """
+    return (a or b"").replace(CRLF, LF) == (b or b"").replace(CRLF, LF)
+
+
+def sizes_that_mean_unchanged(raw):
+    """
+    The byte counts this content could legitimately have on a router.
+
+    compare() reads sizes over the API rather than fetching files, so it
+    cannot normalise the way same_content does. It does not need to: the same
+    text is either LF or CRLF, and CRLF is exactly one byte per line longer.
+    Both are the same file.
+
+    Returns (acceptable sizes, the LF size) -- the second being what to show a
+    human, since it is the size the repository holds.
+    """
+    lf = (raw or b"").replace(CRLF, LF)
+    crlf = lf.replace(LF, CRLF)
+    return {len(lf), len(crlf)}, len(lf)
+
+
 def lost_lines(old, new):
     """
     Lines the router has that the replacement does not. Empty means safe.
@@ -149,14 +184,15 @@ def compare(router, api, api_base, names):
             continue
 
         if name == TEMPLATED:
-            ours = len(build_config(router, api_base).encode("utf-8"))
+            raw = build_config(router, api_base).encode("utf-8")
         else:
-            ours = src.stat().st_size
+            raw = src.read_bytes()
+        allowed, ours = sizes_that_mean_unchanged(raw)
 
         on_router = sizes.get(name)
         if on_router is None:
             results.append((name, None, ours, "absent"))
-        elif on_router == ours:
+        elif on_router in allowed:
             results.append((name, on_router, ours, "same"))
         else:
             results.append((name, on_router, ours, "differs"))
@@ -234,7 +270,9 @@ def push(router, api, api_base, tunnel_ip, iface, names, backup_dir=None,
                                            f"{router.name}-{name}"), "wb") as fh:
                         fh.write(old)
 
-                if old == new:
+                if same_content(old, new):
+                    # Line endings alone. Rewriting a live portal file to
+                    # change invisible bytes is risk for no gain.
                     results.append((name, len(old), len(new), "same"))
                     continue
 
