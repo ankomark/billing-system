@@ -119,6 +119,50 @@ def lost_lines(old, new):
             if d.startswith("-") and not d.startswith("---")]
 
 
+def compare(router, api, api_base, names):
+    """
+    What differs, read over the API alone.
+
+    Deliberately does not use FTP. Reading the files that way would mean
+    opening the firewall for a command whose whole purpose is to look and not
+    touch, and /file already carries a size for everything on the router —
+    which is enough to answer "is this the build we have". The byte-exact
+    check happens in push(), where the file has to be fetched anyway to prove
+    the replacement loses nothing.
+
+    Returns (name, on_router, ours, action) with action one of "same",
+    "differs", "absent" (not on the router yet) or "missing" (not in our
+    folder).
+    """
+    folder = portal_dir()
+    sizes = {}
+    for f in api.path("file"):
+        name = str(f.get("name") or "")
+        if name.startswith("hotspot/"):
+            sizes[name[len("hotspot/"):]] = int(f.get("size") or 0)
+
+    results = []
+    for name in names:
+        src = folder / name
+        if not src.is_file():
+            results.append((name, sizes.get(name), None, "missing"))
+            continue
+
+        if name == TEMPLATED:
+            ours = len(build_config(router, api_base).encode("utf-8"))
+        else:
+            ours = src.stat().st_size
+
+        on_router = sizes.get(name)
+        if on_router is None:
+            results.append((name, None, ours, "absent"))
+        elif on_router == ours:
+            results.append((name, on_router, ours, "same"))
+        else:
+            results.append((name, on_router, ours, "differs"))
+    return results
+
+
 def _open_ftp(router, api, tunnel_ip, iface):
     """Open FTP for the tunnel server only. Returns the rule id to remove."""
     fw = api.path("ip", "firewall", "filter")
@@ -157,8 +201,10 @@ def push(router, api, api_base, tunnel_ip, iface, names, backup_dir=None,
     rule_id = None
 
     try:
-        if apply:
-            rule_id = _open_ftp(router, api, tunnel_ip, iface)
+        # Opened whether or not we end up writing: the superset proof needs
+        # the router's current copy, and that comes over FTP. compare() is the
+        # path that looks without touching the firewall at all.
+        rule_id = _open_ftp(router, api, tunnel_ip, iface)
 
         ftp = FTP()
         ftp.connect(router.ip_address, 21, timeout=30)

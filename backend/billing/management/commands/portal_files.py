@@ -99,14 +99,21 @@ class Command(BaseCommand):
             self.stdout.write(f"{router.name}: unreachable")
             return 0
 
-        results = portal_files.push(
-            router, api, api_base,
-            tunnel_ip=getattr(settings, "WG_SERVER_TUNNEL_IP", "10.10.0.1"),
-            iface=getattr(settings, "WG_INTERFACE_NAME", "wg-smartbill"),
-            names=names,
-            backup_dir=options.get("backup"),
-            apply=options["push"],
-        )
+        # Looking costs nothing: /file over the API already carries a size for
+        # everything on the router, and port 8728 is permanently allowed. Only
+        # an upload needs FTP, and therefore only an upload touches the
+        # firewall.
+        if options["push"]:
+            results = portal_files.push(
+                router, api, api_base,
+                tunnel_ip=getattr(settings, "WG_SERVER_TUNNEL_IP", "10.10.0.1"),
+                iface=getattr(settings, "WG_INTERFACE_NAME", "wg-smartbill"),
+                names=names,
+                backup_dir=options.get("backup"),
+                apply=True,
+            )
+        else:
+            results = portal_files.compare(router, api, api_base, names)
 
         self.stdout.write(f"{router.name}:")
         differ = 0
@@ -123,9 +130,14 @@ class Command(BaseCommand):
             elif action == "updated":
                 self.stdout.write(self.style.SUCCESS(
                     f"   {name:14} uploaded {before} -> {after} bytes"))
+            elif action == "absent":
+                differ += 1
+                self.stdout.write(self.style.WARNING(
+                    f"   {name:14} not on the router at all ({after} bytes here)"))
             else:
                 differ += 1
-                self.stdout.write(f"   {name:14} differs {before} -> {after} bytes")
+                self.stdout.write(
+                    f"   {name:14} differs: router {before}, ours {after} bytes")
 
         left = portal_files.leftover_rules(api)
         if left:
