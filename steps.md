@@ -277,6 +277,16 @@ past the portal:
 | `/ip/pool/print` | one pool | Two → remove the one no server references |
 | `/ip/hotspot/profile/print` | `dns-name="login.hotspot"` | Anything else → `/ip/hotspot/profile/set hsprof1 dns-name=login.hotspot`. It must match `^https?://([\w-]+\.)?hotspot(:\d+)?$` or every API call is refused by the browser while your server logs clean 200s |
 | `/ip/hotspot/profile/print` | `hotspot-address=192.168.88.1` | Wrong → you answered the interface prompt with the wrong bridge; `/ip/hotspot/remove [find]` and run setup again |
+| `/ip/hotspot/print` | `address-pool=none` | `default-dhcp` → the hotspot and the DHCP server are eating one pool → `/ip/hotspot/set [find] address-pool=none`. See §9.3.1 — this is the one that shows up as "connected, no internet" |
+| `/ip/hotspot/print` | `addresses-per-mac=1` | `2` → halves the site's capacity → `/ip/hotspot/set [find] addresses-per-mac=1` |
+| `/ip/hotspot/profile/print` | `login-by` contains `mac` | Without it a paid-for television can never get on → `/ip/hotspot/profile/set hsprof1 login-by=mac,cookie,http-chap` |
+
+Or let the platform check all three for you, once the router is registered:
+
+```
+python manage.py hotspot_settings              # report
+python manage.py hotspot_settings --fix        # correct
+```
 
 ### 7. Walled garden — both rules
 
@@ -1045,6 +1055,89 @@ Your own machine is now behind the portal. Bypass it while you work:
 ```
 /ip/dhcp-server/lease/print
 /ip/hotspot/ip-binding/add mac-address=YOUR-MAC type=bypassed comment="admin laptop"
+```
+
+### 9.3.1 The three the wizard leaves wrong
+
+The setup wizard's defaults are wrong for this platform in three ways. None of
+them fails at setup, none appears in any log as itself, and all three were
+found on live hardware on 2026-09-10 after days of chasing the symptoms. Set
+them now; it takes one command each.
+
+```
+/ip/hotspot/set [find] address-pool=none addresses-per-mac=1
+/ip/hotspot/profile/set hsprof1 login-by=mac,cookie,http-chap
+```
+
+**`address-pool=none` — this is the one that reads as "connected, no
+internet".**
+
+The wizard points the hotspot's one-to-one NAT at the same pool the DHCP
+server hands leases from. Both then eat the same 245 addresses. On skylink,
+`/ip/pool/used` read `{'DHCP': 119, 'hotspot': 126}` — 245 of 245 — and every
+new arrival was refused with `failed to get IP address for host <mac>/<ip>:
+pool empty`. A device refused an address gets no host entry, and a device with
+no host entry **cannot be authenticated by any method**: no sign-in page, no
+portal, nothing. Its owner sees a WiFi network that connects and does not work.
+
+`none` means the client simply keeps the address DHCP already gave it.
+One-to-one NAT exists for a client arriving with a foreign static address,
+which on a hotspot of phones and televisions is nobody. Setting it returned 126
+addresses and dropped none of the 101 live sessions.
+
+Do not diagnose this from `/ip/dhcp-server/lease/print`. Leases looked
+comfortable at 124 of 245 the whole time, because the other 121 were held by
+the hotspot. Two consumers, one pool — `/ip/pool/used` is the only view that
+shows it.
+
+**`addresses-per-mac=1`.** At the default of 2 each device can take two
+addresses, halving the site's capacity again regardless of lease time.
+
+**`login-by` must contain `mac`.** The wizard leaves `cookie,http-chap`, and
+both of those require the *device* to open a browser and post credentials. A
+television cannot — many have no captive-portal browser at all — so a voucher
+bound to a TV's address creates the account, configures the router, and leaves
+the set saying it has no internet for ever. With `mac`, RouterOS admits any
+device whose address matches a hotspot user with no HTTP step at all;
+`enable_hotspot` already writes those users with an empty password, which is
+what MAC authentication expects. It also means a returning subscriber is back
+online the instant they associate, instead of waiting on a captive-portal
+probe.
+
+Keep `cookie` and `http-chap` — never replace them. A walk-up with no account
+still needs the portal in order to buy one.
+
+**Two more worth setting while you are here**, both found the same night:
+
+```
+/ip/hotspot/user/profile/set [find] keepalive-timeout=none
+/ip/dhcp-server/set [find] lease-time=15m
+```
+
+`keepalive-timeout` logs a subscriber out when their handset stops answering
+ARP. A phone in power save does exactly that while sitting in its owner's hand,
+and over ARP a sleeping device and a departed one are identical — so there is
+no correct threshold, only off. At the default 2m, skylink logged 44 keepalive
+logouts in 47 minutes against 214 logins on a site carrying 60 real sessions:
+every subscriber reaped and silently re-admitted several times an hour, which
+customers report as being disconnected constantly. Sessions still end, by
+`limit-uptime` and by expiry, neither of which mistakes a locked phone for a
+departed one. The platform sets this itself on every profile it creates — see
+`HOTSPOT_KEEPALIVE` in `router_profiles.py` — so this line is only for
+profiles made by hand.
+
+`lease-time` is a balance, not a maximum. 30m exhausted the DHCP pool at peak;
+5m fixed that but broke sessions, because a hotspot session binds to IP *and*
+MAC and a phone that sleeps past renewal comes back on a different address and
+has to log in again. 15m is three times less address churn than 5m and half the
+30m that exhausted the pool.
+
+Once the router is registered with the platform, all three of the first group
+are checked for you:
+
+```
+python manage.py hotspot_settings --router <id>          # report
+python manage.py hotspot_settings --router <id> --fix    # correct
 ```
 
 ### 9.4 Walled garden — the one that breaks portals

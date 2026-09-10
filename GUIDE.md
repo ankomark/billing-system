@@ -712,6 +712,28 @@ Two things make that easy, and both have to be done in advance:
 
 **Portal shows no packages** — walled garden (3.1). Almost always this.
 
+**"Connected, no internet" and no sign-in page appears** — the hotspot is out
+of addresses, and it is almost certainly sharing a pool with DHCP. Check
+`/ip/pool/used` on the router, **not** `/ip/dhcp-server/lease/print`: leases can
+look comfortable while the hotspot holds the rest. If it reads anything like
+`{'DHCP': 119, 'hotspot': 126}` on a 245-address pool, that is it —
+`/ip/hotspot/set [find] address-pool=none`. A device refused an address gets no
+host entry, and without a host entry it cannot be authenticated by any method,
+so no portal is ever shown. See `steps.md` §9.3.1, or run
+`python manage.py hotspot_settings --fix`.
+
+**A television never gets online, even after paying** — `login-by` on the
+hotspot profile. `cookie` and `http-chap` both need the *device* to open a
+browser, which a TV cannot do, so the account exists on the router and the set
+stays dark. Add `mac`. Then the customer can buy for the TV from their own
+phone with the portal's "Buying for a TV?" option, and the set connects without
+being touched.
+
+**Customers say they are disconnected every few minutes** — `keepalive-timeout`
+on the user profile. It logs out any handset that stops answering ARP, which a
+phone in power save does constantly. Set it to `none`; nothing else can tell a
+sleeping device from a departed one.
+
 **Dashboard loads, no data** — CORS. Open the browser console. Check
 `CORS_ALLOWED_ORIGINS` matches the Vercel domain exactly, scheme and all.
 
