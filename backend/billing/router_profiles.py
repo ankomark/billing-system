@@ -28,7 +28,38 @@ logger = logging.getLogger(__name__)
 # A constant rather than a literal because the value is a judgement about the
 # devices these operators actually serve — phones that sleep — and not a
 # RouterOS detail.
-HOTSPOT_KEEPALIVE = "5m"
+#
+# `none`, after 2m and then 5m both failed.
+#
+# keepalive-timeout logs a subscriber out when their handset stops answering
+# the router's ARP. That is a liveness check designed for equipment that is
+# always awake, and a phone is not: 802.11 power save means a locked handset
+# can go minutes without answering while its owner is sitting under the AP,
+# holding it. Raising 2m to 5m only moved the threshold — with 5m live on
+# every profile, skylink still logged 44 keepalive logouts in 47 minutes and
+# skylink3 81, against 214 logins in the same window on a site with roughly
+# 60 real sessions. Every subscriber was being reaped and silently re-admitted
+# by their cookie several times an hour, which is precisely the "disconnected
+# and reconnected after a few minutes" the operator's customers report.
+#
+# There is no correct number here. Any threshold short enough to reap a
+# genuinely departed device is short enough to reap a sleeping one, because
+# the two look identical over ARP.
+#
+# What ends a session instead, now that ARP does not:
+#   * limit-uptime, written at grant time as the subscriber's remaining
+#     wall-clock — enable_hotspot sets it on every user.
+#   * disable_customer_access at expiry, which removes the user and drops the
+#     session through the same call.
+#   * the subscriber logging out, or the operator disconnecting them.
+# None of those mistake a locked phone for a departed one.
+#
+# The cost is that a device which leaves without logging out keeps its session
+# until one of the above fires, so it holds a shared-users slot in the
+# meantime. On these packages shared-users is 2, so a household with one
+# device away still has a free slot; and the slot is returned at expiry
+# regardless. That is a far smaller harm than logging everybody out hourly.
+HOTSPOT_KEEPALIVE = "none"
 
 
 # ======================================================

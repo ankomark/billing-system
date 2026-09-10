@@ -114,6 +114,27 @@ class HotspotProfileRepairTests(TestCase):
         self.assertNotIn("rate-limit", profiles.updated[0],
                          "it rewrote fields that had not drifted")
 
+    def test_a_profile_on_an_earlier_attempt_at_this_is_also_repaired(self):
+        """
+        5m was tried before none and left on 23 profiles. The repair path has
+        to carry them forward too, or the estate keeps two behaviours.
+        """
+        name = f"HOTSPOT_PKG_{self.package.id}_D1"
+        _, profiles = self._run([
+            {".id": "*1", "name": name, "rate-limit": "2M/2M",
+             "shared-users": "1", "keepalive-timeout": "5m"}
+        ])
+        self.assertEqual(len(profiles.updated), 1)
+        self.assertEqual(profiles.updated[0]["keepalive-timeout"], "none")
+
+    def test_the_keepalive_is_disabled_not_merely_lengthened(self):
+        """
+        The point of the change. Any threshold short enough to reap a departed
+        device is short enough to reap a sleeping phone, because over ARP the
+        two are indistinguishable — so there is no correct number, only off.
+        """
+        self.assertEqual(HOTSPOT_KEEPALIVE, "none")
+
     def test_idle_timeout_is_left_alone(self):
         """
         Deliberate. idle-timeout measures traffic rather than reachability, so
