@@ -24,6 +24,12 @@ from librouteros import connect
 
 logger = logging.getLogger(__name__)
 
+# See ensure_hotspot_profile, which explains what this buys and what it costs.
+# A constant rather than a literal because the value is a judgement about the
+# devices these operators actually serve — phones that sleep — and not a
+# RouterOS detail.
+HOTSPOT_KEEPALIVE = "5m"
+
 
 # ======================================================
 # ROUTER CONNECTION
@@ -148,6 +154,25 @@ def ensure_hotspot_profile(router, package):
         "rate-limit": _rate_limit(package),
         # How many devices one voucher may be used from at once.
         "shared-users": str(devices),
+        # How long a handset may fail to answer the router's ARP before its
+        # session is torn down.
+        #
+        # RouterOS defaults this to 2m, which is short enough that a phone in
+        # power save with the screen off is logged out for sleeping. The
+        # subscriber wakes it, the cookie logs them straight back in, and what
+        # they experience is the connection dropping over and over — 13 such
+        # logouts in a single log buffer on skylink when this was found, next
+        # to complaints about being disconnected constantly.
+        #
+        # Set here rather than only on the routers, because this dict is also
+        # what the repair path above compares against: a profile that drifts
+        # is corrected, and a profile created for a new package is born with
+        # it instead of with RouterOS's default.
+        #
+        # idle-timeout is deliberately not set alongside it. That one measures
+        # traffic rather than reachability, and turning it on would disconnect
+        # somebody who is connected and simply not using it.
+        "keepalive-timeout": HOTSPOT_KEEPALIVE,
     }
 
     for p in profiles:

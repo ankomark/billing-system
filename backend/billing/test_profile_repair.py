@@ -23,6 +23,7 @@ from unittest.mock import MagicMock, patch
 from django.test import TestCase
 
 from billing.models import Package, RouterDevice, Tenant
+from billing.router_profiles import HOTSPOT_KEEPALIVE
 from billing.tenancy import tenant_context
 
 
@@ -79,10 +80,48 @@ class HotspotProfileRepairTests(TestCase):
         """Provisioning runs constantly; it must not write on every call."""
         name = f"HOTSPOT_PKG_{self.package.id}_D1"
         _, profiles = self._run([
-            {".id": "*1", "name": name, "rate-limit": "2M/2M", "shared-users": "1"}
+            {".id": "*1", "name": name, "rate-limit": "2M/2M",
+             "shared-users": "1", "keepalive-timeout": HOTSPOT_KEEPALIVE}
         ])
         self.assertEqual(profiles.updated, [])
         self.assertEqual(profiles.added, [])
+
+    def test_a_new_profile_is_born_with_the_keepalive(self):
+        """
+        RouterOS defaults keepalive-timeout to 2m, which logs out a phone for
+        going into power save. Setting it on the routers by hand fixes the
+        profiles that exist; only setting it here fixes the ones a new package
+        creates tomorrow.
+        """
+        _, profiles = self._run([])
+        self.assertEqual(profiles.added[0]["keepalive-timeout"],
+                         HOTSPOT_KEEPALIVE)
+
+    def test_a_profile_still_on_the_router_default_is_repaired(self):
+        """
+        Every profile on both live routers carried 2m when this was written.
+        The repair path is what carries the fix to an estate without anyone
+        running a script against it.
+        """
+        name = f"HOTSPOT_PKG_{self.package.id}_D1"
+        _, profiles = self._run([
+            {".id": "*1", "name": name, "rate-limit": "2M/2M",
+             "shared-users": "1", "keepalive-timeout": "2m"}
+        ])
+        self.assertEqual(len(profiles.updated), 1)
+        self.assertEqual(profiles.updated[0]["keepalive-timeout"],
+                         HOTSPOT_KEEPALIVE)
+        self.assertNotIn("rate-limit", profiles.updated[0],
+                         "it rewrote fields that had not drifted")
+
+    def test_idle_timeout_is_left_alone(self):
+        """
+        Deliberate. idle-timeout measures traffic rather than reachability, so
+        setting it would disconnect somebody who is connected and simply not
+        using it — a worse behaviour than the one being fixed.
+        """
+        _, profiles = self._run([])
+        self.assertNotIn("idle-timeout", profiles.added[0])
 
     def test_a_missing_profile_is_still_created(self):
         name, profiles = self._run([])
