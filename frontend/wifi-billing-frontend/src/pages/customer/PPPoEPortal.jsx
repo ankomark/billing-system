@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { fetchPortal } from "../../services/customerPortal";
 import PPPoELiveStatus from "./PPPoEUsage";
+import PPPoEPassword from "./PPPoEPassword";
 import PPPoEControls from "./PPPoEControls";
 import PPPoEUsageGraph from "../../components/usage/PPPoEUsageGraph";
 import { humanBytes, humanCapMb } from "../../utils/bytes";
@@ -150,6 +151,7 @@ export default function PPPoEPortal() {
         <PPPoELiveStatus />
         <PPPoEUsageGraph />
         <PPPoEControls onAction={loadData} />
+        <PPPoEPassword />
 
         <button
           onClick={() => navigate("/customer/pppoe/renew")}

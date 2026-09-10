@@ -17,3 +17,13 @@ export async function fetchPPPoEUsageMonthly(months = 6) {
   const res = await api.get("pppoe/usage/monthly/", { params: { months } });
   return res.data;
 }
+
+export async function fetchPPPoEPasswordSuggestion() {
+  const res = await api.get("pppoe/password/");
+  return res.data;
+}
+
+export async function changePPPoEPassword(password) {
+  const res = await api.post("pppoe/password/", password ? { password } : {});
+  return res.data;
+}

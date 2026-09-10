@@ -3828,6 +3828,103 @@ class PPPoEControlView(APIView):
         ).delay()
         return Response({"detail": "Reconnect scheduled"}, status=202)
 
+
+class PPPoEPasswordView(APIView):
+    """
+    Let a PPPoE subscriber change their own password.
+
+    This exists because their devices cannot be managed from here. A PPPoE
+    subscriber's phones and laptops sit behind their own router's NAT, so
+    everything reaches us as one address and one session — the same wall
+    tethering hit, written up in services/tethering.py. There is no device to
+    list and none to block. What a subscriber CAN do about somebody using their
+    line is take the credentials away from them, and that is this.
+
+    Synchronous, not a task. The subscriber is about to retype this into their
+    own router, so they have to be told the real outcome — which routers now
+    honour it — before they start. A 202 and a promise is the wrong shape for a
+    change that knocks them offline.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    # One change a minute. Each one rewrites a secret on every router the
+    # operator has and drops a live session, so a stuck retry loop in a client
+    # is a lot of load on hardware behind CGNAT.
+    THROTTLE_SECONDS = 60
+
+    def _customer(self, request):
+        customer = getattr(request.user, "customer_profile", None)
+        if not customer:
+            return None, Response({"detail": "Customer profile not found"},
+                                  status=404)
+        if customer.connection_type != "pppoe":
+            return None, Response({"detail": "Not a PPPoE account"}, status=400)
+        return customer, None
+
+    def get(self, request):
+        """A suggestion, so the common case is one tap and no thinking."""
+        from billing.services.pppoe_service import suggest_pppoe_password
+
+        customer, error = self._customer(request)
+        if error:
+            return error
+
+        return Response({
+            "username": customer.pppoe_username,
+            "suggested_password": suggest_pppoe_password(),
+        })
+
+    def post(self, request):
+        from django.core.cache import cache
+        from billing.services.pppoe_service import (
+            PasswordRejected, change_pppoe_password, suggest_pppoe_password,
+            validate_pppoe_password,
+        )
+
+        customer, error = self._customer(request)
+        if error:
+            return error
+
+        key = f"pppoe-password-change:{customer.pk}"
+        if cache.get(key):
+            return Response(
+                {"detail": "You have just changed it. Try again in a minute."},
+                status=429)
+
+        raw = request.data.get("password")
+        try:
+            password = (validate_pppoe_password(raw) if raw
+                        else suggest_pppoe_password())
+            updated, failed = change_pppoe_password(customer, password)
+        except PasswordRejected as exc:
+            return Response({"detail": str(exc)}, status=400)
+
+        if not updated:
+            # Nothing honours the new password, so the old one is still the
+            # live one on every router. Saying "changed" here would leave the
+            # subscriber retyping a password that cannot log in.
+            return Response(
+                {"detail": "Could not reach your router just now — nothing "
+                           "was changed. Please try again shortly."},
+                status=503)
+
+        cache.set(key, True, self.THROTTLE_SECONDS)
+
+        return Response({
+            "username": customer.pppoe_username,
+            "password": password,
+            "routers_updated": updated,
+            "routers_unreachable": failed,
+            # Said plainly, because it is the whole experience of using this:
+            # the line is down until they retype it at their end.
+            "detail": (
+                "Password changed. You are now disconnected — open your "
+                "router's settings and enter the new password to get back "
+                "online."
+            ),
+        })
+
 from billing.router_service import get_pppoe_usage   
 class PPPoEUsageView(APIView):
     permission_classes = [permissions.IsAuthenticated]
