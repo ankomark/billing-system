@@ -667,6 +667,20 @@ def macs_to_grant(customer, subscription, *, include_blocked=False):
     return [m for m in everything if normalize_mac(m) in wanted]
 
 
+class RouterUnreachable(RuntimeError):
+    """
+    We could not reach the router, so whatever was asked for did not happen.
+
+    Its own type because the caller has to tell it apart from "the router
+    answered and refused". A refusal is worth recording against the router's
+    health; being unable to open a socket is already the health sweep's job,
+    and letting every task vote as well is what defeated the flap guard on
+    2026-08-31 -- twenty-six callers failing at once crossed a threshold meant
+    to take six minutes, and auto-failover emptied a router that was never
+    down. So this is raised to be retried, not to be counted.
+    """
+
+
 def disable_customer_access(customer):
     """
     Take a customer off the network — all of them, not one of them.
@@ -687,7 +701,29 @@ def disable_customer_access(customer):
 
     api = safe_connect_router(customer.router)
     if not api:
-        return
+        # Raised, not returned.
+        #
+        # This returned None, and every caller read that as success. The task
+        # then logged "Access disabled for customer N", called
+        # _mark_router_online on a router it had just failed to reach, and
+        # returned True -- so Celery recorded a success and never retried,
+        # because nothing had raised. The database said expired and the router
+        # said welcome, and nothing anywhere said they disagreed.
+        #
+        # It only bites while a router is unreachable, which sounds rare and is
+        # not: three simultaneous both-router outages on 2026-09-10 and 11 left
+        # 42 expired subscribers online, several for hours and two for days.
+        # Their accounts survived with limit-uptime unspent -- it counts
+        # connected time, not wall-clock -- and login-by=mac then readmitted
+        # them silently on the next packet.
+        #
+        # disable_customer_task already carries autoretry_for=(Exception,) with
+        # three attempts and backoff. It has simply never been given anything
+        # to retry on. This is that.
+        raise RouterUnreachable(
+            f"could not reach {customer.router} to disable customer "
+            f"{customer.pk}; they are still online"
+        )
 
     if customer.connection_type == "pppoe":
         # Both halves, in this order.

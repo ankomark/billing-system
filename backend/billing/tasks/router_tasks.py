@@ -10,6 +10,7 @@ from billing.router_service import (
     disconnect_pppoe_session,
     enable_customer_access,
     disable_customer_access,
+    RouterUnreachable,
 )
 
 logger = logging.getLogger(__name__)
@@ -167,6 +168,25 @@ def disable_customer_task(self, customer_id):
 
             logger.info(f"[disable_customer_task] Access disabled for customer {customer_id}")
             return True
+
+        except RouterUnreachable as e:
+            # Retried, but not counted against the router.
+            #
+            # Deliberately not _mark_router_offline. Whether a router is up is
+            # the health sweep's question, and it answers it every two minutes
+            # with a guard that takes three consecutive failures. Letting this
+            # vote as well is what broke that guard on 2026-08-31: twenty-six
+            # callers failing at once crossed a six-minute threshold in
+            # seconds, and auto-failover emptied a router that was never down.
+            # An expiry batch during an outage is exactly that shape -- dozens
+            # of these at once.
+            #
+            # Re-raised so autoretry_for picks it up. The subscriber is still
+            # online and that is worth another three attempts.
+            logger.warning(
+                "[disable_customer_task] customer %s is still online: %s",
+                customer_id, e)
+            raise
 
         except Exception as e:
             _mark_router_offline(router, e)
