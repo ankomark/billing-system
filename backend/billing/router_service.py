@@ -621,6 +621,52 @@ def hotspot_macs_for(customer, *, include_blocked=True):
     return macs
 
 
+def macs_to_grant(customer, subscription, *, include_blocked=False):
+    """
+    The devices a paid subscription should actually put on the router.
+
+    Not every address the customer has ever used, which is what
+    hotspot_macs_for returns and what this path used to grant.
+
+    Places are sold against a subscription -- CustomerDevice.subscription
+    exists to say so, and its own docstring explains why: "Counting places
+    against the subscription that granted them is what makes a second payment
+    worth something." Granting by customer instead broke that promise twice
+    over. A subscriber who had bought four times had all four old handsets put
+    back on the router by the fifth purchase, on a package sold for two. And
+    _remaining_data_bytes divides the allowance by however many devices are
+    granted, so the same history quietly shrank what they got: on 2026-09-11 a
+    customer paid 250/- for a 5 GB three-week package and their television was
+    given 1 GB, because four addresses from expired subscriptions were still
+    counted alongside it.
+
+    Falls back to every device when the subscription has none of its own. That
+    case is a renewal whose first device has not been bound yet, and the
+    alternative is granting nobody -- a customer who has just paid and gets
+    nothing at all, which is the one outcome worse than granting too much.
+    """
+    from .models import CustomerDevice
+
+    everything = hotspot_macs_for(customer, include_blocked=include_blocked)
+    if subscription is None:
+        return everything
+
+    rows = (
+        CustomerDevice.objects.all_tenants()
+        .filter(tenant_id=customer.tenant_id, customer=customer,
+                subscription=subscription)
+    )
+    if not include_blocked:
+        rows = rows.filter(blocked=False)
+
+    wanted = {normalize_mac(m) for m in rows.values_list("mac_address", flat=True)}
+    wanted.discard("")
+    if not wanted:
+        return everything
+
+    return [m for m in everything if normalize_mac(m) in wanted]
+
+
 def disable_customer_access(customer):
     """
     Take a customer off the network — all of them, not one of them.
@@ -713,11 +759,70 @@ def _grant_hotspot(api, router, customer, package, expiry_date,
     """
     granted = 0
     limit = _remaining_data_bytes(customer, subscription)
-    for mac in hotspot_macs_for(customer, include_blocked=False):
+    # The devices this subscription paid for, not every address the customer
+    # has ever used. macs_to_grant explains what that was costing.
+    for mac in macs_to_grant(customer, subscription, include_blocked=False):
         enable_hotspot(api, router, mac, package, expiry_date,
                        limit_bytes=limit)
+        retry_mac_login(api, mac)
         granted += 1
     return granted
+
+
+def retry_mac_login(api, mac_address):
+    """
+    Make the router try MAC authentication again for one device.
+
+    Returns True if it was asked to, False if the device is already online or
+    was not there to begin with.
+
+    RouterOS attempts MAC authentication when a host entry is CREATED, not on
+    every packet. That timing is the whole problem for a television: the set is
+    already sitting on the network showing "no internet" -- which is exactly
+    why somebody is buying for it -- so its host entry predates the voucher by
+    minutes. The one attempt happens before there is an account to match, fails,
+    and nothing retries for the life of that entry. The account then sits there
+    enabled, correct, with bytes-in=0, while the set stays dark.
+
+    Seen on 2026-09-11: a television with a valid three-week 5 GB account,
+    unauthenticated for 39 minutes, online 50 seconds after its host entry was
+    removed.
+
+    Skipped for a device that is already authenticated, and that guard is the
+    important half. _grant_hotspot runs on every renewal, and forgetting the
+    host of somebody who is online would drop their session -- they would come
+    back on the next packet, but a fix that interrupts every renewing customer
+    to help the few who are not yet connected is not worth having.
+    """
+    mac = normalize_mac(mac_address)
+    if not mac:
+        return False
+
+    try:
+        for a in api.path("ip", "hotspot", "active"):
+            if normalize_mac(a.get("mac-address")) == mac:
+                return False  # already on; nothing to retry
+
+        removed = False
+        hosts = api.path("ip", "hotspot", "host")
+        for h in list(hosts):
+            if normalize_mac(h.get("mac-address")) == mac:
+                # Positional, like every other removal here: librouteros'
+                # remove takes ids as *args and a `.id` keyword raises
+                # TypeError -- a Python error, not a router one, so nothing
+                # guarding against an unreachable router would catch it.
+                hosts.remove(h[".id"])
+                removed = True
+        return removed
+    except Exception:
+        # Never fatal. The grant itself has already happened and is what the
+        # customer paid for; this only shortens the wait before the router
+        # notices. A device that is not forgotten still authenticates the next
+        # time it reconnects.
+        logger.warning(
+            "[hotspot] could not refresh the host entry for %s; it will "
+            "authenticate on its next reconnect", mac, exc_info=True)
+        return False
 
 
 def _remaining_data_bytes(customer, subscription):
@@ -754,7 +859,13 @@ def _remaining_data_bytes(customer, subscription):
         used = usage_since(customer, window_start(subscription))
         remaining = max(cap - used, 0)
 
-        devices = max(len(hotspot_macs_for(customer, include_blocked=False)), 1)
+        # Divided by exactly what _grant_hotspot is about to write, and by
+        # nothing else. These two numbers have to be the same set or the
+        # arithmetic is wrong in one direction or the other: divide by more
+        # than is granted and the subscriber is short-changed, by fewer and
+        # every device gets the whole allowance.
+        devices = max(
+            len(macs_to_grant(customer, subscription, include_blocked=False)), 1)
         return remaining // devices
     except Exception:
         logger.exception(
