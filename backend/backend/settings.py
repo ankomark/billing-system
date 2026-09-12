@@ -565,6 +565,18 @@ CELERY_BEAT_SCHEDULE = {
         "task": "billing.tasks.subscription_tasks.close_abandoned_checkouts_task",
         "schedule": crontab(hour=4, minute=40),
     },
+    # Customers accumulating live subscriptions.
+    #
+    # Nothing else can see this: every row in a stack is active, paid and
+    # inside its own expiry, so each answers yes to every check made of it.
+    # What is wrong is the total, and only a query that counts them finds it.
+    #
+    # Just after the abandoned-checkout sweep, so the rows it closes are
+    # already gone and a stack of dead checkouts is not reported as live.
+    "flag-stacked-subscriptions": {
+        "task": "billing.tasks.subscription_tasks.flag_stacked_subscriptions_task",
+        "schedule": crontab(hour=4, minute=50),
+    },
     "send-expiry-reminders": {
         "task": "billing.tasks.reminder_tasks.send_expiry_reminders",
         "schedule": crontab(hour=8, minute=0),

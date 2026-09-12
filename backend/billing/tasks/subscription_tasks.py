@@ -143,3 +143,42 @@ def close_abandoned_checkouts_task(self):
     logger.info("[abandoned] closed %s, left %s in flight",
                 result.closed, result.in_flight)
     return result.closed
+
+
+@shared_task(
+    bind=True,
+    autoretry_for=(Exception,),
+    retry_backoff=30,
+    retry_kwargs={"max_retries": 2},
+    retry_jitter=True,
+)
+def flag_stacked_subscriptions_task(self):
+    """
+    Notice when a customer accumulates live subscriptions.
+
+    Nothing else can: every row in a stack is active, paid and inside its own
+    expiry, so each one answers yes to every check the system makes. Customer
+    33 held nine at once on 2026-09-12, overlapping continuously for six weeks,
+    and it surfaced only because a one-week package turned out to expire in 21
+    days.
+
+    Logged rather than acted on. Overlap is how a top-up works, and what to do
+    about a stack is a judgement about a customer rather than a rule a sweep
+    can apply.
+    """
+    from billing.services.stacked_subscriptions import find_stacked
+
+    stacks = find_stacked()
+    if not stacks:
+        logger.info("[stacked] no customer holds 3 or more live subscriptions")
+        return 0
+
+    for s in stacks:
+        logger.warning(
+            "[stacked] customer %s (%s) holds %s live subscriptions, %s of "
+            "them comped (KSh %s at no charge), %s devices against an "
+            "allowance of %s, covered to %s",
+            s.customer.pk, s.customer.phone, s.live_count, len(s.comps),
+            s.comp_value, s.devices, s.device_allowance,
+            s.covered_until.date())
+    return len(stacks)
