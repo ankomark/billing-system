@@ -1209,6 +1209,44 @@ class Subscription(TenantScopedModel):
         if not self.expiry_date:
             self.expiry_date = self.package.calculate_expiry(self.start_date)
 
+        # A window can be shorter than the package sells, never longer.
+        #
+        # This only ever computed an expiry when none was supplied, so any
+        # caller passing one kept it verbatim -- and Subscription is editable
+        # in Django admin, where extending a date is one field and a Save.
+        # That is where the stretched windows came from: four live on
+        # 2026-09-12, every one a comp, including a 6-hour bundle set to run a
+        # month and a 2-day bundle set to run thirty. Each was invisible to
+        # every sweep, because the row is active, paid and inside its own
+        # expiry -- the expiry simply is not the one the package sells.
+        #
+        # Clamped rather than refused. The paths that reach here include the
+        # M-Pesa callback and the counter sale, and a ValidationError in either
+        # would fail a purchase over a date nobody meant to set. Shortening is
+        # always safe: it hands the customer exactly what they bought.
+        #
+        # Shorter is left alone on purpose. Cutting a window early is a
+        # deliberate act -- 19 rows were truncated in a bulk correction on
+        # 2026-08-25 -- and extending them here would invent an entitlement
+        # rather than remove one.
+        # Skipped when this save is not writing the expiry at all. A caller
+        # passing update_fields=["status"] -- which is how expiry sweeps and
+        # Payment.save mark a row -- writes that column and nothing else, so
+        # clamping here would change the in-memory object, never reach the
+        # database, and log that it had done something it had not.
+        writing = kwargs.get("update_fields")
+        touches_expiry = writing is None or "expiry_date" in writing
+
+        ceiling = self.package.calculate_expiry(self.start_date)
+        if (touches_expiry and self.expiry_date
+                and (self.expiry_date - ceiling).total_seconds() > 120):
+            logger.warning(
+                "[subscription] %s expiry %s exceeds what %r sells; clamped "
+                "to %s",
+                self.pk or "(new)", self.expiry_date, self.package.name,
+                ceiling)
+            self.expiry_date = ceiling
+
         # Keep DB writes atomic
         with transaction.atomic():
             super().save(*args, **kwargs)
