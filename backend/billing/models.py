@@ -1829,9 +1829,25 @@ class Payment(TenantScopedModel):
                 subscription.status = "active"
                 subscription.save(update_fields=["status"])
 
+            # A payment makes the customer active, here rather than only at
+            # the counter.
+            #
+            # The counter-sale endpoint has always set this; the M-Pesa
+            # callback never did, so a subscriber swept to `expired` who then
+            # bought again kept the flag. That is not cosmetic:
+            # enforce_usage_caps scans `customer__status="active"`, so a
+            # customer carrying a stale `expired` flag is skipped by cap
+            # enforcement altogether and can spend an unlimited allowance on a
+            # capped package. Three were in that state on 2026-09-13.
+            fields = []
             if assigned_router:
                 customer.router = assigned_router
-                customer.save(update_fields=["router"])
+                fields.append("router")
+            if customer.status != "active":
+                customer.status = "active"
+                fields.append("status")
+            if fields:
+                customer.save(update_fields=fields)
 
             # Voucher is a DB write — belongs inside the transaction
             if customer.connection_type == "hotspot":

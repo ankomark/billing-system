@@ -182,3 +182,36 @@ def flag_stacked_subscriptions_task(self):
             s.comp_value, s.devices, s.device_allowance,
             s.covered_until.date())
     return len(stacks)
+
+
+@shared_task(
+    bind=True,
+    autoretry_for=(Exception,),
+    retry_backoff=30,
+    retry_kwargs={"max_retries": 2},
+    retry_jitter=True,
+)
+def sync_customer_status_task(self):
+    """
+    Keep Customer.status agreeing with what each customer holds.
+
+    Several paths write this flag and several clear it, and they do not cover
+    each other -- the abandoned-checkout sweep, the window trim, an operator
+    expiring a row by hand, and a subscription already expired when the sweep
+    ran all end a subscription without touching it.
+
+    Both directions cost something. A stale `expired` on a paying customer is
+    skipped by enforce_usage_caps, which scans customer__status="active", so
+    their data cap stops being enforced. A stale `active` inflates every
+    dashboard counting the flag and puts them in the set auto-failover migrates.
+
+    Cheap: two indexed queries and at most two bulk updates, usually of
+    nothing.
+    """
+    from billing.services.customer_status import sync_customer_status
+
+    activate, expire = sync_customer_status(apply=True)
+    if activate or expire:
+        logger.info("[status] %s activated, %s expired",
+                    len(activate), len(expire))
+    return len(activate) + len(expire)

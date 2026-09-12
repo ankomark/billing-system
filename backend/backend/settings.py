@@ -577,6 +577,20 @@ CELERY_BEAT_SCHEDULE = {
         "task": "billing.tasks.subscription_tasks.flag_stacked_subscriptions_task",
         "schedule": crontab(hour=4, minute=50),
     },
+    # Customer.status against what the customer actually holds.
+    #
+    # Written by several paths and cleared by others that do not cover each
+    # other, so it drifts both ways. A stale "expired" on a paying customer is
+    # skipped by enforce_usage_caps -- which scans customer__status="active" --
+    # so their data cap silently stops being enforced.
+    #
+    # Offset from the minute-by-minute expiry sweep so it reads a settled
+    # picture rather than racing the writes it is checking.
+    "sync-customer-status": {
+        "task": "billing.tasks.subscription_tasks.sync_customer_status_task",
+        "schedule": crontab(minute="3-59/5"),
+        "options": {"expires": 240},
+    },
     "send-expiry-reminders": {
         "task": "billing.tasks.reminder_tasks.send_expiry_reminders",
         "schedule": crontab(hour=8, minute=0),
