@@ -887,3 +887,33 @@ def prune_usage_records(days=None):
         deleted_total, days,
         f", skipped {skipped} unrolled day(s)" if skipped else "")
     return deleted_total
+
+
+@shared_task(
+    bind=True,
+    autoretry_for=(Exception,),
+    retry_backoff=30,
+    retry_kwargs={"max_retries": 2},
+    retry_jitter=True,
+)
+def align_uptime_limits_task(self):
+    """
+    Keep the router's idea of "time left" on the wall clock.
+
+    limit-uptime is written as wall-clock seconds and measured by RouterOS
+    against cumulative connected time, so every minute a subscriber spends
+    disconnected becomes a minute of credit outliving their window. A
+    three-hour package used for one hour left two hours spendable after it
+    expired, and that is what kept customer 39 online at 16:33 on a
+    subscription that ended at 15:05.
+
+    The wall clock itself is enforced by enforce_subscription_expiry. This
+    keeps the router-side backstop underneath it honest, so an outage that
+    stops the sweep does not hand out the difference.
+    """
+    from billing.services.uptime_alignment import align_uptime_limits
+
+    checked, corrected, overdue = align_uptime_limits(apply=True)
+    logger.info("[uptime] checked %s, corrected %s, %s with no paid cover "
+                "left to the disable sweep", checked, corrected, len(overdue))
+    return corrected

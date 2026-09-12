@@ -169,6 +169,15 @@ class ClosingAbandonedCheckouts(TestCase):
                 amount=Decimal("250.00"), method="cash")
             Invoice.objects.filter(subscription=sub).update(
                 payment_status="pending")
+            # Pushed back after the Payment, not before. Payment.save now
+            # starts the window at the moment the money lands, so recording
+            # one moves start_date to today -- which would put this row inside
+            # the grace period and have the sweep skip it as still in flight.
+            # The state being described is an OLD row whose invoice never
+            # caught up, so the age has to be restored once the payment has
+            # done its work.
+            Subscription.objects.filter(pk=sub.pk).update(
+                start_date=timezone.now() - timedelta(days=3))
 
         result = close_abandoned_checkouts(apply=True)
 

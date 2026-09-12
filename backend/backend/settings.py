@@ -530,10 +530,24 @@ WG_INTERFACE_NAME = os.getenv("WG_INTERFACE_NAME", "wg-smartbill")
 WG_SPOOL_DIR = os.getenv("WG_SPOOL_DIR", "/var/spool/wg-requests")
 
 CELERY_BEAT_SCHEDULE = {
+    # Every minute, not every five.
+    #
+    # This is what actually ends a subscription: it marks the row expired and
+    # takes the account off every router. Running it on a five-minute cycle
+    # meant a package bought at 07:00 for three hours could serve until 10:04,
+    # and a customer who buys a 3-hour bundle is buying a window, not "three
+    # hours and change". Four minutes is not much on its own; it is four
+    # minutes on every expiry, every day, across the estate.
+    #
+    # Cheap enough to run this often. The query is indexed on
+    # (status, expiry_date) and finds nothing on most passes; a router is only
+    # contacted for subscribers who have actually just expired. `expires` is
+    # well under the interval so a backed-up queue discards stale copies rather
+    # than running the same sweep twice.
     "expire-subscriptions": {
         "task": "billing.tasks.subscription_tasks.enforce_subscription_expiry",
-        "schedule": crontab(minute="*/5"),
-        "options": {"expires": 240},
+        "schedule": crontab(minute="*"),
+        "options": {"expires": 50},
     },
     # The rows abandoned checkouts leave behind.
     #
@@ -609,6 +623,22 @@ CELERY_BEAT_SCHEDULE = {
     #
     # Offset from both collectors (which run at */5 and 2-59/5) so it reads a
     # settled picture rather than racing the writes it is checking.
+    # Keep limit-uptime measuring the window the customer bought.
+    #
+    # It is written as wall-clock seconds and compared by RouterOS against
+    # cumulative connected time, so time spent disconnected turns into credit
+    # that outlives the subscription. Recomputed here because `uptime` only
+    # moves while somebody is connected and the window closes whether they are
+    # or not -- the gap between the two is exactly the free service.
+    #
+    # Offset from the collectors (*/5 and 2-59/5) and from enforce-usage-caps
+    # (4-59/5) so the four are not all opening connections to the same routers
+    # at the same moment.
+    "align-uptime-limits": {
+        "task": "billing.tasks.usage_tasks.align_uptime_limits_task",
+        "schedule": crontab(minute="1-59/5"),
+        "options": {"expires": 240},
+    },
     "enforce-usage-caps": {
         "task": "billing.tasks.usage_tasks.enforce_usage_caps",
         "schedule": crontab(minute="4-59/5"),
