@@ -682,102 +682,144 @@ class RouterUnreachable(RuntimeError):
     """
 
 
+def _routers_to_clear(customer):
+    """
+    Every router that might still be serving this customer, best first.
+
+    Not `customer.router`. That field records where they were last provisioned,
+    and an account on any other router of the same operator grants access just
+    as well -- `login-by=mac` readmits from it the moment the handset sends a
+    packet, whatever the database thinks. Customers move between routers
+    routinely here: an OLT cable is repatched, auto-failover re-homes them, an
+    operator moves them by hand. Each move writes an account in the new place
+    and the old one is left behind.
+
+    On 2026-09-12 there were 187 accounts on routers their customer was not
+    homed to, and two of them were serving people whose package had ended --
+    one whose subscription had expired 1.5 hours earlier, one suspended for
+    spending their data allowance. Expiry had run correctly on the home router
+    both times.
+
+    Condemned routers are skipped, for the reason kick_device_task skips them:
+    fiber1 has answered nothing since 19 August, and making every expiry block
+    on a connect timeout against it would empty the worker pool and stop the
+    health sweep -- which is how the dashboard came to report two live routers
+    as offline on 2026-09-07. Skipping is safe here because a router nobody can
+    reach is serving nobody; when it comes back,
+    disable_orphan_hotspot_users is the sweep that finds what it kept.
+
+    Condemned by evidence, not by the flag alone: is_online is False on a
+    router nobody has probed yet, so reading it would skip a newly added box
+    and every box for two minutes after a restart.
+    """
+    from django.conf import settings
+
+    routers = list(_tenant_routers(customer.tenant_id))
+    threshold = settings.ROUTER_OFFLINE_AFTER_FAILURES
+    live, condemned = [], []
+    for r in routers:
+        if not r.is_online and r.consecutive_failures >= threshold:
+            condemned.append(r)
+        else:
+            live.append(r)
+
+    if condemned:
+        logger.info(
+            "[disable] skipping %s for customer %s — declared offline by the "
+            "health sweep; disable_orphan_hotspot_users covers them",
+            ", ".join(str(r) for r in condemned), customer.pk)
+
+    # The home router first, so the common case is dealt with before any time
+    # is spent elsewhere and a failure further down still leaves the most
+    # likely place clean.
+    if customer.router_id:
+        live.sort(key=lambda r: r.id != customer.router_id)
+    return live
+
+
 def disable_customer_access(customer):
     """
-    Take a customer off the network — all of them, not one of them.
+    Take a customer off the network — every device, on every router.
 
-    This disabled `customer.hotspot_username` alone, which is the first device
+    Two assumptions used to narrow this, and each one was worth free internet
+    to somebody.
+
+    It disabled `customer.hotspot_username` alone, which is the first device
     and nothing else — the mirror of enable_customer_access only granting to
-    that one. Fixing the grant without fixing this would have been worse than
-    leaving both: devices two and three would have been provisioned at
-    redemption and then never removed at expiry, which is not a stale row, it
-    is unmetered internet.
+    that one. Devices two and three were provisioned at redemption and never
+    removed at expiry, which is not a stale row, it is unmetered internet.
 
-    Every device is attempted even if one fails. A router that rejects one
-    removal must not leave the rest connected — that turns a partial failure
-    into free access, silently.
+    It then visited `customer.router` alone. See _routers_to_clear: an account
+    on any of the operator's other routers keeps working, and 187 such accounts
+    existed on 2026-09-12.
+
+    Every device on every router is attempted even when one fails, and the
+    failures are collected rather than thrown at the first one. A router that
+    rejects a single removal must not leave the rest connected — that turns a
+    partial failure into free access, silently.
     """
-    if not customer.router:
+    routers = _routers_to_clear(customer)
+    if not routers:
         return
 
-    api = safe_connect_router(customer.router)
-    if not api:
-        # Raised, not returned.
-        #
-        # This returned None, and every caller read that as success. The task
-        # then logged "Access disabled for customer N", called
-        # _mark_router_online on a router it had just failed to reach, and
-        # returned True -- so Celery recorded a success and never retried,
-        # because nothing had raised. The database said expired and the router
-        # said welcome, and nothing anywhere said they disagreed.
-        #
-        # It only bites while a router is unreachable, which sounds rare and is
-        # not: three simultaneous both-router outages on 2026-09-10 and 11 left
-        # 42 expired subscribers online, several for hours and two for days.
-        # Their accounts survived with limit-uptime unspent -- it counts
-        # connected time, not wall-clock -- and login-by=mac then readmitted
-        # them silently on the next packet.
-        #
-        # disable_customer_task already carries autoretry_for=(Exception,) with
-        # three attempts and backoff. It has simply never been given anything
-        # to retry on. This is that.
+    unreachable, failed = [], []
+
+    for router in routers:
+        api = safe_connect_router(router)
+        if not api:
+            unreachable.append(router)
+            continue
+
+        if customer.connection_type == "pppoe":
+            # Both halves, in this order.
+            #
+            # Disabling the secret is future tense: it refuses the next
+            # authentication and leaves an established session running. PPP has
+            # no `limit-uptime` set on it the way a hotspot user does, and a
+            # PPPoE session has no reason to end on its own — so an expired
+            # subscriber stayed online until they happened to reboot their own
+            # router. Days, in practice, with the dashboard saying expired the
+            # whole time.
+            #
+            # Secret first, then the session: the other order leaves a window
+            # where the session is gone and the credentials still work, and a
+            # client that reconnects in under a second is the normal case.
+            #
+            # Both are no-ops on a router that does not hold this account, so
+            # sweeping every router costs nothing where there is nothing.
+            disable_pppoe(api, customer.pppoe_username)
+            try:
+                disconnect_pppoe_session(api, customer.pppoe_username)
+            except Exception as exc:
+                failed.append(f"{customer.pppoe_username}@{router} ({exc})")
+
+        elif customer.connection_type == "hotspot":
+            for mac in hotspot_macs_for(customer):
+                try:
+                    disable_hotspot(api, mac)
+                except Exception as exc:
+                    failed.append(f"{mac}@{router}")
+                    logger.warning(
+                        "[hotspot] could not disable %s for customer %s on "
+                        "%s: %s", mac, customer.pk, router, exc)
+
+    # Unreachable first. It is the more recoverable of the two -- a link that
+    # came back leaves nothing to fix -- and it is the one the task must not
+    # count against the router, so it needs its own exception type.
+    if unreachable:
         raise RouterUnreachable(
-            f"could not reach {customer.router} to disable customer "
-            f"{customer.pk}; they are still online"
+            f"could not reach {', '.join(str(r) for r in unreachable)} to "
+            f"disable customer {customer.pk}; they are still online"
         )
 
-    if customer.connection_type == "pppoe":
-        # Both halves, in this order.
-        #
-        # Disabling the secret is future tense: it refuses the next
-        # authentication and leaves an established session running. PPP has no
-        # `limit-uptime` set on it the way a hotspot user does, and a PPPoE
-        # session has no reason to end on its own — so an expired subscriber
-        # stayed online until they happened to reboot their own router. Days,
-        # in practice. The dashboard said expired the whole time.
-        #
-        # disconnect_pppoe_session has existed all along and is called by the
-        # admin disconnect, by router migration and by disconnect_pppoe_task.
-        # The one path that never called it was the one that runs on its own
-        # when somebody's time runs out.
-        #
-        # Secret first, then the session: the other order leaves a window
-        # where the session is gone and the credentials still work, and a
-        # client that reconnects in under a second is the normal case.
-        disable_pppoe(api, customer.pppoe_username)
-        try:
-            disconnect_pppoe_session(api, customer.pppoe_username)
-        except Exception as exc:
-            # Raised, not swallowed. The hotspot branch below raises for the
-            # same reason: disable_customer_task marks the router offline and
-            # re-raises, which is what gets this looked at rather than left in
-            # a log nobody reads. A subscriber still online after expiry is
-            # exactly the state worth retrying.
-            raise RuntimeError(
-                f"disabled {customer.pppoe_username} on {customer.router} but "
-                f"could not end its session: {exc}"
-            )
-        return
-
-    if customer.connection_type == "hotspot":
-        failed = []
-        for mac in hotspot_macs_for(customer):
-            try:
-                disable_hotspot(api, mac)
-            except Exception as exc:
-                failed.append(mac)
-                logger.warning(
-                    "[hotspot] could not disable %s for customer %s: %s",
-                    mac, customer.pk, exc,
-                )
-        if failed:
-            # Raised so the caller's retry sees it. disable_customer_task marks
-            # the router offline and re-raises, which is what gets this looked
-            # at rather than left in a log nobody reads.
-            raise RuntimeError(
-                f"could not disable {len(failed)} device(s) for customer "
-                f"{customer.pk}: {', '.join(failed)}"
-            )
+    if failed:
+        # Raised so the caller's retry sees it. disable_customer_task marks the
+        # router offline and re-raises, which is what gets this looked at
+        # rather than left in a log nobody reads.
+        raise RuntimeError(
+            f"could not disable {len(failed)} device(s) for customer "
+            f"{customer.pk}: {', '.join(failed)}"
+        )
 
 
 def _grant_hotspot(api, router, customer, package, expiry_date,

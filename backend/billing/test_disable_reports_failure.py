@@ -72,16 +72,32 @@ class WhenTheRouterCannotBeReached(TestCase):
         self.assertIn(str(self.customer.pk), message)
         self.assertIn("still online", message)
 
-    def test_a_customer_with_no_router_is_still_a_quiet_no_op(self):
+    def test_a_customer_with_no_router_is_still_cleared_everywhere(self):
         """
-        Deliberately unchanged. There is no router to remove them from, and
-        raising would retry three times over something no retry can fix.
+        This used to assert a quiet no-op, on the reasoning that there was no
+        router to remove them from. That reasoning was the bug.
+
+        `customer.router` records where somebody was last provisioned, not
+        where accounts for them exist. An account on any of the operator's
+        routers grants access on its own -- login-by=mac readmits from it --
+        so a null router field means "we do not know where they are", which is
+        a reason to look everywhere rather than nowhere.
+
+        On 2026-09-12 there were 187 accounts on routers their customer was
+        not homed to, two of them serving people whose package had ended.
         """
         with tenant_context(self.tenant):
             self.customer.router = None
             self.customer.save(update_fields=["router"])
 
-        self.assertIsNone(disable_customer_access(self.customer))
+        with patch("billing.router_service.safe_connect_router",
+                   return_value=object()),              patch("billing.router_service.disable_hotspot",
+                   return_value=True) as disable:
+            disable_customer_access(self.customer)
+
+        self.assertTrue(
+            disable.called,
+            "a customer with no router recorded was left on the hardware")
 
 
 class WhenTheRouterAnswers(TestCase):
