@@ -54,11 +54,28 @@ def enforce_subscription_expiry(self):
             #
             # Evaluated after the row above is marked expired, so it cannot
             # count itself.
+            # Paid, not merely active -- the same rule every grant path
+            # carries, and the one place it was missing that hands out service
+            # rather than withholding it.
+            #
+            # Every subscription is born `active` with an unpaid invoice, so an
+            # abandoned M-Pesa prompt leaves a row that answers yes here. When
+            # the customer's real package then ran out, this concluded they
+            # were still covered and skipped the disable entirely: no
+            # disconnect, no customer.status change, and the longer the package
+            # they had walked away from paying for, the longer they stayed on.
+            # A 250/- three-week prompt abandoned in August was still
+            # suppressing expiry in September.
+            #
+            # Found on 2026-09-12 auditing the 316 sessions then live. 90 such
+            # rows existed across 63 subscribers; for 35 of them the unpaid row
+            # outlasted every paid one, and 29 of those had paid nothing at all.
             still_covered = (
                 Subscription.objects.all_tenants()
                 .filter(
                     customer=customer,
                     status="active",
+                    invoice__payment_status="paid",
                     expiry_date__gt=timezone.now(),
                 )
                 .exists()
@@ -84,3 +101,45 @@ def enforce_subscription_expiry(self):
 
     logger.info(f"[expiry] Processed {processed} expired subscriptions")
     return processed
+
+
+@shared_task(
+    bind=True,
+    autoretry_for=(Exception,),
+    retry_backoff=30,
+    retry_kwargs={"max_retries": 3},
+    retry_jitter=True,
+)
+def close_abandoned_checkouts_task(self):
+    """
+    Nightly sweep of the subscription rows abandoned checkouts leave behind.
+
+    Every tap on a package writes an `active` subscription before any money
+    moves, so an ignored M-Pesa prompt leaves a row that reads as an
+    entitlement. They accumulate daily and nothing has ever removed them: 90
+    were live across 63 subscribers when this was written, the oldest from
+    August.
+
+    Scheduled for the same reason the orphan sweep is. The call sites that
+    misread these rows are fixed, but "no query gets this wrong" is a property
+    of every query written from now on, and this makes it stop mattering.
+
+    Runs in the quiet hour and well away from enforce_subscription_expiry's
+    five-minute cycle, so the two are never deciding a customer's status at the
+    same moment.
+    """
+    from billing.services.abandoned_checkouts import close_abandoned_checkouts
+
+    result = close_abandoned_checkouts(apply=True)
+
+    if result.needs_a_human:
+        # error, not warning: somebody was debited and the invoice never
+        # caught up, and nothing else in the system is looking for that.
+        logger.error(
+            "[abandoned] %s subscription(s) are unpaid but have money against "
+            "them and were left alone; reconcile by hand: %s",
+            len(result.banked), [s.pk for s, _ in result.banked])
+
+    logger.info("[abandoned] closed %s, left %s in flight",
+                result.closed, result.in_flight)
+    return result.closed

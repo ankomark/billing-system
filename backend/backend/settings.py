@@ -535,6 +535,22 @@ CELERY_BEAT_SCHEDULE = {
         "schedule": crontab(minute="*/5"),
         "options": {"expires": 240},
     },
+    # The rows abandoned checkouts leave behind.
+    #
+    # A subscription is written the moment somebody taps a package, before any
+    # money moves, so every ignored M-Pesa prompt leaves an `active` row inside
+    # its window -- which is what the whole codebase means by "entitled to
+    # service". Nothing had ever cleaned them up, and two call sites had
+    # already misread them: the manual-migration branch provisioned against
+    # one, and enforce_subscription_expiry's own coverage check let one
+    # suppress a disconnect.
+    #
+    # In the quiet hour, and far from the */5 expiry cycle so the two are never
+    # deciding one customer's status at the same moment.
+    "close-abandoned-checkouts": {
+        "task": "billing.tasks.subscription_tasks.close_abandoned_checkouts_task",
+        "schedule": crontab(hour=4, minute=40),
+    },
     "send-expiry-reminders": {
         "task": "billing.tasks.reminder_tasks.send_expiry_reminders",
         "schedule": crontab(hour=8, minute=0),
