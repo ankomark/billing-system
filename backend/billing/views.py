@@ -1653,8 +1653,17 @@ def _release_device_from_others(customer, mac_address):
     now = timezone.now()
 
     for other in others:
+        # Named for what it asks, and now actually asking it. `active` alone
+        # is true of an abandoned M-Pesa prompt, so an account that had paid
+        # nothing could keep its claim on a handset against a claimant who
+        # had -- the exact inversion this function's docstring rules out when
+        # it says "Both of those people have paid".
+        #
+        # Errs the other way from the grant paths: the cost here is a paying
+        # customer being refused their own device, not free service.
         still_paying = other.subscriptions.filter(
-            status="active", expiry_date__gt=now,
+            status="active", invoice__payment_status="paid",
+            expiry_date__gt=now,
         ).exists()
 
         if still_paying and _mac_is_online(other, mac_address):
@@ -4456,7 +4465,7 @@ class AdminRouterDetailView(APIView):
 
         router.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
-from billing.router_service import safe_connect_router, provision_customer_on_router,migrate_customer_router  
+from billing.router_service import safe_connect_router, provision_customer_on_router, migrate_customer_router, NotEntitled  
 
 
 class AdminMigrateCustomerView(APIView):
@@ -4509,26 +4518,54 @@ class AdminMigrateCustomerView(APIView):
                     status=400
                 )
 
+            # Paid, not merely active. The automatic branch below goes
+            # through migrate_customer_router, which has required a settled
+            # invoice since 2026-09-09; this branch provisions directly and
+            # was left behind, so the same endpoint applied two different
+            # rules depending on whether the operator named a router.
+            #
+            # It is the more dangerous half. Every subscription is born
+            # `active` with an unpaid invoice, so ordering by expiry alone
+            # picks the longest *purchase attempt*, not the longest purchase
+            # -- and provisioning hands out a fresh limit-uptime measured from
+            # now. Of the subscribers online on 2026-09-12, three were holding
+            # a pending row that outranked their paid one: customer 45 would
+            # have been migrated onto an unpaid three-week 20GB package
+            # instead of the one-week 4GB they actually paid for.
             subscription = (
                 customer.subscriptions
-                .filter(status="active")
+                .filter(status="active", invoice__payment_status="paid")
                 .order_by("-expiry_date")
                 .first()
             )
 
             if not subscription:
                 return Response(
-                    {"detail": "Customer has no active subscription"},
+                    {"detail": "Customer has no paid active subscription"},
                     status=400
                 )
 
-            # Provision on selected router
-            provision_customer_on_router(
-                api=api,
-                router=router,
-                customer=customer,
-                subscription=subscription,
-            )
+            # Provision on selected router.
+            #
+            # NotEntitled is the gate in front of the hardware refusing a
+            # subscription that does not grant service. The query above should
+            # already have excluded one, so reaching this is a sign the two
+            # disagree -- report it as a refusal rather than a 500, because the
+            # operator needs to know the customer was not moved.
+            try:
+                provision_customer_on_router(
+                    api=api,
+                    router=router,
+                    customer=customer,
+                    subscription=subscription,
+                )
+            except NotEntitled as exc:
+                logger.warning("[migrate] %s", exc)
+                return Response(
+                    {"detail": "Customer has no subscription that entitles "
+                               "them to service"},
+                    status=400
+                )
 
             customer.router = router
             customer.save(update_fields=["router"])

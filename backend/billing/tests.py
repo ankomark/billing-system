@@ -631,6 +631,8 @@ class VoucherValidationTests(TestCase):
             self.sub = Subscription.objects.create(
                 customer=self.customer, package=self.package,
             )
+        Invoice.objects.filter(subscription=self.sub).update(
+            payment_status="paid")
         self.voucher = Voucher.objects.create(
             code="WIFI-TEST01",
             subscription=self.sub,
@@ -1099,6 +1101,10 @@ class HotspotMacCollisionTests(TestCase):
             customer=customer, package=self.package, status=status,
             expiry_date=timezone.now() + timezone.timedelta(days=days),
         )
+        # A holder is somebody who paid. Subscription.save writes the invoice
+        # unpaid and this fixture never settled it, which was invisible while
+        # "active" was treated as an entitlement on its own.
+        Invoice.objects.filter(subscription=sub).update(payment_status="paid")
         voucher = Voucher.objects.create(
             code=f"WIFI-{suffix.upper()}", subscription=sub,
             expires_at=timezone.now() + timezone.timedelta(days=max(days, 1)),
@@ -1473,6 +1479,11 @@ class TwoOperatorMixin:
                     connection_type="pppoe", router=router, tenant=tenant)
                 sub = Subscription.objects.create(
                     customer=customer, package=package, tenant=tenant)
+                # Deliberately left unpaid. Most suites built on this mixin are
+                # about a payment arriving -- the callback, double payment, STK
+                # credentials -- and they need an invoice to settle. A suite
+                # that needs a subscription somebody already paid for settles
+                # it in its own setUp; see ConnectionAttemptTests.
             self.data[tag] = dict(
                 tenant=tenant, router=router, package=package,
                 customer=customer, sub=sub, invoice=sub.invoice,
@@ -2140,6 +2151,8 @@ class PublicEndpointScopingTests(TwoOperatorMixin, TestCase):
                 else self.data["t2"]["package"],
                 tenant=tenant,
                 expiry_date=timezone.now() + timezone.timedelta(days=days))
+            Invoice.objects.filter(subscription=sub).update(
+                payment_status="paid")
             v = Voucher.objects.create(
                 code=f"WIFI-{suffix}", subscription=sub, tenant=tenant,
                 expires_at=timezone.now() + timezone.timedelta(days=days))
@@ -9714,6 +9727,14 @@ class ConnectionAttemptTests(TwoOperatorMixin, TestCase):
             sub.save()
             sub.package.max_devices = 1
             sub.package.save(update_fields=["max_devices"])
+            # Settled here rather than in the mixin. A subscription carrying a
+            # voucher exists in production only because Payment.save minted the
+            # voucher and marked the invoice paid in the same transaction, so
+            # an unpaid one describes a state that cannot occur -- but settling
+            # it for every suite on this mixin would break the ones whose whole
+            # subject is a payment arriving.
+            Invoice.objects.filter(subscription=sub).update(
+                payment_status="paid")
             Voucher.objects.create(
                 tenant=self.t1, code="WIFI-REAL01", subscription=sub,
                 expires_at=sub.expiry_date)

@@ -37,7 +37,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from billing.models import (
-    ConnectionAttempt, Customer, CustomerDevice, Package, RouterDevice,
+    ConnectionAttempt, Customer, CustomerDevice, Invoice, Package, RouterDevice,
     Subscription, Tenant, Voucher,
 )
 from billing.router_service import ros_duration_seconds
@@ -158,6 +158,8 @@ class StaleDevicePlaceTests(TestCase):
                 tenant=self.tenant, customer=customer, package=self.package,
                 status="active",
                 expiry_date=timezone.now() + timedelta(hours=hours))
+            Invoice.objects.filter(subscription=sub).update(
+                payment_status="paid")
             voucher = Voucher.objects.create(
                 tenant=self.tenant, code=code, subscription=sub,
                 bound_mac=bound_mac,

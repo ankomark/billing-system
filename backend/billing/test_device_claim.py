@@ -38,8 +38,8 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from billing.models import (
-    Customer, CustomerDevice, Package, RouterDevice, Subscription, Tenant,
-    Voucher,
+    Customer, CustomerDevice, Invoice, Package, RouterDevice, Subscription,
+    Tenant, Voucher,
 )
 from billing.tenancy import tenant_context
 
@@ -77,6 +77,13 @@ class DeviceClaimTests(TestCase):
             sub = Subscription.objects.create(
                 tenant=self.tenant, customer=customer, package=self.package,
                 status="active", expiry_date=timezone.now() + timedelta(hours=hours))
+            # Settled, because that is what this fixture has always meant: a
+            # subscriber with live time on the clock is one who paid for it.
+            # Subscription.save writes the invoice unpaid, and nothing used to
+            # look, so the fixture could leave it and still describe a paying
+            # customer. Everything that grants access now asks.
+            Invoice.objects.filter(subscription=sub).update(
+                payment_status="paid")
             voucher = None
             if code:
                 voucher = Voucher.objects.create(

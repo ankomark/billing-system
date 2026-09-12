@@ -8,13 +8,17 @@ from django.utils import timezone
 from django.db import transaction
 
 from billing.models import Voucher, Payment, Subscription
+from billing.services.entitlement import is_entitled
 from billing.utils import normalize_mac
 
 logger = logging.getLogger(__name__)
 
 
-# If your Subscription has a "revoked" or "cancelled" state, block it here.
-# Safe default: expiry_date is the main source of truth.
+# Kept only because other modules import it. The access decision no longer
+# consults it -- see _subscription_is_valid_for_access, which delegates to
+# billing.services.entitlement. As a deny-list naming statuses this system has
+# never had, it matched nothing and silently admitted every suspended and
+# expired subscription whose date had not yet passed.
 BLOCKED_SUB_STATUSES = {"revoked", "cancelled"}
 
 # Longest input accepted. An M-Pesa message is around 160 characters; anything
@@ -159,19 +163,31 @@ def extract_codes(text: str) -> List[str]:
 
 def _subscription_is_valid_for_access(sub: Subscription) -> bool:
     """
-    Subscription validity rules:
-    - Must have expiry_date and must be in the future.
-    - If status exists and is a blocked status (revoked/cancelled), deny.
+    Whether the subscription behind a presented code still grants access.
+
+    Delegates to billing.services.entitlement, which is the single definition
+    of what entitles anybody to be on the network. This function used to have
+    its own, and it was wrong in two ways that both let somebody through.
+
+    It blocked `BLOCKED_SUB_STATUSES = {"revoked", "cancelled"}` -- two
+    statuses this system has never had. The real ones are active, expired and
+    suspended, so the deny-list matched nothing and the only real check was
+    the expiry date. A subscription suspended by enforce_usage_caps for
+    spending its data allowance keeps its future expiry_date, so re-entering
+    the voucher validated and the portal answered "Access granted" to somebody
+    who had just been cut off. The router grant behind it refused, because
+    enable_customer_access asks the right question -- so this was a lie to the
+    customer rather than free internet, and it was one refactor away from
+    being both.
+
+    It also never checked that the invoice was paid. That mattered less than
+    it looks, because vouchers are minted only by Payment.save and a Payment
+    is what marks an invoice paid, so in practice a voucher implies money --
+    but the receipt branch of _resolve_code checked payment explicitly and
+    this branch did not, and "unreachable" is not a property worth relying on
+    when the check costs nothing.
     """
-    if not sub or not getattr(sub, "expiry_date", None):
-        return False
-
-    # Optional status check (only if field exists)
-    status = getattr(sub, "status", None)
-    if status and status in BLOCKED_SUB_STATUSES:
-        return False
-
-    return sub.expiry_date > timezone.now()
+    return is_entitled(sub)
 
 
 def _mac_allowed(sub: Subscription, mac_address: Optional[str]) -> bool:

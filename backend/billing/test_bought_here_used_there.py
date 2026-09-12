@@ -29,7 +29,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from billing.models import (
-    ConnectionAttempt, Customer, CustomerDevice, Package, RouterDevice,
+    ConnectionAttempt, Customer, CustomerDevice, Invoice, Package, RouterDevice,
     Subscription, Tenant, Voucher,
 )
 from billing.tenancy import tenant_context
@@ -76,6 +76,8 @@ class BoughtHereUsedThereTests(TestCase):
                 tenant=self.tenant, customer=customer, package=package,
                 status="active",
                 expiry_date=timezone.now() + timedelta(hours=1))
+            Invoice.objects.filter(subscription=sub).update(
+                payment_status="paid")
             Voucher.objects.create(
                 tenant=self.tenant, code=code, subscription=sub,
                 expires_at=timezone.now() + timedelta(hours=1))

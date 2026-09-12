@@ -7,6 +7,7 @@ import os
 import socket
 from .router_profiles import ensure_pppoe_profile, ensure_hotspot_profile
 from .utils import normalize_mac
+from .services.entitlement import is_entitled, entitlement_reason
 from django.db import transaction
 import logging
 logger = logging.getLogger(__name__)
@@ -1250,8 +1251,39 @@ def pick_failover_router(exclude_router_id=None, customer=None, tenant_id=None):
             return r, api
 
     return None, None
+class NotEntitled(RuntimeError):
+    """A grant was attempted against a subscription that does not entitle."""
+
+
 def provision_customer_on_router(api, router, customer, subscription):
-   
+    """
+    Put a subscriber onto a specific router against a specific subscription.
+
+    The last gate before the hardware, and deliberately a gate rather than a
+    convenience. Everything above this decides *which* subscription to serve;
+    this refuses to serve one that was never entitled to service in the first
+    place, whatever the caller believed.
+
+    It is here because the callers kept getting it wrong, and always the same
+    way: they filtered on `status="active"` and ordered by expiry, which picks
+    the longest abandoned checkout over the package somebody actually bought.
+    Three call sites carried that bug -- the manual branch of
+    AdminMigrateCustomerView, enforce_subscription_expiry's coverage check,
+    and the device-claim check -- and each was found separately, months apart,
+    after the damage. A rule that has to be remembered at every call site is a
+    rule that will be forgotten at the next one.
+
+    Raises rather than returning False. A refusal that can be ignored is how
+    disable_customer_access came to report success while leaving subscribers
+    online, and a silent no here would provision nothing while the caller told
+    the customer they were connected.
+    """
+    if not is_entitled(subscription):
+        raise NotEntitled(
+            f"refusing to provision customer {customer.pk} on {router}: "
+            f"subscription {getattr(subscription, 'pk', None)} is "
+            f"{entitlement_reason(subscription)}")
+
     package = subscription.package
 
     if customer.connection_type == "pppoe":
