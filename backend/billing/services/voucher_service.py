@@ -337,6 +337,10 @@ def validate_voucher(
 # portal needs.
 REFUSED_UNKNOWN = "unknown"
 REFUSED_EXPIRED = "expired"
+# Spent the data rather than the time. A different sentence entirely to
+# the person holding the phone: their code is good, their hours are not
+# up, and retyping it will never work -- they need a new bundle.
+REFUSED_CAPPED = "capped"
 
 
 def describe_refusal(code: str, tenant=None) -> str:
@@ -354,8 +358,9 @@ def describe_refusal(code: str, tenant=None) -> str:
     Only the refusal path calls this, so the cost lands on the answer nobody
     is waiting on rather than on every redemption.
 
-    Returns REFUSED_EXPIRED when the code is genuinely this operator's and the
-    only thing wrong with it is the clock, and REFUSED_UNKNOWN otherwise —
+    Returns REFUSED_CAPPED when the allowance is spent, REFUSED_EXPIRED when
+    the code is genuinely this operator's and the only thing wrong with it is
+    the clock, and REFUSED_UNKNOWN otherwise —
     including for a code held back for any other reason, because a customer
     should never be told a code has expired when it has not.
     """
@@ -375,6 +380,8 @@ def describe_refusal(code: str, tenant=None) -> str:
             if voucher.expires_at and voucher.expires_at <= now:
                 return REFUSED_EXPIRED
             sub = voucher.subscription
+            if sub and sub.status == "suspended":
+                return REFUSED_CAPPED
             if sub and sub.expiry_date and sub.expiry_date <= now:
                 return REFUSED_EXPIRED
             continue
@@ -382,6 +389,8 @@ def describe_refusal(code: str, tenant=None) -> str:
         payment = payments.order_by("-paid_at", "-id").first()
         if payment is not None:
             sub = payment.subscription
+            if sub and sub.status == "suspended":
+                return REFUSED_CAPPED
             if sub and sub.expiry_date and sub.expiry_date <= now:
                 return REFUSED_EXPIRED
 

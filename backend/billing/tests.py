@@ -9216,10 +9216,22 @@ class DataUsageReportingTests(TwoOperatorMixin, TestCase):
         return resp.data["data_usage"]
 
     def set_cap(self, mb):
+        """
+        The cap that applies to this subscription.
+
+        It lives in two places now and the helper has to write both. A
+        subscription freezes the cap it was sold at creation, so editing the
+        package alone changes what a NEW purchase would get and leaves this
+        one exactly as it was — which is the point of freezing it, and makes a
+        package edit the wrong shorthand for "this subscriber's cap is X".
+        """
         with tenant_context(self.t1):
             pkg = self.sub.package
             pkg.data_cap_mb = mb
             pkg.save(update_fields=["data_cap_mb"])
+            Subscription.objects.all_tenants().filter(
+                pk=self.sub.pk).update(data_cap_mb=mb)
+            self.sub.refresh_from_db()
 
     # ---- consumption -------------------------------------------------------
 
@@ -9915,6 +9927,9 @@ class SubscriberFacingTests(TwoOperatorMixin, TestCase):
         with tenant_context(self.t1):
             self.sub.package.data_cap_mb = 0
             self.sub.package.save(update_fields=["data_cap_mb"])
+            Subscription.objects.all_tenants().filter(
+                pk=self.sub.pk).update(data_cap_mb=0)
+            self.sub.refresh_from_db()
             HotspotUsageRecord.objects.create(
                 tenant=self.t1, customer=self.customer,
                 period_start=timezone.now(), period_end=timezone.now(),
@@ -9927,8 +9942,14 @@ class SubscriberFacingTests(TwoOperatorMixin, TestCase):
 
     def test_a_capped_plan_reports_how_much_is_gone(self):
         with tenant_context(self.t1):
+            # Both, because a subscription freezes the cap it was sold.
+            # Editing the package alone changes what a NEW purchase would get
+            # and leaves this one as it was -- which is the point.
             self.sub.package.data_cap_mb = 4 * 1024
             self.sub.package.save(update_fields=["data_cap_mb"])
+            Subscription.objects.all_tenants().filter(
+                pk=self.sub.pk).update(data_cap_mb=4 * 1024)
+            self.sub.refresh_from_db()
             HotspotUsageRecord.objects.create(
                 tenant=self.t1, customer=self.customer,
                 period_start=timezone.now(), period_end=timezone.now(),

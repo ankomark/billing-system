@@ -118,6 +118,13 @@ class TheCapCanBeExpressed(DataCapBase):
         with tenant_context(self.tenant):
             self.package.data_cap_mb = 0
             self.package.save(update_fields=["data_cap_mb"])
+            # And the subscription, which froze its cap when it was created.
+            # Editing the package alone now changes only what a new purchase
+            # would get — deliberately, so an operator cannot rewrite an
+            # allowance already paid for.
+            Subscription.objects.all_tenants().filter(
+                pk=self.sub.pk).update(data_cap_mb=0)
+            self.sub.refresh_from_db()
         self.assertEqual(cap_bytes_for(self.customer, self.sub), 0)
 
     def test_a_customer_override_replaces_the_packages_cap(self):
@@ -176,6 +183,13 @@ class TheCapIsChecked(DataCapBase):
         with tenant_context(self.tenant):
             self.package.data_cap_mb = 0
             self.package.save(update_fields=["data_cap_mb"])
+            # And the subscription, which froze its cap when it was created.
+            # Editing the package alone now changes only what a new purchase
+            # would get — deliberately, so an operator cannot rewrite an
+            # allowance already paid for.
+            Subscription.objects.all_tenants().filter(
+                pk=self.sub.pk).update(data_cap_mb=0)
+            self.sub.refresh_from_db()
         self.record(50_000)
         cut, disable, _ = self.run_check()
         self.assertFalse(cut)
@@ -622,6 +636,13 @@ class HotspotCapsReachTheHardware(TestCase):
         with tenant_context(self.tenant):
             self.package.data_cap_mb = 0
             self.package.save(update_fields=["data_cap_mb"])
+            # And the subscription, which froze its cap when it was created.
+            # Editing the package alone now changes only what a new purchase
+            # would get — deliberately, so an operator cannot rewrite an
+            # allowance already paid for.
+            Subscription.objects.all_tenants().filter(
+                pk=self.sub.pk).update(data_cap_mb=0)
+            self.sub.refresh_from_db()
 
         enable, _ = self._grant()
         self.assertIsNone(

@@ -59,7 +59,22 @@ def cap_bytes_for(customer, subscription=None):
         if override is not None:
             return int(override) * MB
 
-    package = getattr(subscription, "package", None) if subscription else None
+    if subscription is None:
+        return 0
+
+    # What the subscription was sold, not what the package says today.
+    #
+    # Reading the package here let an operator rewrite an allowance already
+    # paid for. Raising 24hrs from 5GB to 10GB on 2026-09-13 gave the extra to
+    # 27 live subscribers at once, and lowering a cap would have cut off
+    # somebody mid-package. Subscriptions written before the field existed
+    # carry null and still follow the package, which is exactly what they did
+    # yesterday -- this changes nothing for them until an operator says so.
+    sold = getattr(subscription, "data_cap_mb", None)
+    if sold is not None:
+        return int(sold) * MB
+
+    package = getattr(subscription, "package", None)
     if package is None:
         return 0
 

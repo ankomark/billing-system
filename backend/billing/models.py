@@ -1175,6 +1175,24 @@ class Subscription(TenantScopedModel):
         max_length=10, choices=STATUS_CHOICES, default="active"
     )
 
+    # The allowance this subscription was SOLD, frozen at purchase.
+    #
+    # The cap used to be read off the package every time it was needed, which
+    # means an operator editing a package rewrites history: raising 24hrs from
+    # 5GB to 10GB on 2026-09-13 handed the extra 5GB to all 27 people already
+    # on it, and lowering one would cut off somebody mid-package who had paid
+    # for the larger bundle. Customer 1813 had spent 5.22GB of a 5GB allowance
+    # and was still online, because by the time anything looked the package
+    # said 10GB and they were under it.
+    #
+    # Null means "follow the package", which is what every row written before
+    # this field existed does. New rows take a copy at creation, so a price
+    # list is free to change without touching anything already sold.
+    data_cap_mb = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text="Cap in MB as sold. Null inherits the package's current cap.",
+    )
+
     # When this subscription's data allowance ran out, and null until it does.
     #
     # The cut-off needs somewhere durable to live, because the danger with a
@@ -1208,6 +1226,11 @@ class Subscription(TenantScopedModel):
 
         if not self.expiry_date:
             self.expiry_date = self.package.calculate_expiry(self.start_date)
+
+        # Taken once, at creation. Re-reading it on every save would put the
+        # package back in charge the moment anything else touched the row.
+        if creating and self.data_cap_mb is None:
+            self.data_cap_mb = self.package.data_cap_mb
 
         # A window can be shorter than the package sells, never longer.
         #

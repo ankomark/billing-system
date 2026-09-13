@@ -29,7 +29,8 @@ from .security import (
     poll_token_matches,
 )
 from billing.services.voucher_service import (
-    REFUSED_EXPIRED, describe_refusal, mark_voucher_used, validate_voucher,
+    REFUSED_CAPPED, REFUSED_EXPIRED, describe_refusal, mark_voucher_used,
+    validate_voucher,
 )
 from billing.router_service import enable_customer_access
 from .mpesa_client import initiate_stk_push
@@ -1865,6 +1866,21 @@ class HotspotVoucherValidateView(APIView):
             # somebody who has simply finished their hour back to retype it —
             # which is what a customer does thirty times before giving up.
             reason = describe_refusal(code, tenant=tenant)
+            if reason == REFUSED_CAPPED:
+                # The data went, not the time. Saying "invalid" here sends
+                # somebody whose code is perfectly good back to retype it, and
+                # saying "expired" sends them to argue that they have hours
+                # left -- which they do. Neither tells them the one thing that
+                # would get them online.
+                _record_attempt(
+                    tenant, code, mac_address, ConnectionAttempt.EXPIRED)
+                return Response(
+                    {"detail": "You have used all the data on this package. "
+                               "Buy another one to get back online.",
+                     "capped": True},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
             if reason == REFUSED_EXPIRED:
                 _record_attempt(
                     tenant, code, mac_address, ConnectionAttempt.EXPIRED)
