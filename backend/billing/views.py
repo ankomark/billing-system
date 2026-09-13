@@ -44,6 +44,7 @@ from .analytics import (
     performance_pulse, revenue_series, peak_hours, expiring_soon,
     customer_flow, by_station,
     revenue_by_package as analytics_by_package,
+    today_by_package,
     revenue_by_method as analytics_by_method,
 )
 from django.utils.dateparse import parse_datetime
@@ -5185,6 +5186,11 @@ class OperatorAnalyticsView(APIView):
                 "arpu": round(total_revenue / active_count, 2) if active_count else 0.0,
             },
             "series": series,
+            # Today on its own, alongside the range. The panels below answer
+            # how the month is going; this answers how today is going, which is
+            # the question asked when the network is full and the takings look
+            # thin. It ignores `days` on purpose -- it is always since midnight.
+            "today": today_by_package(station),
             "by_package": analytics_by_package(start, end, station),
             "by_method": analytics_by_method(start, end, station),
             "peak_hours": peak_hours(start, end, station),

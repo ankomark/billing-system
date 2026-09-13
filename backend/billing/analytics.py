@@ -23,7 +23,7 @@ from django.db.models import Count, Q, Sum
 from django.db.models.functions import ExtractHour, TruncDate
 from django.utils import timezone
 
-from .models import Customer, Payment, Station, Subscription
+from .models import Customer, Payment, RouterDevice, Station, Subscription
 
 
 def _pct_change(current, previous):
@@ -149,6 +149,147 @@ def revenue_by_package(start, end, station=None):
         }
         for r in rows
     ]
+
+
+def today_by_package(station=None, now=None):
+    """
+    What has sold since midnight, package by package.
+
+    The range panels answer "how is the month going". This answers "how is
+    today going", which is a different question an operator asks at 11am with
+    three hundred people on the network and no idea whether that is a good
+    morning or a bad one. Concurrency does not answer it: most of those people
+    are on weekly and monthly packages bought on earlier days and will pay
+    nothing today.
+
+    Midnight local, not a rolling 24 hours. An operator comparing today with
+    yesterday means the calendar day they are standing in -- Africa/Nairobi
+    here -- and a rolling window would move the goalposts every time they
+    looked.
+
+    Comps are counted as sales at zero rather than dropped. Free internet
+    given away is still a package issued, and a panel that hides it would make
+    2026-09-13's nine comps to one customer invisible exactly where somebody
+    would have noticed them.
+    """
+    now = now or timezone.now()
+    start = timezone.localtime(now).replace(
+        hour=0, minute=0, second=0, microsecond=0)
+
+    qs = Payment.objects.filter(paid_at__gte=start, paid_at__lte=now)
+    if station:
+        qs = qs.filter(customer__router__station_id=station)
+
+    rows = (
+        qs.values("subscription__package__name")
+        .annotate(
+            revenue=Sum("amount"),
+            purchases=Count("id"),
+            customers=Count("customer", distinct=True),
+        )
+        .order_by("-revenue", "-purchases")
+    )
+
+    # What was given away, and why.
+    #
+    # The reason is the operator's own word from the counter-sale form, kept on
+    # the Payment as its reference -- "Refund", "Router fail", "trial". Showing
+    # the count without it answers the smaller half of the question: an
+    # operator seeing three free weeks wants to know whether that was three
+    # apologies for an outage or three people being let on for nothing.
+    #
+    # Counted per package rather than as a total, because that is where it
+    # reads: a comped month and a comped three hours are not the same
+    # giveaway, and a single figure at the top hides which one happened.
+    comp_rows = (
+        qs.filter(method="comp")
+        .values("subscription__package__name", "reference")
+        .annotate(n=Count("id"))
+        .order_by("-n")
+    )
+    comps = {}
+    for r in comp_rows:
+        name = r["subscription__package__name"] or "Unknown"
+        entry = comps.setdefault(name, {"count": 0, "reasons": []})
+        entry["count"] += r["n"]
+        # Blank rather than invented. A comp issued before the form required a
+        # reason has none, and "unknown" would read as a reason somebody gave.
+        reason = (r["reference"] or "").strip()
+        if reason:
+            entry["reasons"].append({"reason": reason, "count": r["n"]})
+
+    packages = [
+        {
+            "name": r["subscription__package__name"] or "Unknown",
+            "revenue": float(r["revenue"] or 0),
+            "purchases": r["purchases"],
+            "customers": r["customers"],
+            "comps": comps.get(
+                r["subscription__package__name"] or "Unknown",
+                {"count": 0, "reasons": []})["count"],
+            "comp_reasons": comps.get(
+                r["subscription__package__name"] or "Unknown",
+                {"count": 0, "reasons": []})["reasons"],
+        }
+        for r in rows
+    ]
+
+    revenue = sum(p["revenue"] for p in packages)
+    purchases = sum(p["purchases"] for p in packages)
+
+    # Share of the day's takings, so the table and the pie agree without the
+    # browser recomputing it. A day with no revenue yet is all zeroes rather
+    # than a division by nothing.
+    for p in packages:
+        p["share"] = round(100 * p["revenue"] / revenue, 1) if revenue else 0.0
+
+    # Why a full network can sit above a quiet till.
+    #
+    # This is the sentence the panel exists for. On 2026-09-13 at 10:54 there
+    # were 341 sessions and KSh 1,865 taken, which reads as a collapse until
+    # you can see that 166 of the 247 people connected had bought on earlier
+    # days and owed nothing today. Selling week and month bundles means
+    # concurrency and daily revenue come apart, permanently, and an operator
+    # should not have to rediscover that every morning.
+    #
+    # Sessions come from the cached per-router count, never a live probe.
+    # ActiveClientsView says why in its own docstring: a dashboard that asks
+    # the routers blocks a worker per router on every page load. A count older
+    # than the health sweep's own cycle is dropped rather than shown stale --
+    # a wrong number here would discredit the two beside it, which are exact.
+    STALE_AFTER = timedelta(minutes=6)
+    routers = RouterDevice.objects.filter(is_active=True)
+    if station:
+        routers = routers.filter(station_id=station)
+    sessions = None
+    for r in routers:
+        if r.active_sessions is None or r.active_sessions_at is None:
+            continue
+        if now - r.active_sessions_at > STALE_AFTER:
+            continue
+        sessions = (sessions or 0) + r.active_sessions
+
+    # Everybody currently entitled, and how many of them paid today. Both from
+    # the database: "connected" would need the routers, and "holding a live
+    # paid package" is the number that actually explains the gap.
+    covered = Subscription.objects.filter(
+        status="active", invoice__payment_status="paid", expiry_date__gt=now)
+    if station:
+        covered = covered.filter(customer__router__station_id=station)
+    covered_count = covered.values("customer").distinct().count()
+
+    return {
+        "since": start.isoformat(),
+        "as_of": timezone.localtime(now).isoformat(),
+        "sessions": sessions,
+        "covered": covered_count,
+        "bought_today": qs.values("customer").distinct().count(),
+        "revenue": revenue,
+        "purchases": purchases,
+        "comps": sum(p["comps"] for p in packages),
+        "customers": qs.values("customer").distinct().count(),
+        "packages": packages,
+    }
 
 
 def revenue_by_method(start, end, station=None):

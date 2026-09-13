@@ -5,6 +5,7 @@ import {
   Card, CardHeader, Chart, DataTable, StatTile,
   KES, compactKES, num, seriesColor, SURFACES,
 } from "./ui";
+import TodaySales from "./TodaySales";
 import { fetchAnalytics } from "../../services/dashboard";
 import { fetchStations } from "../../services/routers";
 
@@ -100,6 +101,13 @@ export default function AnalyticsPanels({ compact = false, defaultDays = 30 }) {
         <div className="h-40 rounded-xl border border-white/10 bg-slate-900/60 animate-pulse" />
       ) : (
         <>
+          {/* Today first, above everything the range controls.
+              It answers a different question from the panels below -- how the
+              day is going, not how the month is -- and it is the one asked
+              when the network is full and the till looks quiet. Deliberately
+              outside the range filter: it is always since midnight. */}
+          <TodaySales today={data.today} />
+
           {!compact && (
             <>
               {/* Each figure carries its comparison, because "Sh 5,390 today"
