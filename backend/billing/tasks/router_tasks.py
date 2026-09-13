@@ -411,4 +411,37 @@ def ensure_lease_script_task(self):
         # Never let this stop the lease script being reported as done.
         logger.exception("[walled-garden] sweep failed")
 
+    # And the PPPoE side of the same complaint. RouterOS ships a 10-second
+    # keepalive, which on a wireless backhaul ends a session over an ordinary
+    # blip and leaves the subscriber's router redialling.
+    try:
+        from billing.services.lease_script import (
+            ensure_pppoe_keepalive_everywhere,
+        )
+
+        raised = ensure_pppoe_keepalive_everywhere(apply=True)
+        if raised:
+            logger.info(
+                "[pppoe] keepalive corrected on %s server(s)", raised)
+    except Exception:
+        logger.exception("[pppoe] keepalive sweep failed")
+
+    # PPP secrets nobody holds any more. A PPPoE secret is a working login for
+    # unmetered internet, and deleting a customer used to leave theirs on every
+    # router -- three were still dialling-ready weeks after being deleted
+    # through the customers page. perform_destroy now clears them at the
+    # source; this catches whatever does not go through it.
+    try:
+        from billing.services.pppoe_orphans import (
+            sweep_orphan_secrets_everywhere,
+        )
+
+        gone, purged = sweep_orphan_secrets_everywhere(apply=True)
+        if gone or purged:
+            logger.info(
+                "[pppoe-orphans] disabled %s secret(s), removed %s",
+                gone, purged)
+    except Exception:
+        logger.exception("[pppoe-orphans] sweep failed")
+
     return was_set

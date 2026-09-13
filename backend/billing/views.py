@@ -83,7 +83,9 @@ from billing.tasks.notification_tasks import notify_customer_task,send_sms_task,
 from .config import get_setting
 from rest_framework.permissions import IsAuthenticated
 from .serializers import UserProfileSerializer
-from billing.router_service import enable_customer_access
+from billing.router_service import (
+    disable_customer_access, enable_customer_access,
+)
 from billing.tasks.router_tasks import (enable_customer_task,disable_customer_task,disconnect_pppoe_task)
 
 class ThrottledLoginView(TenantTokenObtainPairView):
@@ -442,6 +444,53 @@ class CustomerViewSet(viewsets.ModelViewSet):
         if conn_filter:
             qs = qs.filter(connection_type=conn_filter)
         return qs
+
+    def perform_destroy(self, instance):
+        """
+        Take the subscriber off the hardware before forgetting they existed.
+
+        Deleting only removed the database row. The account stayed on every
+        router the customer had ever been provisioned on, enabled, with nobody
+        left to match it against -- which for PPPoE is a working username and
+        password for unmetered internet, held by whoever knows it.
+
+        Two were found live on 2026-09-14, `enock` and `st.ambrose`, deleted
+        through this page and still dialling-ready on both routers. The
+        hotspot side had been surviving this on luck: its orphan sweep removes
+        accounts with no customer behind them, and there has never been a
+        PPPoE equivalent.
+
+        Done BEFORE the row goes, because disable_customer_access reads the
+        customer to know which usernames and which routers to visit; after the
+        delete there is nothing left to ask.
+
+        A router that cannot be reached raises, and that is deliberate -- the
+        delete is refused rather than half-done, because the alternative is
+        exactly the state this exists to prevent, with the evidence gone. The
+        operator can try again when the router is back.
+        """
+        from billing.router_service import RouterUnreachable
+
+        with tenant_context(instance.tenant_id):
+            try:
+                disable_customer_access(instance)
+            except RouterUnreachable as exc:
+                raise ValidationError(
+                    "This subscriber could not be removed from "
+                    f"{exc} — deleting them now would leave their account "
+                    "live on the router with nothing left to match it "
+                    "against. Try again once the router is reachable."
+                )
+            except Exception:
+                # Reached the router and it refused. Logged loudly and the
+                # delete proceeds: the orphan sweeps are the backstop, and
+                # blocking an operator's deletion on one stubborn account
+                # would leave them no way forward at all.
+                logger.exception(
+                    "[customers] could not fully clear customer %s from the "
+                    "routers before deleting them", instance.pk)
+
+        super().perform_destroy(instance)
 
 
 class PackageViewSet(viewsets.ModelViewSet):
