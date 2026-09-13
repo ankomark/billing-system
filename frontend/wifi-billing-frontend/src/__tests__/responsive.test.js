@@ -99,6 +99,44 @@ describe("responsive structure", () => {
   });
 
   /**
+   * A column that steps aside on a narrow screen has to take its heading with
+   * it. DataTable applied the column's class to the cells and not the header,
+   * so hiding a column left its title behind and every column after it sat
+   * under the wrong one — worse than the crowding it was meant to fix.
+   */
+  test("a hidden column hides its heading too", () => {
+    const table = fs.readFileSync(
+      path.join(SRC, "components/admin/ui/DataTable.jsx"), "utf8");
+
+    // hideBelow reaches the header, the cells and the loading skeleton.
+    const uses = table.match(/hideClass\(c\)/g) || [];
+    expect(uses.length).toBeGreaterThanOrEqual(3);
+
+    const head = table.slice(table.indexOf("<thead"), table.indexOf("</thead"));
+    expect(head).toMatch(/hideClass\(c\)/);
+
+    // And the free-form class does NOT: three tables pass styling there that
+    // would fight the header's own and restyle headings nobody asked about.
+    expect(head).not.toMatch(/c\.className/);
+  });
+
+  /**
+   * Six columns do not fit a 360px phone. The panel an operator checks on the
+   * way to a site has to answer what sold and for how much without a sideways
+   * drag through columns it could have dropped.
+   */
+  test("the today panel sheds columns on a phone", () => {
+    const panel = fs.readFileSync(
+      path.join(SRC, "components/admin/TodaySales.jsx"), "utf8");
+
+    expect(panel).toMatch(/hideBelow: "(sm|md|lg)"/);
+    // What it must never drop: the package, the count, and the money.
+    expect(panel).toMatch(/label: "Package"/);
+    expect(panel).toMatch(/label: "Sold"/);
+    expect(panel).toMatch(/label: "Revenue"/);
+  });
+
+  /**
    * The page body must never scroll sideways. Wide content scrolls inside its
    * own container instead, which is what the table rule above is about.
    */

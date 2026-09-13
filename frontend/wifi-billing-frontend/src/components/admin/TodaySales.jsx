@@ -60,9 +60,14 @@ export default function TodaySales({ today }) {
       render: (r) => num(r.purchases),
     },
     {
+      // Dropped on a phone. Six columns do not fit 360px, and the three that
+      // survive -- what it is, how many, how much -- are the ones somebody
+      // checking takings on the way to a site actually needs. The rest come
+      // back as the screen allows.
       key: "customers",
       label: "Buyers",
       align: "right",
+      hideBelow: "md",
       render: (r) => num(r.customers),
     },
     {
@@ -74,12 +79,13 @@ export default function TodaySales({ today }) {
       key: "comps",
       label: "Given",
       align: "right",
+      hideBelow: "md",
       render: (r) =>
         r.comps ? (
           <span className="inline-flex items-center gap-1.5">
             <span className="tabular-nums">{num(r.comps)}</span>
             <span
-              className="max-w-[11rem] truncate text-xs text-slate-400"
+              className="hidden max-w-[8rem] truncate text-xs text-slate-400 lg:inline lg:max-w-[11rem]"
               title={r.comp_reasons.map((x) => `${x.reason} ×${x.count}`).join(", ")}
             >
               {reasonSummary(r.comp_reasons)}
@@ -99,6 +105,9 @@ export default function TodaySales({ today }) {
       key: "share",
       label: "Share",
       align: "right",
+      // The donut says the same thing, so on the narrowest screens the column
+      // is the one to lose rather than the figure.
+      hideBelow: "sm",
       render: (r) => (r.revenue > 0 ? `${r.share}%` : "—"),
     },
   ];
@@ -126,7 +135,7 @@ export default function TodaySales({ today }) {
 
       <div className="grid gap-4 px-5 pb-5 pt-4 lg:grid-cols-[minmax(0,1fr)_260px]">
         <div>
-          <div className="mb-4 flex flex-wrap gap-6">
+          <div className="mb-4 grid grid-cols-2 gap-x-6 gap-y-4 sm:flex sm:flex-wrap">
             <Figure label="Revenue today" value={KES(today.revenue ?? 0)} big theme={theme} />
             <Figure label="Vouchers sold" value={num(today.purchases ?? 0)} theme={theme} />
             <Figure label="Buyers" value={num(today.customers ?? 0)} theme={theme} />
@@ -173,15 +182,15 @@ export default function TodaySales({ today }) {
         </div>
 
         {wedges.length > 0 && (
-          <div className="min-h-[220px]">
-            <ResponsiveContainer width="100%" height={220}>
+          <div className="h-[160px] sm:h-[220px]">
+            <ResponsiveContainer width="100%" height="100%">
               <PieChart>
                 <Pie
                   data={wedges}
                   dataKey="revenue"
                   nameKey="name"
-                  innerRadius={52}
-                  outerRadius={86}
+                  innerRadius="58%"
+                  outerRadius="95%"
                   paddingAngle={2}
                   stroke="none"
                   // Off, deliberately. Package names are long enough that the
