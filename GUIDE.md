@@ -12,6 +12,13 @@ same thing on Railway in about twenty minutes. It is a trial, not a
 destination — read its last section for what a shared-egress host cannot prove
 about reaching an operator's router.
 
+Once it is running, `ROUTER-RUNBOOK.md` is the one to reach for when
+subscribers report trouble. It covers the half-dozen very different router
+faults that all produce the same sentence — "connected but no internet" — and
+gives a command that confirms or rules out each in under a minute. Its standing
+configuration table is also what to check by hand after a router is reset,
+restored from a backup, or swapped for a spare.
+
 ---
 
 ## Before anything
