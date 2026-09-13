@@ -700,6 +700,18 @@ CELERY_BEAT_SCHEDULE = {
     # 03:40, after the rollup and the prune, when a disabled account inconveniences
     # the fewest people and an operator reading the log next morning finds one
     # night's work rather than a week's.
+    # Hourly, at an odd minute so it does not land with the five-minute sweeps.
+    #
+    # The lease script is router configuration: it survives a reboot but not a
+    # reset, a restore from an old backup, or a router swapped for a spare.
+    # Any of those bring back "connected, no internet" at that station with
+    # nothing to say why, so the system re-asserts it rather than trusting
+    # that it was set once.
+    "ensure-lease-script": {
+        "task": "billing.tasks.router_tasks.ensure_lease_script_task",
+        "schedule": crontab(minute="37"),
+        "options": {"expires": 1800},
+    },
     "disable-orphan-hotspot-users": {
         "task": "billing.tasks.router_tasks.disable_orphan_hotspot_users_task",
         # Every five minutes rather than nightly.

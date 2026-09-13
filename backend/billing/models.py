@@ -2340,19 +2340,59 @@ class PPPoEUsageRecord(TenantScopedModel):
 
 class HotspotUsageState(TenantScopedModel):
     """
-    Stores last seen counters per hotspot user
+    The counters last seen for one subscriber's account, on one router.
+
+    Per account, which means per device per station -- because that is what
+    RouterOS meters. A hotspot account is named for one MAC on one router and
+    its counters start at zero and only climb, so a subscriber with two phones
+    at two sites has four sets of counters and one pair per person cannot
+    describe any of them.
+
+    Holding only one pair, keyed to the subscriber, went wrong twice. Traffic
+    at a second station looked like a counter that had gone backwards, which
+    reads as a router reboot, so it re-baselined and threw the interval away,
+    every poll. And the collector matched sessions against
+    `customer.hotspot_username` -- a single MAC -- while `mac-auth-mode` names
+    every session after the device's own address, so any subscriber online on
+    a different handset was invisible to it. 85 of 347 entitled devices were
+    in exactly that state on 2026-09-13: usage recorded as zero, the data cap
+    never firing from our side, while the router's own limit-bytes-total cut
+    them off with nothing here able to say why.
+
+    A row is created the first time an account is seen and records nothing
+    that time. There is no delta without a baseline: treating the first
+    reading as one is what would charge a subscriber their entire session in
+    a single interval the moment this model changed shape.
     """
-    customer = models.OneToOneField(
+    customer = models.ForeignKey(
         "Customer",
         on_delete=models.CASCADE,
-        related_name="hotspot_usage_state"
+        related_name="hotspot_usage_states"
+    )
+    router = models.ForeignKey(
+        "RouterDevice",
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="hotspot_usage_states",
+        help_text="The station these counters were read from. Null is a row "
+                  "written before counters were kept per station.",
+    )
+    mac_address = models.CharField(
+        max_length=17, blank=True, default="",
+        help_text="The device whose account these counters belong to. Blank "
+                  "is a row written before counters were kept per device.",
     )
     last_rx_bytes = models.BigIntegerField(default=0)
     last_tx_bytes = models.BigIntegerField(default=0)
     last_seen_at = models.DateTimeField(null=True, blank=True)
 
+    class Meta:
+        unique_together = [("customer", "router", "mac_address")]
+
     def __str__(self):
-        return f"HotspotState({self.customer_id})"
+        return (f"HotspotState({self.customer_id}@{self.router_id}"
+                f"/{self.mac_address})")
 
 
 class HotspotUsageRecord(TenantScopedModel):

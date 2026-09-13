@@ -8,6 +8,7 @@ from django.utils import timezone
 
 from billing.models import (
     Customer,
+    CustomerDevice,
     Subscription,
     HotspotUsageRecord,
     HotspotUsageState,
@@ -16,8 +17,10 @@ from billing.models import (
 )
 from billing.notifications import notify_customer
 from billing.router_service import (
+    _tenant_routers,
     disable_customer_access,
     get_hotspot_sessions,
+    get_hotspot_sessions_by_mac,
     get_pppoe_sessions,
     ros_duration_seconds,
     tenant_sessions,
@@ -30,6 +33,7 @@ from billing.services.usage import (
     window_start,
 )
 from billing.tenancy import all_tenants, tenant_context
+from billing.utils import normalize_mac
 
 logger = logging.getLogger(__name__)
 
@@ -383,61 +387,121 @@ def collect_hotspot_usage_for_tenant(self, tenant_id):
     # Read each router's table once for this operator, as above. This one
     # matters more: a hotspot operator has far more subscribers than a PPPoE
     # one, and they are the whole product.
-    try:
-        sessions = tenant_sessions(tenant_id, get_hotspot_sessions)
-    except Exception as e:
-        logger.warning(
-            f"[usage] Hotspot router error for operator {tenant_id}: {e}")
-        return 0
+    # Which subscriber each device belongs to, in one query rather than one
+    # per subscriber. Every registered device, not only the granted ones: a
+    # handset passing traffic on this operator's hotspot is that subscriber's
+    # traffic and counts against their bundle, whichever purchase first bound
+    # it.
+    owner_of = {}
+    for mac, customer_id in (
+            CustomerDevice.objects.all_tenants()
+            .filter(tenant_id=tenant_id)
+            .values_list("mac_address", "customer_id")):
+        mac = normalize_mac(mac)
+        if mac:
+            owner_of[mac] = customer_id
 
+    by_id = {}
     for customer in customers:
-        router, usage = sessions.get(
-            customer.hotspot_username, (None, None))
+        by_id[customer.pk] = customer
+        # The first device a subscriber ever used still names their account on
+        # older rows, so it stays a valid way to reach them.
+        mac = normalize_mac(customer.hotspot_username)
+        if mac:
+            owner_of.setdefault(mac, customer.pk)
 
-        if not usage or not usage.get("connected"):
+    touched = set()
+
+    for router in _tenant_routers(tenant_id):
+        # Keyed by MAC, not by login name. mac-auth-mode names a session after
+        # whichever handset opened it, and looking sessions up by
+        # customer.hotspot_username -- one MAC, fixed at the first device a
+        # subscriber ever used -- matched nothing for anybody on a second
+        # phone or on an address a rotating handset had moved to. 85 of 347
+        # entitled devices were invisible that way on 2026-09-13, their usage
+        # recorded as zero and their cap never firing from our side.
+        try:
+            rows = get_hotspot_sessions_by_mac(router)
+        except Exception as e:
+            logger.warning(
+                "[usage] Hotspot router error for operator %s on %s: %s",
+                tenant_id, router, e)
+            continue
+        if rows is None:
+            # Unreadable, not empty. A subscriber on a router that could not
+            # be read is left alone rather than recorded as disconnected.
             continue
 
-        state, _ = HotspotUsageState.objects.get_or_create(
-            customer=customer, defaults={"tenant_id": customer.tenant_id}
-        )
+        for mac, usage in rows.items():
+            if not usage or not usage.get("connected"):
+                continue
+            customer = by_id.get(owner_of.get(mac))
+            if customer is None:
+                continue
 
-        # The router's point of view, as in the PPPoE collector above.
-        rx = int(usage.get("rx_bytes", 0))
-        tx = int(usage.get("tx_bytes", 0))
+            # Counters belong to an ACCOUNT -- one MAC on one router -- so the
+            # baseline they are measured against has to as well. One baseline
+            # per subscriber made a second account look like a counter that
+            # had gone backwards: read as a reboot, re-baselined, and the
+            # interval thrown away every single poll.
+            state, created = HotspotUsageState.objects.get_or_create(
+                customer=customer, router=router, mac_address=mac,
+                defaults={"tenant_id": customer.tenant_id},
+            )
 
-        # Router reboot or reconnect resets the counters — re-baseline rather
-        # than recording a negative delta.
-        if rx < state.last_rx_bytes or tx < state.last_tx_bytes:
+            # The router's point of view, as in the PPPoE collector above.
+            rx = int(usage.get("rx_bytes", 0))
+            tx = int(usage.get("tx_bytes", 0))
+
+            # The first sight of an account is a baseline and nothing else.
+            # There is no delta without one, and treating the reading itself
+            # as a delta would charge a subscriber their whole session in a
+            # single interval -- which is what every row would do the first
+            # time this runs per account.
+            #
+            # Router reboot or reconnect resets the counters — re-baseline
+            # rather than recording a negative delta.
+            if created or rx < state.last_rx_bytes or tx < state.last_tx_bytes:
+                state.last_rx_bytes = rx
+                state.last_tx_bytes = tx
+                state.last_seen_at = now
+                state.save(update_fields=[
+                    "last_rx_bytes", "last_tx_bytes", "last_seen_at"])
+                continue
+
+            HotspotUsageRecord.objects.create(
+                tenant_id=customer.tenant_id,
+                customer=customer,
+                router=router,
+                period_start=state.last_seen_at or now,
+                period_end=now,
+                # Crossed over — see the PPPoE collector above for why.
+                # bytes-in on /ip/hotspot/active is what the router received
+                # from the phone, which is the phone's upload.
+                download_bytes=tx - state.last_tx_bytes,
+                upload_bytes=rx - state.last_rx_bytes,
+            )
+
             state.last_rx_bytes = rx
             state.last_tx_bytes = tx
             state.last_seen_at = now
-            state.save(update_fields=["last_rx_bytes", "last_tx_bytes", "last_seen_at"])
-            continue
+            state.save(update_fields=[
+                "last_rx_bytes", "last_tx_bytes", "last_seen_at"])
+            touched.add(customer.pk)
 
-        HotspotUsageRecord.objects.create(
-            tenant_id=customer.tenant_id,
-            customer=customer,
-            router=router,
-            period_start=state.last_seen_at or now,
-            period_end=now,
-            # Crossed over — see the PPPoE collector above for why. bytes-in on
-            # /ip/hotspot/active is what the router received from the phone,
-            # which is the phone's upload.
-            download_bytes=tx - state.last_tx_bytes,
-            upload_bytes=rx - state.last_rx_bytes,
-        )
-
-        state.last_rx_bytes = rx
-        state.last_tx_bytes = tx
-        state.last_seen_at = now
-        state.save(update_fields=["last_rx_bytes", "last_tx_bytes", "last_seen_at"])
+    for customer_id in touched:
+        customer = by_id[customer_id]
         processed += 1
 
-        # Checked here, against the delta that was just written, because this
-        # is the earliest moment the system can possibly know the allowance is
-        # spent. A separate sweep on its own schedule adds its own interval to
-        # the overshoot, and on a 300 MB bundle an interval is a large
-        # fraction of the whole bundle.
+        # Checked here, against the deltas that were just written, because
+        # this is the earliest moment the system can possibly know the
+        # allowance is spent. A separate sweep on its own schedule adds its
+        # own interval to the overshoot, and on a 300 MB bundle an interval is
+        # a large fraction of the whole bundle.
+        #
+        # Once per subscriber, not once per device: the cap is measured
+        # against everything they have used, so checking it again for a second
+        # handset would only repeat the same query and the same answer.
         #
         # Guarded, and only this subscriber is lost if it raises: a cap check
         # that fails must not abandon the rest of the operator's collection,

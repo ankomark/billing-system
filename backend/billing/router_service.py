@@ -1737,6 +1737,35 @@ def get_hotspot_sessions(router):
         router, ("ip", "hotspot", "active"), "user", "bytes-in", "bytes-out")
 
 
+def get_hotspot_sessions_by_mac(router):
+    """
+    Live hotspot sessions on one router, keyed by the device's MAC.
+
+    The login name is the wrong key for a hotspot. `mac-auth-mode` is
+    mac-as-username, so a session is named after whichever handset opened it,
+    while the collector looked sessions up by `customer.hotspot_username` --
+    one MAC, fixed at the first device a subscriber ever used. Anybody online
+    on a second phone, or on the address a rotating handset moved to, matched
+    nothing and had their traffic recorded as zero: 85 of 347 entitled devices
+    on 2026-09-13, with the data cap never firing for any of them from our
+    side while the router's own limit cut them off regardless.
+
+    Keying on the MAC removes the guess. Every device a subscriber owns is
+    matched by the address it is actually using, and which subscriber that is
+    comes from the device registry rather than from one field on the customer.
+
+    Normalised, because a miss here does not fail loudly -- it silently
+    attributes nothing, which is the fault this replaces.
+    """
+    sessions = _sessions_by_user(
+        router, ("ip", "hotspot", "active"), "mac-address",
+        "bytes-in", "bytes-out")
+    if sessions is None:
+        return None
+    return {normalize_mac(name): data for name, data in sessions.items()
+            if normalize_mac(name)}
+
+
 def tenant_sessions(tenant_id, reader):
     """
     One operator's live sessions across all of their routers.
@@ -1758,6 +1787,31 @@ def tenant_sessions(tenant_id, reader):
             continue
         for username, data in sessions.items():
             found.setdefault(username, (router, data))
+    return found
+
+
+def tenant_sessions_everywhere(tenant_id, reader):
+    """
+    Every live session for one operator's subscribers, keyed by username.
+
+    tenant_sessions keeps the first router a username is found on and drops
+    the rest. For PPPoE that loses nothing -- the session is exclusive. For a
+    hotspot it loses a station: a subscriber has an account at each one, and
+    the two sets of counters are both real traffic on the same bundle. Keeping
+    only one meant somebody who used 1 GB at one station and 2 GB at another
+    was measured at whichever was read first.
+
+    Returns username -> [(router, data), ...], so the caller sums rather than
+    choosing. Same per-operator scoping and same skip-on-unreadable rule as
+    tenant_sessions, for the same reasons.
+    """
+    found = {}
+    for router in _tenant_routers(tenant_id):
+        sessions = reader(router)
+        if sessions is None:
+            continue
+        for username, data in sessions.items():
+            found.setdefault(username, []).append((router, data))
     return found
 
 

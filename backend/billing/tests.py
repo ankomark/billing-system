@@ -10354,9 +10354,39 @@ class UsageDirectionTests(TwoOperatorMixin, TestCase):
                           lambda router: self.sessions(username)):
             getattr(usage_tasks, task_name)(self.t1.id)
 
+    def collect_hotspot(self):
+        """
+        The hotspot half, which reads a different table a different way.
+
+        Sessions are keyed by MAC, not by login name: mac-auth-mode names a
+        session after the handset that opened it, and matching on
+        customer.hotspot_username left a quarter of the estate unmeasured. And
+        the collector resolves routers through its own namespace, so that is
+        where the patch has to land.
+        """
+        from billing.tasks import usage_tasks
+
+        def routers(tenant_id):
+            return [self.router] if tenant_id == self.t1.id else []
+
+        with patch.object(usage_tasks, "_tenant_routers", side_effect=routers), \
+             patch.object(
+                 usage_tasks, "get_hotspot_sessions_by_mac",
+                 lambda router: self.sessions(self.hotspot.hotspot_username)):
+            usage_tasks.collect_hotspot_usage_for_tenant(self.t1.id)
+
     def test_the_hotspot_collector_does_not_call_a_download_an_upload(self):
-        self.collect("collect_hotspot_usage_for_tenant",
-                     "get_hotspot_sessions", self.hotspot.hotspot_username)
+        # The first sight of an account is a baseline and records nothing --
+        # there is no delta without one. Two collections, so the second has
+        # something to measure against; the counters do not move between them,
+        # so the delta is the whole reading and the direction is what is
+        # under test either way.
+        self.collect_hotspot()
+        with tenant_context(self.t1):
+            HotspotUsageState.objects.all_tenants().filter(
+                customer=self.hotspot).update(
+                    last_rx_bytes=0, last_tx_bytes=0)
+        self.collect_hotspot()
 
         with tenant_context(self.t1):
             rec = HotspotUsageRecord.objects.get(customer=self.hotspot)

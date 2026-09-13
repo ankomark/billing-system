@@ -356,3 +356,59 @@ def disable_orphan_hotspot_users_task():
     # this disabled it.
     logger.info("[orphan-sweep]\n%s", report.strip() or "(nothing to report)")
     return report
+
+
+@shared_task(
+    bind=True,
+    autoretry_for=(Exception,),
+    retry_backoff=60,
+    retry_kwargs={"max_retries": 2},
+    retry_jitter=True,
+)
+def ensure_lease_script_task(self):
+    """
+    Keep the DHCP lease script present on every hotspot router.
+
+    The script is what makes a hotspot session follow its address instead of
+    stranding on the old one, and it lives in router configuration -- so it
+    survives a reboot, and does not survive a reset, a restore from an old
+    backup, or a router swapped for a spare. Any of those bring the stranding
+    back silently, with nothing to say why subscribers at that station are
+    connected with no internet.
+
+    Asserting it on a schedule is what makes the fix permanent rather than
+    true once. Hourly is plenty: the periodic session sweep covers the gap in
+    the meantime, and a router that comes back without the script is a rare
+    event measured in months.
+    """
+    from billing.services.lease_script import ensure_lease_script_everywhere
+    from billing.services.walled_garden import (
+        close_resolver_bypasses_everywhere,
+    )
+
+    was_set, present, skipped = ensure_lease_script_everywhere(apply=True)
+    if was_set or skipped:
+        logger.info(
+            "[lease-script] installed on %s server(s), %s already correct, "
+            "%s left alone", was_set, present, skipped)
+
+    # And the other way a subscriber ends up connected with no internet and no
+    # page to act on. A walled-garden rule letting an unauthorised device reach
+    # a public resolver directly gives it working DNS, so the phone never
+    # concludes it is behind a captive portal and never offers the sign-in
+    # prompt -- while every real connection is dropped. Both routers were
+    # carrying four such rules each.
+    #
+    # Asserted here rather than once, for the same reason as the lease script:
+    # a restore from an old backup brings them straight back, and nothing about
+    # the symptom points at the walled garden.
+    try:
+        closed = close_resolver_bypasses_everywhere(apply=True)
+        if closed:
+            logger.info(
+                "[walled-garden] closed %s resolver bypass rule(s)", closed)
+    except Exception:
+        # Never let this stop the lease script being reported as done.
+        logger.exception("[walled-garden] sweep failed")
+
+    return was_set
