@@ -58,9 +58,11 @@ deliberately is not that.
     python manage.py disable_orphan_hotspot_users --fix --router skylink3
 """
 
+import datetime as dt
 import re
 
 from django.core.management.base import BaseCommand
+from django.utils import timezone
 
 from billing.models import Customer, CustomerDevice, RouterDevice
 from billing.router_service import safe_connect_router
@@ -68,6 +70,39 @@ from billing.utils import normalize_mac
 
 # What provisioning stamps on everything it creates. See enable_hotspot.
 PROVISIONED_BY_US = "AUTO | WIFI BILLING SYSTEM"
+
+# When an orphan is disabled its comment is stamped with the date, and that
+# stamp is what later lets it be removed. Kept on the router rather than in
+# a table on purpose: it survives a database restore, it is visible to an
+# operator reading the account, and it cannot drift out of step with the
+# thing it describes.
+ORPHANED_MARK = " | orphaned "
+ORPHAN_STAMP_RE = re.compile(r"\| orphaned (\d{4}-\d{2}-\d{2})")
+
+# How long a disabled orphan waits before it is removed.
+#
+# Disabling is reversible and deletion is not, so the gap between them is
+# the window in which a mistake can be noticed and undone by setting
+# disabled=no. A month is long enough for a subscriber to come back from a
+# trip and complain, and short enough that these stop accumulating -- 24 had
+# built up by 2026-09-13, every one disabled, several carrying gigabytes of
+# history from before they were orphaned.
+DEFAULT_PURGE_AFTER_DAYS = 30
+
+
+def _orphaned_on(row):
+    """The date this account was stamped as an orphan, or None."""
+    match = ORPHAN_STAMP_RE.search(str(row.get("comment") or ""))
+    if not match:
+        return None
+    try:
+        return dt.date.fromisoformat(match.group(1))
+    except ValueError:
+        return None
+
+
+def _stamped_comment(today):
+    return f"{PROVISIONED_BY_US}{ORPHANED_MARK}{today.isoformat()}"
 
 # Twelve hex digits, however they were punctuated. normalize_mac deliberately
 # does not reject a name it cannot parse -- it upper-cases it and hands it back
@@ -112,6 +147,13 @@ class Command(BaseCommand):
             "--router",
             help="Limit to one router, by name. Default: every router.")
         parser.add_argument(
+            "--purge-after-days", type=int,
+            default=DEFAULT_PURGE_AFTER_DAYS,
+            help=(f"Remove an orphan this many days after it was disabled "
+                  f"(default {DEFAULT_PURGE_AFTER_DAYS}). The delay is the "
+                  f"window in which a wrong disable can be noticed and "
+                  f"undone by setting disabled=no; a deletion cannot be."))
+        parser.add_argument(
             "--max-disable", type=int, default=DEFAULT_MAX_DISABLE,
             help=(f"Refuse to act on a router with more than this many orphans "
                   f"(default {DEFAULT_MAX_DISABLE}). A number far above the "
@@ -121,6 +163,7 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         apply = options["fix"]
         max_disable = options["max_disable"]
+        purge_after = options["purge_after_days"]
 
         routers = RouterDevice.objects.all_tenants().order_by("id")
         if options.get("router"):
@@ -131,6 +174,8 @@ class Command(BaseCommand):
                 return
 
         total_orphan = total_disabled = total_bytes = 0
+        total_purged = 0
+        today = timezone.localdate()
         skipped_foreign = []
         unreachable = []
         refused = []
@@ -197,7 +242,12 @@ class Command(BaseCommand):
                 # MAC-shaped, unowned, and not ours. Reported so it is not
                 # invisible, skipped so this command never disables something
                 # it cannot prove it created.
-                if str(row.get("comment") or "").strip() != PROVISIONED_BY_US:
+                # startswith, not equality: once an orphan is disabled its
+                # comment carries an "| orphaned <date>" stamp, and an
+                # exact match would then classify our own account as
+                # somebody else's and leave it alone for ever.
+                if not str(row.get("comment") or "").strip().startswith(
+                        PROVISIONED_BY_US):
                     foreign.append(row)
                     continue
 
@@ -254,7 +304,8 @@ class Command(BaseCommand):
                     # a second is the normal case, not the unlucky one --
                     # disable_customer_access says the same thing about the
                     # PPPoE pair for the same reason.
-                    users.update(**{".id": row[".id"], "disabled": "yes"})
+                    users.update(**{".id": row[".id"], "disabled": "yes",
+                                    "comment": _stamped_comment(today)})
                 except Exception as exc:
                     self.stdout.write(self.style.ERROR(f"{line}  FAILED: {exc}"))
                     continue
@@ -264,10 +315,70 @@ class Command(BaseCommand):
                 note = "" if ended else "  (disabled; live session survived)"
                 self.stdout.write(self.style.SUCCESS(f"{line}  disabled{note}"))
 
+            # Accounts disabled on an earlier run. Each is either old
+            # enough to remove, still inside its window, or has never been
+            # stamped at all -- the last because it was disabled before
+            # stamping existed. Those get today's date rather than being
+            # deleted on sight: the whole point of the delay is that
+            # somebody can notice a mistake, and an account sitting here
+            # unstamped has never had that chance.
+            purge_budget = max_disable
             for row in already:
-                self.stdout.write(
-                    f"   {str(row.get('name')):<19} {'':<20} "
-                    f"{_human(_served(row)):>9}  already disabled")
+                name = str(row.get("name"))
+                served = _human(_served(row))
+                stamped = _orphaned_on(row)
+
+                if stamped is None:
+                    if apply:
+                        try:
+                            users.update(**{".id": row[".id"],
+                                            "comment": _stamped_comment(today)})
+                            self.stdout.write(
+                                f"   {name:<19} {'':<20} {served:>9}  "
+                                f"already disabled, stamped today; due "
+                                f"{today + dt.timedelta(days=purge_after)}")
+                        except Exception as exc:
+                            self.stdout.write(self.style.ERROR(
+                                f"   {name:<19} could not stamp: {exc}"))
+                    else:
+                        self.stdout.write(
+                            f"   {name:<19} {'':<20} {served:>9}  "
+                            f"already disabled, unstamped (would start "
+                            f"the clock today)")
+                    continue
+
+                age = (today - stamped).days
+                if age < purge_after:
+                    self.stdout.write(
+                        f"   {name:<19} {'':<20} {served:>9}  "
+                        f"disabled {age}d ago, removed in "
+                        f"{purge_after - age}d")
+                    continue
+
+                if purge_budget <= 0:
+                    self.stdout.write(self.style.WARNING(
+                        f"   {name:<19} due for removal but this run's "
+                        f"budget of {max_disable} is spent; the next run "
+                        f"will take it"))
+                    continue
+
+                if not apply:
+                    self.stdout.write(
+                        f"   {name:<19} {'':<20} {served:>9}  "
+                        f"disabled {age}d ago -- WOULD REMOVE")
+                    total_purged += 1
+                    continue
+
+                try:
+                    users.remove(row[".id"])
+                    purge_budget -= 1
+                    total_purged += 1
+                    self.stdout.write(self.style.SUCCESS(
+                        f"   {name:<19} {'':<20} {served:>9}  "
+                        f"removed (orphaned {age}d ago)"))
+                except Exception as exc:
+                    self.stdout.write(self.style.ERROR(
+                        f"   {name:<19} removal FAILED: {exc}"))
 
             if foreign:
                 skipped_foreign.extend((router.name, r) for r in foreign)
@@ -295,6 +406,11 @@ class Command(BaseCommand):
                 f"{', '.join(unreachable)}. A router that comes back after an "
                 f"outage serves whatever it had when it left, so re-run this "
                 f"once it is up."))
+
+        if total_purged:
+            self.stdout.write(self.style.SUCCESS(
+                f"{total_purged} account(s) {'removed' if apply else 'due for removal'} after "
+                f"{purge_after} days disabled."))
 
         if not total_orphan:
             self.stdout.write(self.style.SUCCESS(

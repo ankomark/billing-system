@@ -80,8 +80,14 @@ class OrphanHotspotUserTests(TestCase):
              "comment": PROVISIONED, "disabled": "false"},
         ], fix=True)
 
-        self.assertEqual(users.updated,
-                         [{".id": "*1", "disabled": "yes"}])
+        # The write now carries the orphan stamp as well as the disable:
+        # the date is what later lets the account be removed, and it is
+        # kept in the comment so it lives on the router rather than in a
+        # table that a restore could lose.
+        self.assertEqual(len(users.updated), 1)
+        self.assertEqual(users.updated[0][".id"], "*1")
+        self.assertEqual(users.updated[0]["disabled"], "yes")
+        self.assertIn("orphaned", users.updated[0]["comment"])
         self.assertEqual(users.removed, [],
                          "the account must be disabled, never removed")
 
@@ -93,7 +99,8 @@ class OrphanHotspotUserTests(TestCase):
               "mac-address": "11:22:33:44:55:66"}],
             fix=True)
 
-        self.assertEqual(users.updated, [{".id": "*1", "disabled": "yes"}])
+        self.assertEqual(users.updated[0]["disabled"], "yes")
+        self.assertIn("orphaned", users.updated[0]["comment"])
         self.assertEqual(actives.removed, ["*9"],
                          "disabling is future tense; the session has to be kicked")
 
@@ -148,12 +155,18 @@ class OrphanHotspotUserTests(TestCase):
         self.assertEqual(users.updated, [])
         self.assertEqual(actives.removed, [])
 
-    def test_an_already_disabled_orphan_is_not_written_again(self):
+    def test_an_already_disabled_orphan_is_stamped_but_not_re_disabled(self):
         users, _ = self._run([
             {".id": "*1", "name": "11:22:33:44:55:66", "comment": PROVISIONED,
              "disabled": "true"},
         ], fix=True)
-        self.assertEqual(users.updated, [])
+        # It used to be written not at all. It is now stamped once, because
+        # an orphan disabled before stamping existed has no date on it and
+        # would otherwise never become eligible for removal. The disable
+        # itself is still not repeated.
+        self.assertEqual(len(users.updated), 1)
+        self.assertNotIn("disabled", users.updated[0])
+        self.assertIn("orphaned", users.updated[0]["comment"])
 
     def test_an_unreachable_router_is_named_rather_than_passed_over(self):
         with patch("billing.management.commands."
