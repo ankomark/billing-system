@@ -147,6 +147,27 @@ def ensure_pppoe_profile(router, package):
         # this one session and the rate limit on it — which is exactly how the
         # speed a customer buys ends up shared across their household.
         "only-one": "yes",
+        # Clamp TCP MSS to what actually fits down a PPPoE tunnel.
+        #
+        # PPPoE costs 8 bytes of header, so the usable MTU is 1492 rather than
+        # 1500. A client that negotiates the ordinary 1460-byte MSS therefore
+        # sends segments the tunnel cannot carry, and the ICMP that would say
+        # so is dropped somewhere on nearly every path. Nothing reports an
+        # error: ping works, DNS works, small pages load, and anything large —
+        # every HTTPS site, every download — hangs forever. To the subscriber
+        # that is "connected, no internet", which is exactly the complaint.
+        #
+        # RouterOS's own `default` and `default-encryption` profiles ship with
+        # this on. Ours did not set it at all, so every PPPOE_PKG_* profile was
+        # created with it unset while the built-in ones beside it were correct
+        # -- and both live subscribers were on one of ours. st.ambros logged 13
+        # session restarts, most of them carrying zero bytes: the session comes
+        # up, passes nothing, and the customer's own router redials.
+        #
+        # Listed here rather than only pushed to the routers because this dict
+        # is what the repair path below compares against, so profiles already
+        # on the hardware are corrected on the next provisioning run.
+        "change-tcp-mss": "yes",
         "comment": f"Auto: {package.name}",
     }
     wanted.update(_pppoe_addresses(profiles))

@@ -184,3 +184,76 @@ def ensure_lease_script_everywhere(*, apply=True, routers=None):
             totals[i] += n
 
     return tuple(totals)
+
+
+# How long a PPPoE session may go unanswered before the server tears it down.
+#
+# RouterOS ships 10 seconds, and both routers were on it. On a wireless
+# backhaul that is tight enough that an ordinary few-second blip ends the
+# session, and the subscriber's router redials -- which is the "frequent
+# disconnections and reconnections" complaint. st.ambros recorded 13 session
+# restarts in four days, several within an hour of each other.
+#
+# Raising it costs almost nothing in the other direction: a session that has
+# genuinely died lingers for up to a minute, and `only-one=yes` on every
+# package profile means the subscriber's redial replaces it rather than
+# queueing behind it.
+PPPOE_KEEPALIVE = "60"
+
+
+def ensure_pppoe_server_keepalive(router, api, *, apply=True):
+    """
+    Hold the PPPoE servers at a keepalive a wireless link can actually meet.
+
+    Returns how many servers were changed. Idempotent, so it can be asserted
+    on a schedule beside the lease script -- and for the same reason, since
+    this is router configuration that a reset or a restore silently reverts.
+    """
+    changed = 0
+    try:
+        servers = api.path("interface", "pppoe-server", "server")
+        rows = list(servers)
+    except Exception as exc:
+        logger.warning(
+            "[pppoe] could not read the PPPoE servers on %s: %s", router, exc)
+        return 0
+
+    for server in rows:
+        if str(server.get("keepalive-timeout")) == PPPOE_KEEPALIVE:
+            continue
+        if not apply:
+            changed += 1
+            continue
+        try:
+            servers.update(**{".id": server[".id"],
+                              "keepalive-timeout": PPPOE_KEEPALIVE})
+            changed += 1
+            logger.info(
+                "[pppoe] %s on %s: keepalive-timeout %s -> %s, so a brief "
+                "blip no longer ends the session",
+                server.get("service-name"), router.name,
+                server.get("keepalive-timeout"), PPPOE_KEEPALIVE)
+        except Exception as exc:
+            logger.warning(
+                "[pppoe] could not set keepalive on %s/%s: %s",
+                router.name, server.get("service-name"), exc)
+
+    return changed
+
+
+def ensure_pppoe_keepalive_everywhere(*, apply=True, routers=None):
+    """Assert it across an operator's estate. Unreachable routers are skipped."""
+    from billing.models import RouterDevice
+    from billing.router_service import safe_connect_router
+
+    total = 0
+    for router in (routers if routers is not None
+                   else RouterDevice.objects.all_tenants().filter(
+                       is_active=True)):
+        api = safe_connect_router(router)
+        if not api:
+            logger.info("[pppoe] %s unreachable — skipped", router)
+            continue
+        total += ensure_pppoe_server_keepalive(router, api, apply=apply)
+
+    return total
