@@ -73,6 +73,19 @@ export async function fetchAdminUsageDaily(days = 7) {
   const res = await api.get("admin/usage/daily/", { params: { days } });
   return res.data;
 }
+
+/**
+ * What the network has carried today, this week, this month and this year.
+ *
+ * Calendar windows, not rolling ones: "this month" means since the 1st, the
+ * way an operator reading a bill means it.
+ */
+export async function fetchAdminUsageTotals(station) {
+  const res = await api.get("admin/usage/totals/", {
+    params: station ? { station } : {},
+  });
+  return res.data;
+}
 /**
  * Everything the analytics page shows, in one request.
  *

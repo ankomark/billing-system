@@ -39,6 +39,7 @@ from billing.serializers import BroadcastSerializer
 from billing.mpesa_client import get_mpesa_access_token, missing_mpesa_keys
 from django.db.models import Count, Prefetch, Q, Sum
 from django.db.models.functions import TruncDate, TruncMonth
+from billing.services.usage import estate_usage_totals
 from .reports import (revenue_summary,revenue_by_method,revenue_by_package,customer_stats,)
 from .analytics import (
     performance_pulse, revenue_series, peak_hours, expiring_soon,
@@ -4707,6 +4708,26 @@ class HotspotUsageDailyView(APIView):
             for x in qs
         ])
         
+class AdminUsageTotalsView(APIView):
+    """
+    What the network has carried today, this week, this month and this year.
+
+    Calendar windows, not rolling ones: "this month" means since the 1st, the
+    way an operator reading a bill means it. See estate_usage_totals for how
+    the two storage tiers are stitched without counting a day twice.
+    """
+
+    permission_classes = [IsTenantMember]
+
+    def get(self, request):
+        station = request.query_params.get("station") or None
+        totals = estate_usage_totals(station=station)
+        return Response({
+            "station": int(station) if station else None,
+            "periods": totals,
+        })
+
+
 class AdminUsageDailyView(APIView):
     permission_classes = [IsTenantMember]
 

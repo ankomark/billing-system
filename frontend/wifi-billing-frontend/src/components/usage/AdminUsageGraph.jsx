@@ -1,6 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { Chart, StatTile, gb, num } from "../admin/ui";
-import { fetchAdminUsageDaily } from "../../services/dashboard";
+import {
+  fetchAdminUsageDaily, fetchAdminUsageTotals,
+} from "../../services/dashboard";
 
 /**
  * Network usage across every router.
@@ -24,10 +26,33 @@ const SURFACE = "jade";
 
 const DAYS = 7;
 
+const BYTES_IN_GB = 1024 ** 3;
+
+// Shortest first, so the eye reads them as nested windows rather than four
+// unrelated figures.
+const WINDOWS = [
+  { key: "today", label: "Today" },
+  { key: "week", label: "This week" },
+  { key: "month", label: "This month" },
+  { key: "year", label: "This year" },
+];
+
 export default function AdminUsageGraph() {
   const { data = [], isLoading, isError } = useQuery({
     queryKey: ["admin-usage-daily", DAYS],
     queryFn: () => fetchAdminUsageDaily(DAYS),
+    staleTime: 5 * 60 * 1000,
+  });
+
+  // The calendar windows, fetched separately from the plot.
+  //
+  // A seven-day chart cannot answer "how much this month" -- and the totals
+  // under it used to say "over 7 days", which is the plot's window and nobody
+  // else's. These come from the rollup and the raw deltas stitched together;
+  // see estate_usage_totals for why neither alone is right.
+  const { data: totals } = useQuery({
+    queryKey: ["admin-usage-totals"],
+    queryFn: () => fetchAdminUsageTotals(),
     staleTime: 5 * 60 * 1000,
   });
 
@@ -73,19 +98,37 @@ export default function AdminUsageGraph() {
         empty="No usage recorded in this period"
       />
 
-      {/* The totals beside the plot. Also what makes a two-series chart
-          readable without leaning on colour alone. */}
-      {series.length > 0 && (
-        <div className="grid grid-cols-3 gap-3">
-          <StatTile label="Downloaded" value={gb(totalDown)} surface={SURFACE} />
-          <StatTile label="Uploaded" value={gb(totalUp)} surface={SURFACE} />
-          <StatTile
-            label="Total"
-            value={gb(totalDown + totalUp)}
-            sub={`over ${num(series.length)} days`}
-            surface={SURFACE}
-          />
+      {/* What the network has carried, in the windows an operator thinks in.
+          Calendar, not rolling: "this month" means since the 1st, the way a
+          bill means it. Each carries its own split, because a total that does
+          not say how much of it was upload hides the thing worth noticing. */}
+      {totals?.periods && (
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          {WINDOWS.map(({ key, label }) => {
+            const p = totals.periods[key];
+            if (!p) return null;
+            return (
+              <StatTile
+                key={key}
+                label={label}
+                value={gb(p.total / BYTES_IN_GB)}
+                sub={`${gb(p.download / BYTES_IN_GB)} down · ${gb(
+                  p.upload / BYTES_IN_GB
+                )} up`}
+                surface={SURFACE}
+              />
+            );
+          })}
         </div>
+      )}
+
+      {/* The plot's own totals, kept because they are what the chart above
+          shows and the windows above them are not. */}
+      {series.length > 0 && (
+        <p className="text-xs text-slate-400">
+          The chart covers the last {num(series.length)} days:{" "}
+          {gb(totalDown)} down, {gb(totalUp)} up.
+        </p>
       )}
     </div>
   );

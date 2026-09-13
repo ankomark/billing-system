@@ -91,6 +91,7 @@ from .views import (
 
     # Admin — usage
     AdminUsageDailyView,
+    AdminUsageTotalsView,
     AdminUsageAlertsView,
 
     # Admin — routers
@@ -277,6 +278,7 @@ urlpatterns = [
 
     # ─── Admin — usage ───────────────────────────────────────────────────────
     path("api/admin/usage/daily/",  AdminUsageDailyView.as_view(),   name="admin-usage-daily"),
+    path("api/admin/usage/totals/", AdminUsageTotalsView.as_view(),  name="admin-usage-totals"),
     path("api/admin/usage/alerts/", AdminUsageAlertsView.as_view(),  name="admin-usage-alerts"),
 
     # ─── Admin — routers ─────────────────────────────────────────────────────

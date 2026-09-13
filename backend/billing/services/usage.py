@@ -20,6 +20,7 @@ that comes after these two agree on live data for a while — so today the
 rollups are a second opinion rather than the only one.
 """
 
+import datetime as dt
 import logging
 
 from django.db.models import Sum
@@ -260,3 +261,115 @@ def roll_up_day(day):
             written += 1
 
     return written
+
+
+def estate_usage_totals(station=None, now=None):
+    """
+    What the whole network has carried today, this week, this month, this year.
+
+    Four calendar windows, not rolling ones. "This month" means since the 1st,
+    the way an operator reading a bill means it; a rolling 30 days would move
+    the boundary every time they looked and never agree with an invoice.
+
+    The hard part is the same one usage_since solves for a single subscriber,
+    and for the same reason: usage lives in two places. Whole days are folded
+    into UsageRecord by the nightly rollup, and everything the rollup has not
+    reached is still only in the five-minute deltas. Reading one without the
+    other is wrong in a different direction each way -- the rollup alone loses
+    today entirely, the raw rows alone lose every day past the 90-day retention.
+
+    So this reads which days the rollup has ACTUALLY covered rather than which
+    it ought to have. usage_since records why: the rollup runs at 01:20, so
+    between midnight and then yesterday has none, and assuming otherwise
+    "silently dropped a whole day from everybody's total for eighty minutes
+    every night". Anything uncovered -- today always, plus any day the rollup
+    missed or has not yet reached -- comes from the raw deltas, and no day is
+    ever counted from both.
+
+    rx_bytes is download and tx_bytes is upload, which is worth stating because
+    it was the other way round until migration 0064: the collector wrote the
+    router's rx into download from the first commit, and production held 63GB
+    of "download" against 718GB of "upload" before it was put right.
+    """
+    from django.db.models import Sum
+    from django.db.models.functions import TruncDate
+
+    from billing.models import (
+        HotspotUsageRecord, PPPoEUsageRecord, UsageRecord,
+    )
+
+    now = now or timezone.now()
+    today = timezone.localdate(now)
+
+    starts = {
+        "today": today,
+        # Monday, because that is the week a Kenyan operator's week starts on
+        # and the one a rolling seven days would never line up with.
+        "week": today - timezone.timedelta(days=today.weekday()),
+        "month": today.replace(day=1),
+        "year": today.replace(month=1, day=1),
+    }
+    window_start = starts["year"]
+
+    def _scope(qs):
+        return qs.filter(customer__router__station_id=station) if station else qs
+
+    # ---- whole days the rollup has covered -------------------------------
+    rolled = _scope(
+        UsageRecord.objects.all_tenants()
+        .filter(date__gte=window_start, date__lt=today)
+    )
+    by_date = {
+        r["date"]: (r["rx"] or 0, r["tx"] or 0)
+        for r in rolled.values("date").annotate(
+            rx=Sum("rx_bytes"), tx=Sum("tx_bytes"))
+    }
+    covered = set(by_date)
+
+    # ---- everything it has not ------------------------------------------
+    # Today always, plus any gap. Normally that is one day, so the raw query
+    # stays cheap -- it is only widened when the rollup has actually missed
+    # something, which is the case worth being slow for.
+    expected = {
+        window_start + timezone.timedelta(days=i)
+        for i in range((today - window_start).days)
+    }
+    uncovered = (expected - covered) | {today}
+    raw_from = min(uncovered)
+
+    midnight = timezone.make_aware(
+        dt.datetime.combine(raw_from, dt.time.min),
+        timezone.get_current_timezone(),
+    )
+
+    for model in (PPPoEUsageRecord, HotspotUsageRecord):
+        rows = (
+            _scope(model.objects.all_tenants().filter(period_start__gte=midnight))
+            .annotate(d=TruncDate("period_start"))
+            .values("d")
+            .annotate(dn=Sum("download_bytes"), up=Sum("upload_bytes"))
+        )
+        for r in rows:
+            day = r["d"]
+            if day not in uncovered:
+                # The rollup already has this day. Counting it again here is
+                # the one mistake that would inflate every figure at once.
+                continue
+            down, up = by_date.get(day, (0, 0))
+            by_date[day] = (down + (r["dn"] or 0), up + (r["up"] or 0))
+
+    # ---- slice the days into the four windows ----------------------------
+    out = {}
+    for name, start in starts.items():
+        down = up = 0
+        for day, (d, u) in by_date.items():
+            if day >= start:
+                down += d
+                up += u
+        out[name] = {
+            "since": start.isoformat(),
+            "download": down,
+            "upload": up,
+            "total": down + up,
+        }
+    return out
