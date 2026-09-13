@@ -703,6 +703,17 @@ class HotspotCapsReachTheHardware(TestCase):
         allowance sells 300 MB and serves 900.
         """
         macs = ["AA:BB:CC:00:00:01", "AA:BB:CC:00:00:02", "AA:BB:CC:00:00:03"]
+
+        # The base fixture sells one place, and this test is about three. It
+        # passed on the untrimmed list -- macs_to_grant handed back every
+        # address the customer had ever used, which is the fault that gave a
+        # one-device subscriber a third of their bundle on each of three
+        # addresses. Selling three places is what makes granting three correct.
+        with tenant_context(self.tenant):
+            Package.objects.filter(pk=self.package.pk).update(max_devices=3)
+            self.package.refresh_from_db()
+            self.sub.package.refresh_from_db()
+
         with patch("billing.router_service.safe_connect_router",
                    return_value=MagicMock()), \
              patch("billing.router_service.pick_working_router",

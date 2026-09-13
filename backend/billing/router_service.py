@@ -645,6 +645,18 @@ def macs_to_grant(customer, subscription, *, include_blocked=False):
     case is a renewal whose first device has not been bound yet, and the
     alternative is granting nobody -- a customer who has just paid and gets
     nothing at all, which is the one outcome worse than granting too much.
+
+    Never more places than the package sells, whichever branch supplied them.
+    Binding to the subscription fixed the allowance being shared across old
+    PURCHASES; it does nothing about several devices piling onto one of them,
+    which is what a handset rotating its MAC does by itself. On 2026-09-13, 38
+    subscribers were split more ways than they had bought: two of them held
+    three devices against a one-device package and each was given 13333 MB of
+    a 40 GB bundle, so the phone in their hand stopped at a third of what they
+    paid for while the rest sat on addresses that were never coming back.
+
+    Most recently seen first, because that is the device the subscriber is
+    actually holding -- the rotated-away MACs are by definition the older ones.
     """
     from .models import CustomerDevice
 
@@ -660,12 +672,53 @@ def macs_to_grant(customer, subscription, *, include_blocked=False):
     if not include_blocked:
         rows = rows.filter(blocked=False)
 
-    wanted = {normalize_mac(m) for m in rows.values_list("mac_address", flat=True)}
-    wanted.discard("")
-    if not wanted:
-        return everything
+    # Newest first, so the trim below drops the addresses a rotating handset
+    # left behind rather than the one it is using now.
+    order = [normalize_mac(m) for m in
+             rows.order_by("-last_seen", "-id").values_list(
+                 "mac_address", flat=True)]
+    wanted = {m for m in order if m}
 
-    return [m for m in everything if normalize_mac(m) in wanted]
+    if not wanted:
+        granted = everything
+    else:
+        granted = [m for m in everything if normalize_mac(m) in wanted]
+        rank = {m: i for i, m in enumerate(order)}
+        granted.sort(key=lambda m: rank.get(normalize_mac(m), len(rank)))
+
+    return _trim_to_package_limit(granted, subscription)
+
+
+def _trim_to_package_limit(macs, subscription):
+    """
+    Cut a device list down to the number of places the package was sold with.
+
+    Kept apart from macs_to_grant because _remaining_data_bytes divides by the
+    length of that list and _grant_hotspot writes an account for each entry:
+    the two have to be the same set or the arithmetic is wrong in one direction
+    or the other, and one function is the only way to be sure of that.
+
+    A missing or zero limit is read as one place, matching the field's own
+    default. Reading it as unlimited would make a bad row hand out the whole
+    allowance to every address a customer has ever used.
+
+    This only narrows what is granted from here on. Accounts already on the
+    router for the devices it drops are left where they are -- removing them
+    would cut off somebody mid-session to correct an allowance, and the
+    package profile's shared-users already stops them being used at once.
+    """
+    package = getattr(subscription, "package", None)
+    limit = getattr(package, "max_devices", None) or 1
+    if len(macs) <= limit:
+        return macs
+
+    logger.info(
+        "[hotspot] customer %s has %s device(s) on subscription %s but %r "
+        "sells %s; granting the %s most recently seen",
+        getattr(subscription, "customer_id", "?"), len(macs),
+        getattr(subscription, "pk", "?"),
+        getattr(package, "name", "?"), limit, limit)
+    return macs[:limit]
 
 
 class RouterUnreachable(RuntimeError):
