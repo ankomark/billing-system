@@ -917,3 +917,32 @@ def align_uptime_limits_task(self):
     logger.info("[uptime] checked %s, corrected %s, %s with no paid cover "
                 "left to the disable sweep", checked, corrected, len(overdue))
     return corrected
+
+
+@shared_task(
+    bind=True,
+    autoretry_for=(Exception,),
+    retry_backoff=30,
+    retry_kwargs={"max_retries": 2},
+    retry_jitter=True,
+)
+def clear_duplicate_sessions_task(self):
+    """
+    Close the sessions a handset leaves behind on a new DHCP lease.
+
+    A session is keyed by MAC and address together, so a new lease opens a
+    second one while the first stays up, and shared-users=2 lets both live.
+    Keepalive would reap them and is deliberately off -- switching it on is
+    what logged 44 subscribers out in a day -- so they are cleaned up here.
+
+    The cost is the customer's own window: RouterOS counts every session's
+    uptime against limit-uptime, so a dead session keeps spending time that was
+    paid for. Customer 729 had 29 hours of session time against a package
+    bought 90 minutes earlier.
+    """
+    from billing.services.duplicate_sessions import clear_duplicate_sessions
+
+    closed, busy = clear_duplicate_sessions(apply=True)
+    logger.info("[sessions] closed %s stale session(s), left %s busy one(s)",
+                closed, len(busy))
+    return closed

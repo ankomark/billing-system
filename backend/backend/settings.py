@@ -665,6 +665,20 @@ CELERY_BEAT_SCHEDULE = {
         "schedule": crontab(minute="1-59/5"),
         "options": {"expires": 240},
     },
+    # Sessions a handset left behind when it got a new DHCP lease.
+    #
+    # A session is keyed by MAC and address together, so a new lease opens a
+    # second one and shared-users=2 lets both live. They are not merely untidy:
+    # RouterOS counts every session's uptime against limit-uptime, so a dead
+    # session goes on spending a window the customer paid for.
+    #
+    # Just before the uptime aligner, so the limits it writes are computed from
+    # a session table that has already been cleaned up.
+    "clear-duplicate-sessions": {
+        "task": "billing.tasks.usage_tasks.clear_duplicate_sessions_task",
+        "schedule": crontab(minute="0-59/5"),
+        "options": {"expires": 240},
+    },
     "enforce-usage-caps": {
         "task": "billing.tasks.usage_tasks.enforce_usage_caps",
         "schedule": crontab(minute="4-59/5"),

@@ -104,8 +104,16 @@ def align_uptime_limits(*, apply=False, routers=None, now=None):
         session_by_mac = {}
         try:
             for a in api.path("ip", "hotspot", "active"):
-                session_by_mac[normalize_mac(a.get("mac-address"))] = (
-                    ros_duration_seconds(a.get("uptime")) or 0)
+                # Summed, not assigned. A profile with shared-users=2 lets one
+                # account carry two concurrent sessions, and both count against
+                # limit-uptime -- customer 729 was running 16h51m and 11h27m at
+                # once on 2026-09-13. Assigning here kept whichever the router
+                # listed last and silently dropped the other, so the limit came
+                # out short by a whole session.
+                mac = normalize_mac(a.get("mac-address"))
+                session_by_mac[mac] = (
+                    session_by_mac.get(mac, 0)
+                    + (ros_duration_seconds(a.get("uptime")) or 0))
         except Exception as exc:
             # Without it every connected subscriber would be short-changed by
             # the length of their session, so skip the router rather than
