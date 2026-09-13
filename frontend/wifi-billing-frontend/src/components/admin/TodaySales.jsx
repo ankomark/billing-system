@@ -1,5 +1,7 @@
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from "recharts";
-import { Card, CardHeader, DataTable, KES, num, seriesColor } from "./ui";
+import {
+  Card, CardHeader, DataTable, KES, num, seriesColor, SURFACES,
+} from "./ui";
 
 /**
  * What has sold since midnight, package by package.
@@ -101,9 +103,19 @@ export default function TodaySales({ today }) {
     },
   ];
 
+  // The money surface, and not a decorative choice: tokens.js says ledger is
+  // "worn by the two revenue panels -- daily revenue, and what sells -- so they
+  // read as one set", and this is the third. It also fixes the header, which
+  // was flush against the card edge: the plain CardHeader carries no padding
+  // of its own and expects the card to provide it, so pairing it with
+  // padded={false} left the title hard against the corner. The banded variant
+  // is full-bleed by design and pads itself.
+  const theme = SURFACES.ledger;
+
   return (
-    <Card padded={false}>
+    <Card surface="ledger" padded={false}>
       <CardHeader
+        surface="ledger"
         title="Today"
         subtitle={
           asOf
@@ -115,11 +127,11 @@ export default function TodaySales({ today }) {
       <div className="grid gap-4 px-5 pb-5 pt-4 lg:grid-cols-[minmax(0,1fr)_260px]">
         <div>
           <div className="mb-4 flex flex-wrap gap-6">
-            <Figure label="Revenue today" value={KES(today.revenue ?? 0)} big />
-            <Figure label="Vouchers sold" value={num(today.purchases ?? 0)} />
-            <Figure label="Buyers" value={num(today.customers ?? 0)} />
+            <Figure label="Revenue today" value={KES(today.revenue ?? 0)} big theme={theme} />
+            <Figure label="Vouchers sold" value={num(today.purchases ?? 0)} theme={theme} />
+            <Figure label="Buyers" value={num(today.customers ?? 0)} theme={theme} />
             {today.comps > 0 && (
-              <Figure label="Given free" value={num(today.comps)} />
+              <Figure label="Given free" value={num(today.comps)} theme={theme} />
             )}
           </div>
 
@@ -129,7 +141,7 @@ export default function TodaySales({ today }) {
               collapse until you can see that most of those people bought on
               earlier days and owe nothing today. */}
           {(today.sessions != null || today.covered > 0) && (
-            <p className="mb-4 text-xs text-slate-400">
+            <p className="mb-4 text-xs text-slate-400" style={{ color: theme.ink }}>
               {today.sessions != null && (
                 <>
                   <span className="tabular-nums text-slate-300">
@@ -220,16 +232,20 @@ function colourFor(row, wedges) {
   return i === -1 ? "rgba(148,163,184,0.45)" : seriesColor(i);
 }
 
-function Figure({ label, value, big = false }) {
+function Figure({ label, value, big = false, theme }) {
   return (
     <div>
-      <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+      <p
+        className="text-[11px] font-semibold uppercase tracking-wider text-slate-400"
+        style={theme ? { color: theme.ink } : undefined}
+      >
         {label}
       </p>
       <p
-        className={`mt-0.5 font-semibold text-slate-100 ${
+        className={`mt-0.5 font-semibold tabular-nums text-slate-100 ${
           big ? "text-2xl" : "text-lg"
         }`}
+        style={theme ? { color: theme.inkStrong } : undefined}
       >
         {value}
       </p>
