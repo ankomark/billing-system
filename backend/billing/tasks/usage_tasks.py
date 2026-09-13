@@ -19,11 +19,10 @@ from billing.notifications import notify_customer
 from billing.router_service import (
     _tenant_routers,
     disable_customer_access,
-    get_hotspot_sessions,
     get_hotspot_sessions_by_mac,
     get_pppoe_sessions,
     ros_duration_seconds,
-    tenant_sessions,
+    tenant_sessions_everywhere,
 )
 from billing.services.usage import (
     cap_applies_to,
@@ -166,141 +165,168 @@ def collect_pppoe_usage_for_tenant(self, tenant_id):
     # operator had a few hundred subscribers, and a task that does not finish
     # in time is dropped, not delayed — so collection stopped without saying so.
     try:
-        sessions = tenant_sessions(tenant_id, get_pppoe_sessions)
+        # Every station a subscriber has a session on, not the first one they
+        # turn up at. A PPPoE account exists on each router so it can roam,
+        # and keeping only the first made the second read as a counter that
+        # had gone backwards -- indistinguishable from a reboot, so the
+        # interval was discarded on every poll.
+        sessions = tenant_sessions_everywhere(tenant_id, get_pppoe_sessions)
     except Exception as e:
         logger.warning(f"[usage] Router error for operator {tenant_id}: {e}")
         return 0
 
     for customer in customers:
-        router, usage = sessions.get(
-            customer.pppoe_username, (None, None))
-
-        if not usage or not usage.get("connected"):
+        live = [
+            (router, usage)
+            for router, usage in sessions.get(customer.pppoe_username, [])
+            if usage and usage.get("connected")
+        ]
+        if not live:
             continue
 
-        # Ownership stated at the write site: a worker has no tenant context,
-        # so default_tenant() would refuse once several operators exist.
-        state, _ = PPPoEUsageState.objects.get_or_create(
-            customer=customer, defaults={"tenant_id": customer.tenant_id}
-        )
+        for router, usage in live:
+            state = _pppoe_interval(customer, router, usage, now)
+            if state:
+                processed += 1
 
-        # Named for the router's point of view, which is the opposite of the
-        # subscriber's — see the note above download_bytes below.
-        rx = int(usage.get("rx_bytes", 0))
-        tx = int(usage.get("tx_bytes", 0))
-        uptime = ros_duration_seconds(usage.get("uptime"))
+    logger.info(f"[usage] PPPoE snapshots collected: {processed}")
+    return processed
 
-        # Did this session restart since the last poll?
-        #
-        # Uptime is the only reliable witness. A PPPoE session's counters live
-        # on its interface, which RouterOS destroys at disconnect and rebuilds
-        # at zero on reconnect, so "the number went down" describes a reconnect
-        # and a router reboot identically — and this used to treat both as a
-        # reboot, rebaseline, and `continue`.
-        #
-        # That discarded the young session's traffic as well as the old
-        # session's tail. A subscriber who dropped and came back lost
-        # everything they had used since the previous poll AND everything they
-        # used before the next one, and the meter appeared to start over.
-        #
-        # The tail is genuinely gone — the interface carrying those counters no
-        # longer exists by the time anything looks, and only PPP accounting or
-        # RADIUS could have caught it. The head is not, and this keeps it: on a
-        # restart the live counters ARE the delta, because the session began at
-        # zero.
-        restarted = (
-            uptime is not None
-            and state.last_uptime_seconds is not None
-            and uptime < state.last_uptime_seconds
-        )
 
-        if restarted:
-            rx_delta, tx_delta = rx, tx
-            uptime_delta = uptime
-        elif rx < state.last_rx_bytes or tx < state.last_tx_bytes:
-            # Counters fell without uptime falling: a router reboot, a cleared
-            # interface counter, or a router that does not report uptime at
-            # all. Nothing here can say how much was missed, so rebaseline and
-            # claim nothing rather than invent a delta the size of the whole
-            # counter.
-            state.last_rx_bytes = rx
-            state.last_tx_bytes = tx
-            state.last_uptime_seconds = uptime
-            state.last_seen_at = now
-            state.save(update_fields=[
-                "last_rx_bytes", "last_tx_bytes", "last_uptime_seconds",
-                "last_seen_at",
-            ])
-            continue
-        else:
-            rx_delta = rx - state.last_rx_bytes
-            tx_delta = tx - state.last_tx_bytes
-            uptime_delta = (
-                max(uptime - (state.last_uptime_seconds or 0), 0)
-                if uptime is not None else 0
-            )
 
-        if rx_delta < 0 or tx_delta < 0:
-            continue
+def _pppoe_interval(customer, router, usage, now):
+    """
+    Record one subscriber's traffic on one station since the last poll.
 
-        PPPoEUsageRecord.objects.create(
-            tenant_id=customer.tenant_id,
-            customer=customer,
-            router=router,
-            period_start=state.last_seen_at or now,
-            period_end=now,
-            # Crossed over, because the counters are the router's and the
-            # columns are the subscriber's. What the router *received* is what
-            # the subscriber sent, so rx is their upload and tx their download.
-            # These two were the wrong way round from the first commit until
-            # 0064: production had 718GB of "upload" against 63GB of
-            # "download", eleven times more sent than received by every
-            # subscriber on the platform at once.
-            download_bytes=tx_delta,
-            upload_bytes=rx_delta,
-            uptime_seconds=uptime_delta,
-            session_restarted=restarted,
-        )
+    Split out when the collector learned to read every station: the body was
+    a loop over subscribers, and it is now a loop over the sessions each one
+    holds. Returns True when a row was written.
+    """
+    # Ownership stated at the write site: a worker has no tenant context,
+    # so default_tenant() would refuse once several operators exist.
+    #
+    # Per station, because the counters are the station's. A subscriber
+    # with a session on two routers has two sets, each starting at zero.
+    state, _ = PPPoEUsageState.objects.get_or_create(
+        customer=customer, router=router,
+        defaults={"tenant_id": customer.tenant_id},
+    )
 
+    # Named for the router's point of view, which is the opposite of the
+    # subscriber's — see the note above download_bytes below.
+    rx = int(usage.get("rx_bytes", 0))
+    tx = int(usage.get("tx_bytes", 0))
+    uptime = ros_duration_seconds(usage.get("uptime"))
+
+    # Did this session restart since the last poll?
+    #
+    # Uptime is the only reliable witness. A PPPoE session's counters live
+    # on its interface, which RouterOS destroys at disconnect and rebuilds
+    # at zero on reconnect, so "the number went down" describes a reconnect
+    # and a router reboot identically — and this used to treat both as a
+    # reboot, rebaseline, and `continue`.
+    #
+    # That discarded the young session's traffic as well as the old
+    # session's tail. A subscriber who dropped and came back lost
+    # everything they had used since the previous poll AND everything they
+    # used before the next one, and the meter appeared to start over.
+    #
+    # The tail is genuinely gone — the interface carrying those counters no
+    # longer exists by the time anything looks, and only PPP accounting or
+    # RADIUS could have caught it. The head is not, and this keeps it: on a
+    # restart the live counters ARE the delta, because the session began at
+    # zero.
+    restarted = (
+        uptime is not None
+        and state.last_uptime_seconds is not None
+        and uptime < state.last_uptime_seconds
+    )
+
+    if restarted:
+        rx_delta, tx_delta = rx, tx
+        uptime_delta = uptime
+    elif rx < state.last_rx_bytes or tx < state.last_tx_bytes:
+        # Counters fell without uptime falling: a router reboot, a cleared
+        # interface counter, or a router that does not report uptime at
+        # all. Nothing here can say how much was missed, so rebaseline and
+        # claim nothing rather than invent a delta the size of the whole
+        # counter.
         state.last_rx_bytes = rx
         state.last_tx_bytes = tx
         state.last_uptime_seconds = uptime
         state.last_seen_at = now
-
-        # The running totals, which a reconnect must not reset. Accumulated
-        # from the same deltas that were just written, so the two can never
-        # disagree about what happened in this interval.
-        state.total_download_bytes += tx_delta
-        state.total_upload_bytes += rx_delta
-        state.total_uptime_seconds += uptime_delta
-        if restarted:
-            state.reconnect_count += 1
-
         state.save(update_fields=[
             "last_rx_bytes", "last_tx_bytes", "last_uptime_seconds",
-            "last_seen_at", "total_download_bytes", "total_upload_bytes",
-            "total_uptime_seconds", "reconnect_count",
+            "last_seen_at",
         ])
+        return False
+    else:
+        rx_delta = rx - state.last_rx_bytes
+        tx_delta = tx - state.last_tx_bytes
+        uptime_delta = (
+            max(uptime - (state.last_uptime_seconds or 0), 0)
+            if uptime is not None else 0
+        )
 
-        processed += 1
+    if rx_delta < 0 or tx_delta < 0:
+        return False
 
-        # Checked here, against the delta that was just written, because this
-        # is the earliest moment the system can possibly know the allowance is
-        # spent. A separate sweep on its own schedule adds its own interval to
-        # the overshoot, and on a 300 MB bundle an interval is a large
-        # fraction of the whole bundle.
-        #
-        # Guarded, and only this subscriber is lost if it raises: a cap check
-        # that fails must not abandon the rest of the operator's collection,
-        # because the deltas already written are what every later check reads.
-        try:
-            check_cap(customer, next(iter(customer.active_subs), None))
-        except Exception:
-            logger.exception(
-                "[usage] cap check failed for customer %s", customer.pk)
+    PPPoEUsageRecord.objects.create(
+        tenant_id=customer.tenant_id,
+        customer=customer,
+        router=router,
+        period_start=state.last_seen_at or now,
+        period_end=now,
+        # Crossed over, because the counters are the router's and the
+        # columns are the subscriber's. What the router *received* is what
+        # the subscriber sent, so rx is their upload and tx their download.
+        # These two were the wrong way round from the first commit until
+        # 0064: production had 718GB of "upload" against 63GB of
+        # "download", eleven times more sent than received by every
+        # subscriber on the platform at once.
+        download_bytes=tx_delta,
+        upload_bytes=rx_delta,
+        uptime_seconds=uptime_delta,
+        session_restarted=restarted,
+    )
 
-    logger.info(f"[usage] PPPoE snapshots collected: {processed}")
-    return processed
+    state.last_rx_bytes = rx
+    state.last_tx_bytes = tx
+    state.last_uptime_seconds = uptime
+    state.last_seen_at = now
+
+    # The running totals, which a reconnect must not reset. Accumulated
+    # from the same deltas that were just written, so the two can never
+    # disagree about what happened in this interval.
+    state.total_download_bytes += tx_delta
+    state.total_upload_bytes += rx_delta
+    state.total_uptime_seconds += uptime_delta
+    if restarted:
+        state.reconnect_count += 1
+
+    state.save(update_fields=[
+        "last_rx_bytes", "last_tx_bytes", "last_uptime_seconds",
+        "last_seen_at", "total_download_bytes", "total_upload_bytes",
+        "total_uptime_seconds", "reconnect_count",
+    ])
+
+
+    # Checked here, against the delta that was just written, because this
+    # is the earliest moment the system can possibly know the allowance is
+    # spent. A separate sweep on its own schedule adds its own interval to
+    # the overshoot, and on a 300 MB bundle an interval is a large
+    # fraction of the whole bundle.
+    #
+    # Guarded, and only this subscriber is lost if it raises: a cap check
+    # that fails must not abandon the rest of the operator's collection,
+    # because the deltas already written are what every later check reads.
+    try:
+        check_cap(customer, next(iter(customer.active_subs), None))
+    except Exception:
+        logger.exception(
+            "[usage] cap check failed for customer %s", customer.pk)
+
+    return True
 
 
 @shared_task(

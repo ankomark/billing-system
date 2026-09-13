@@ -10283,7 +10283,11 @@ class UsageCollectionScaleTests(TwoOperatorMixin, TestCase):
     def test_a_subscriber_with_no_live_session_records_nothing(self):
         from billing.tasks.usage_tasks import collect_pppoe_usage_for_tenant
 
-        with patch("billing.tasks.usage_tasks.tenant_sessions", return_value={}):
+        # tenant_sessions_everywhere, since the PPPoE collector learned to
+        # read every station rather than the first one a username appears on.
+        # An empty map is still "nobody is connected".
+        with patch("billing.tasks.usage_tasks.tenant_sessions_everywhere",
+                   return_value={}):
             collect_pppoe_usage_for_tenant(self.t1.id)
         with tenant_context(self.t1):
             self.assertEqual(PPPoEUsageRecord.objects.count(), 0)

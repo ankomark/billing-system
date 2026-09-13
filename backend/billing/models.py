@@ -2247,8 +2247,28 @@ class PPPoEUsageSnapshot(TenantScopedModel):
 class PPPoEUsageState(TenantScopedModel):
     """
     Stores last seen router counters so we can compute deltas safely.
+
+    Per station, for the reason HotspotUsageState carries in full: a session's
+    counters belong to the router serving it, and they start at zero there. A
+    subscriber whose account exists on two routers -- which is how a PPPoE
+    account roams -- would otherwise have the second station read as a counter
+    that had gone backwards, which is indistinguishable from a reboot and
+    caused the interval to be discarded on every poll.
+
+    Latent rather than observed on this estate: two PPPoE subscribers, neither
+    with a session on more than one router when this was checked. It is the
+    same fault under a different name, and the shape is worth not leaving in
+    place behind the hotspot one being fixed.
     """
-    customer = models.OneToOneField("Customer", on_delete=models.CASCADE, related_name="pppoe_usage_state")
+    customer = models.ForeignKey(
+        "Customer", on_delete=models.CASCADE,
+        related_name="pppoe_usage_states")
+    router = models.ForeignKey(
+        "RouterDevice", null=True, blank=True, on_delete=models.CASCADE,
+        related_name="pppoe_usage_states",
+        help_text="The station these counters were read from. Null is a row "
+                  "written before counters were kept per station.",
+    )
     last_rx_bytes = models.BigIntegerField(default=0)
     last_tx_bytes = models.BigIntegerField(default=0)
     last_seen_at = models.DateTimeField(null=True, blank=True)
@@ -2294,8 +2314,11 @@ class PPPoEUsageState(TenantScopedModel):
     # is the shape of a fault rather than of usage.
     reconnect_count = models.PositiveIntegerField(default=0)
 
+    class Meta:
+        unique_together = [("customer", "router")]
+
     def __str__(self):
-        return f"UsageState({self.customer_id})"
+        return f"UsageState({self.customer_id}@{self.router_id})"
 
 
 class PPPoEUsageRecord(TenantScopedModel):

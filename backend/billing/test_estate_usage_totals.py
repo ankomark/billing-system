@@ -36,9 +36,21 @@ GB = 1024 ** 3
 
 class EstateUsageTotals(TestCase):
 
+    # A fixed Wednesday, so the calendar windows do not depend on the day the
+    # suite happens to run.
+    #
+    # These tests put a rolled-up day on "yesterday" and assert it lands in
+    # this week. On a Monday the week starts today and yesterday belongs to
+    # the previous one, so five of them failed on 2026-09-14 with the code
+    # behaving exactly as intended. A calendar-boundary test that only holds
+    # six days in seven is not testing what it claims to.
+    FIXED_NOW = dt.datetime(2026, 9, 16, 14, 30)
+
     def setUp(self):
         self.tenant = Tenant.objects.get(slug="skylink")
-        self.today = timezone.localdate(timezone.now())
+        self.now = timezone.make_aware(
+            self.FIXED_NOW, timezone.get_current_timezone())
+        self.today = timezone.localdate(self.now)
         with tenant_context(self.tenant):
             self.router = RouterDevice.objects.create(
                 tenant=self.tenant, name="usage-r", ip_address="10.9.0.50",
@@ -75,7 +87,7 @@ class EstateUsageTotals(TestCase):
         """The rollup never covers today -- it runs at 01:20 for finished days."""
         self._raw(self._at(self.today), down=3 * GB, up=1 * GB)
 
-        totals = estate_usage_totals()
+        totals = estate_usage_totals(now=self.now)
 
         self.assertEqual(totals["today"]["download"], 3 * GB)
         self.assertEqual(totals["today"]["upload"], 1 * GB)
@@ -85,7 +97,7 @@ class EstateUsageTotals(TestCase):
         yesterday = self.today - dt.timedelta(days=1)
         self._rolled(yesterday, down=5 * GB, up=2 * GB)
 
-        totals = estate_usage_totals()
+        totals = estate_usage_totals(now=self.now)
 
         self.assertEqual(totals["today"]["total"], 0)
         self.assertEqual(totals["week"]["total"], 7 * GB)
@@ -100,7 +112,7 @@ class EstateUsageTotals(TestCase):
         self._rolled(yesterday, down=5 * GB, up=2 * GB)
         self._raw(self._at(yesterday), down=5 * GB, up=2 * GB)
 
-        totals = estate_usage_totals()
+        totals = estate_usage_totals(now=self.now)
 
         self.assertEqual(totals["week"]["total"], 7 * GB)
 
@@ -113,7 +125,7 @@ class EstateUsageTotals(TestCase):
         yesterday = self.today - dt.timedelta(days=1)
         self._raw(self._at(yesterday), down=6 * GB, up=1 * GB)
 
-        totals = estate_usage_totals()
+        totals = estate_usage_totals(now=self.now)
 
         self.assertEqual(totals["week"]["total"], 7 * GB)
 
@@ -124,7 +136,7 @@ class EstateUsageTotals(TestCase):
         "This month" means since the 1st, the way a bill means it. A rolling
         thirty days would move the boundary every time it was looked at.
         """
-        totals = estate_usage_totals()
+        totals = estate_usage_totals(now=self.now)
 
         self.assertEqual(totals["month"]["since"],
                          self.today.replace(day=1).isoformat())
@@ -133,7 +145,7 @@ class EstateUsageTotals(TestCase):
         self.assertEqual(totals["today"]["since"], self.today.isoformat())
 
     def test_the_week_starts_on_monday(self):
-        totals = estate_usage_totals()
+        totals = estate_usage_totals(now=self.now)
         start = dt.date.fromisoformat(totals["week"]["since"])
 
         self.assertEqual(start.weekday(), 0)
@@ -146,7 +158,7 @@ class EstateUsageTotals(TestCase):
         if first_of_month < self.today:
             self._rolled(first_of_month, down=2 * GB, up=0)
 
-        t = estate_usage_totals()
+        t = estate_usage_totals(now=self.now)
 
         self.assertLessEqual(t["today"]["total"], t["week"]["total"])
         self.assertLessEqual(t["week"]["total"], t["month"]["total"])
@@ -156,7 +168,7 @@ class EstateUsageTotals(TestCase):
         self._rolled(self.today.replace(month=1, day=1) - dt.timedelta(days=1),
                      down=99 * GB, up=99 * GB)
 
-        self.assertEqual(estate_usage_totals()["year"]["total"], 0)
+        self.assertEqual(estate_usage_totals(now=self.now)["year"]["total"], 0)
 
     # ------------------------------------------------------------- the rest
 
@@ -165,7 +177,7 @@ class EstateUsageTotals(TestCase):
         self._raw(self._at(self.today), down=2 * GB, up=0,
                   model=PPPoEUsageRecord)
 
-        self.assertEqual(estate_usage_totals()["today"]["download"], 3 * GB)
+        self.assertEqual(estate_usage_totals(now=self.now)["today"]["download"], 3 * GB)
 
     def test_download_and_upload_stay_the_right_way_round(self):
         """
@@ -175,13 +187,13 @@ class EstateUsageTotals(TestCase):
         yesterday = self.today - dt.timedelta(days=1)
         self._rolled(yesterday, down=10 * GB, up=1 * GB)
 
-        week = estate_usage_totals()["week"]
+        week = estate_usage_totals(now=self.now)["week"]
 
         self.assertEqual(week["download"], 10 * GB)
         self.assertEqual(week["upload"], 1 * GB)
 
     def test_an_empty_estate_is_zeroes(self):
-        totals = estate_usage_totals()
+        totals = estate_usage_totals(now=self.now)
 
         for window in ("today", "week", "month", "year"):
             self.assertEqual(totals[window]["total"], 0)
@@ -203,6 +215,6 @@ class EstateUsageTotals(TestCase):
         self._rolled(yesterday, down=4 * GB, up=0)
         self._rolled(yesterday, down=6 * GB, up=0, customer=elsewhere)
 
-        self.assertEqual(estate_usage_totals()["week"]["download"], 10 * GB)
+        self.assertEqual(estate_usage_totals(now=self.now)["week"]["download"], 10 * GB)
         self.assertEqual(
-            estate_usage_totals(station=station.id)["week"]["download"], 6 * GB)
+            estate_usage_totals(station=station.id, now=self.now)["week"]["download"], 6 * GB)
