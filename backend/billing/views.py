@@ -1700,6 +1700,27 @@ def _release_device_from_others(customer, mac_address):
                     f"{customer.id} ({customer.full_name}) on voucher validation"
                 ),
             )
+            # Take it off the hardware as well as out of the table.
+            #
+            # Releasing deleted the CustomerDevice row and left the hotspot
+            # account standing. Usually that is invisible, because the new
+            # claimant is granted on the same router and the account -- named
+            # for the MAC -- is simply rewritten under their name. It is only
+            # when the claimant lands on the OTHER router that the first
+            # account is left behind belonging to nobody, and every one of the
+            # 21 orphans found on 2026-09-13 was on skylink3 for exactly that
+            # reason, four of them having served real traffic first.
+            #
+            # retry=False deliberately. This address is about to be granted to
+            # `customer`, and kick_device_task removes by MAC over the
+            # following hour -- it would come back and take the new owner's
+            # account away. Synchronous or not at all.
+            try:
+                _kick_device(other, mac_address, retry=False)
+            except Exception:
+                logger.exception(
+                    "[device] released %s from customer %s but could not "
+                    "clear it from the routers", mac_address, other.pk)
         except Exception:
             # An operator losing the note of why a device moved is worth a log
             # line. It is not worth refusing the customer holding a paid code.
@@ -2189,7 +2210,7 @@ class HotspotVoucherValidateView(APIView):
             status=status.HTTP_200_OK,
         )
 
-def _kick_device(customer, mac_address):
+def _kick_device(customer, mac_address, *, retry=True):
     """
     Take a device off the hardware it is on, best effort.
 
@@ -2208,6 +2229,12 @@ def _kick_device(customer, mac_address):
     for about an hour. Without it a block placed while the link was down was
     never retried at all, and an established hotspot session runs until
     `limit-uptime`, which is whatever was left of the subscription.
+
+    `retry=False` for the one caller where that hand-off would be actively
+    harmful. When a device place is released to a NEW customer, the address is
+    about to be granted to somebody else -- and kick_device_task removes by
+    MAC, so an hour of retries would find the new owner's account and take it
+    away. There the removal has to happen now or not at all.
     """
     from billing.router_service import _tenant_routers, connect_router, disable_hotspot
 
@@ -2243,7 +2270,7 @@ def _kick_device(customer, mac_address):
             unfinished = True
             logger.warning("[device] could not reach %s to drop %s", router, mac_address)
 
-    if unfinished:
+    if unfinished and retry:
         # Only when something was actually tried and did not finish. An
         # operator with no active routers has nothing holding the device
         # online, and queuing an hour of retries against that would be an

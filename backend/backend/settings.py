@@ -702,7 +702,19 @@ CELERY_BEAT_SCHEDULE = {
     # night's work rather than a week's.
     "disable-orphan-hotspot-users": {
         "task": "billing.tasks.router_tasks.disable_orphan_hotspot_users_task",
-        "schedule": crontab(hour=3, minute=40),
+        # Every five minutes rather than nightly.
+        #
+        # An orphan is an account for a device the database has forgotten, and
+        # it is created by an ordinary, frequent event: the device limit
+        # releasing a place to a new claimant. That path now clears the routers
+        # itself, so this should find nothing -- but "should find nothing" is
+        # what a reconciler is for, and a nightly one leaves an account serving
+        # a stranger for up to a day.
+        #
+        # At :03, alongside the customer-status sync, which is the only other
+        # five-minute task that touches no router -- so the two five-minute
+        # sweeps that DO open router connections keep their own slots.
+        "schedule": crontab(minute="3-59/5"),
     },
     # Fold finished days of five-minute deltas into one row per subscriber per
     # day. Before the platform invoicing at 02:00, so a month's totals are
