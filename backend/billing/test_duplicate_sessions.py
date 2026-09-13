@@ -183,3 +183,238 @@ class ClearingDuplicateSessions(TestCase):
 
         self.assertEqual(closed, 0)
         self.assertEqual(actives.removed, [])
+
+
+class _Leases(list):
+    pass
+
+
+class _ApiWithLeases:
+    """A router that also answers for its DHCP leases and host table."""
+
+    def __init__(self, actives, leases, hosts=None):
+        self.actives = actives
+        self.leases = leases
+        self.hosts = hosts if hosts is not None else _Actives([])
+
+    def path(self, *parts):
+        if parts[-1] == "active":
+            return self.actives
+        if parts[-1] == "lease":
+            return self.leases
+        if parts[-1] == "host":
+            return self.hosts
+        return []
+
+
+class FreeingStrandedSessions(TestCase):
+    """
+    A device whose DHCP lease moved, with its authorisation left behind.
+
+    The session is keyed by MAC and address together, so traffic from the new
+    address is unauthorised while the old session holds the authorisation and
+    never times out -- keepalive is off deliberately. The customer is connected
+    with a valid voucher and no internet.
+
+    A power cut does it to the whole estate at once. Ten devices were stranded
+    on 2026-09-13 after both routers rebooted, idle between 55 minutes and five
+    hours, every one entitled. The duplicate sweep could not help: there is
+    only ONE session and it is simply on the wrong address.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.get(slug="skylink")
+        with tenant_context(self.tenant):
+            self.router = RouterDevice.objects.create(
+                tenant=self.tenant, name="strand-r", ip_address="10.9.3.2",
+                username="u", password="p", is_active=True, is_online=True)
+
+    def _run(self, actives, leases, hosts=None, *, apply=True, min_idle=600):
+        from billing.services.duplicate_sessions import clear_stranded_sessions
+        a = _Actives(actives)
+        h = _Actives(hosts or [])
+        api = _ApiWithLeases(a, _Leases(leases), h)
+        with patch("billing.services.duplicate_sessions.safe_connect_router",
+                   return_value=api):
+            freed = clear_stranded_sessions(
+                apply=apply, routers=[self.router], min_idle=min_idle)
+        return a, h, freed
+
+    def _session(self, address, idle, rid="*1"):
+        return {".id": rid, "mac-address": MAC, "address": address,
+                "uptime": "6h", "idle-time": idle}
+
+    def _lease(self, address, status="bound"):
+        return {"mac-address": MAC, "address": address, "status": status}
+
+    def test_a_session_on_a_lost_address_is_freed(self):
+        """The production case, to the letter: D6:AC:FC:2E:1F:34."""
+        a, _, freed = self._run(
+            [self._session("192.168.88.231", "4h25m")],
+            [self._lease("192.168.88.164")])
+
+        self.assertEqual(freed, 1)
+        self.assertEqual(a.removed, ["*1"])
+
+    def test_the_host_entry_goes_too(self):
+        """
+        Not tidiness. RouterOS will not re-run MAC authentication while a stale
+        host is standing -- which is exactly why retry_mac_login exists -- so
+        removing only the session leaves the device as stuck as it was.
+        """
+        hosts = [{".id": "*h1", "mac-address": MAC,
+                  "address": "192.168.88.231"}]
+        _, h, _ = self._run(
+            [self._session("192.168.88.231", "4h25m")],
+            [self._lease("192.168.88.164")], hosts)
+
+        self.assertEqual(h.removed, ["*h1"])
+
+    def test_a_session_on_the_right_address_is_left_alone(self):
+        a, _, freed = self._run(
+            [self._session("192.168.88.164", "4h25m")],
+            [self._lease("192.168.88.164")])
+
+        self.assertEqual(freed, 0)
+        self.assertEqual(a.removed, [])
+
+    def test_a_mismatch_that_is_still_busy_is_left_alone(self):
+        """A lease renewal caught mid-flight is not a stranded device."""
+        a, _, freed = self._run(
+            [self._session("192.168.88.231", "12s")],
+            [self._lease("192.168.88.164")])
+
+        self.assertEqual(freed, 0)
+        self.assertEqual(a.removed, [])
+
+    def test_a_device_with_no_bound_lease_is_never_touched(self):
+        """
+        No lease is no evidence. A device on a static address would otherwise
+        be cut off for not appearing in a table it was never in.
+        """
+        a, _, freed = self._run(
+            [self._session("192.168.88.231", "4h")], [])
+
+        self.assertEqual(freed, 0)
+        self.assertEqual(a.removed, [])
+
+    def test_an_unbound_lease_does_not_count_as_evidence(self):
+        a, _, freed = self._run(
+            [self._session("192.168.88.231", "4h")],
+            [self._lease("192.168.88.164", status="waiting")])
+
+        self.assertEqual(freed, 0)
+
+    def test_reporting_frees_nothing(self):
+        a, _, freed = self._run(
+            [self._session("192.168.88.231", "4h25m")],
+            [self._lease("192.168.88.164")], apply=False)
+
+        self.assertEqual(freed, 1)
+        self.assertEqual(a.removed, [])
+
+    def test_a_router_whose_leases_cannot_be_read_is_skipped(self):
+        """
+        Without the lease table there is nothing to compare against, and
+        guessing would mean disconnecting people on no evidence at all.
+        """
+        from billing.services.duplicate_sessions import clear_stranded_sessions
+
+        class Broken(_ApiWithLeases):
+            def path(self, *parts):
+                if parts[-1] == "lease":
+                    raise RuntimeError("no dhcp server here")
+                return super().path(*parts)
+
+        a = _Actives([self._session("192.168.88.231", "4h")])
+        api = Broken(a, _Leases([]))
+        with patch("billing.services.duplicate_sessions.safe_connect_router",
+                   return_value=api):
+            freed = clear_stranded_sessions(apply=True, routers=[self.router])
+
+        self.assertEqual(freed, 0)
+        self.assertEqual(a.removed, [])
+
+    def test_an_address_reissued_to_another_handset_is_freed(self):
+        """
+        The commonest shape, and the one a bound-lease check alone misses: the
+        device has NO lease of its own -- it went away and its 15-minute lease
+        expired -- and the address it still authorises now belongs to somebody
+        else. 59 sessions were in exactly this state on 2026-09-13.
+        """
+        a, _, freed = self._run(
+            [self._session("192.168.88.175", "5h")],
+            [{"mac-address": "F2:39:9D:B9:5E:30",
+              "address": "192.168.88.175", "status": "bound"}])
+
+        self.assertEqual(freed, 1)
+        self.assertEqual(a.removed, ["*1"])
+
+    def test_an_address_leased_to_nobody_is_left_alone(self):
+        """
+        No lease for the device and none for the address either. That is what a
+        static address looks like from here, and cutting it off would be acting
+        on the absence of evidence rather than on evidence.
+        """
+        a, _, freed = self._run(
+            [self._session("192.168.88.231", "5h")], [])
+
+        self.assertEqual(freed, 0)
+        self.assertEqual(a.removed, [])
+
+    def test_a_device_still_holding_its_own_address_is_left_alone(self):
+        """Even when another lease exists for a different address entirely."""
+        a, _, freed = self._run(
+            [self._session("192.168.88.164", "5h")],
+            [self._lease("192.168.88.164"),
+             {"mac-address": "AA:BB:CC:D0:00:09",
+              "address": "192.168.88.200", "status": "bound"}])
+
+        self.assertEqual(freed, 0)
+        self.assertEqual(a.removed, [])
+
+    def test_a_recycled_address_still_respects_the_idle_floor(self):
+        """
+        A device that has just moved address and is actively using the new one
+        must not have the transition interrupted.
+        """
+        a, _, freed = self._run(
+            [self._session("192.168.88.175", "8s")],
+            [{"mac-address": "F2:39:9D:B9:5E:30",
+              "address": "192.168.88.175", "status": "bound"}])
+
+        self.assertEqual(freed, 0)
+        self.assertEqual(a.removed, [])
+
+    def test_the_reason_says_which_case_matched(self):
+        """
+        The row carries why, not a value whose meaning depends on the branch.
+        The first version passed the new holder's MAC through the same slot as
+        the lease address, so the log read "its lease is C2:41:D9:5F:D0:A3" --
+        a MAC where the sentence says lease.
+        """
+        from billing.services.duplicate_sessions import find_stranded_sessions
+
+        a = _Actives([self._session("192.168.88.175", "5h")])
+        api = _ApiWithLeases(a, _Leases([
+            {"mac-address": "F2:39:9D:B9:5E:30",
+             "address": "192.168.88.175", "status": "bound"}]))
+        with patch("billing.services.duplicate_sessions.safe_connect_router",
+                   return_value=api):
+            found = find_stranded_sessions(routers=[self.router])
+
+        why = found[0][4]
+        self.assertIn("belongs to", why)
+        self.assertIn("F2:39:9D:B9:5E:30", why)
+
+    def test_a_moved_device_says_where_its_lease_went(self):
+        from billing.services.duplicate_sessions import find_stranded_sessions
+
+        a = _Actives([self._session("192.168.88.231", "5h")])
+        api = _ApiWithLeases(a, _Leases([self._lease("192.168.88.164")]))
+        with patch("billing.services.duplicate_sessions.safe_connect_router",
+                   return_value=api):
+            found = find_stranded_sessions(routers=[self.router])
+
+        self.assertIn("192.168.88.164", found[0][4])
+        self.assertIn("lease", found[0][4])

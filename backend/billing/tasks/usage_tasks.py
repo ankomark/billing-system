@@ -940,9 +940,21 @@ def clear_duplicate_sessions_task(self):
     paid for. Customer 729 had 29 hours of session time against a package
     bought 90 minutes earlier.
     """
-    from billing.services.duplicate_sessions import clear_duplicate_sessions
+    from billing.services.duplicate_sessions import (
+        clear_duplicate_sessions, clear_stranded_sessions,
+    )
 
     closed, busy = clear_duplicate_sessions(apply=True)
-    logger.info("[sessions] closed %s stale session(s), left %s busy one(s)",
-                closed, len(busy))
-    return closed
+
+    # And the sessions pinned to an address the device has since lost. Same
+    # family of fault -- an authorisation that cannot be carrying traffic --
+    # but it arrives a different way: a DHCP lease moves and the session stays
+    # behind, so the customer is connected with no internet and a valid
+    # voucher. A power cut does it to the whole estate at once; ten devices
+    # were stranded that way on 2026-09-13, idle up to five hours.
+    freed = clear_stranded_sessions(apply=True)
+
+    logger.info(
+        "[sessions] closed %s duplicate(s), freed %s stranded, left %s busy",
+        closed, freed, len(busy))
+    return closed + freed

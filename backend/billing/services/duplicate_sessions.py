@@ -119,3 +119,146 @@ def clear_duplicate_sessions(*, apply=False, routers=None,
                                mac, router.name, exc)
 
     return closed, busy
+
+
+def find_stranded_sessions(*, routers=None, min_idle=MIN_IDLE_SECONDS):
+    """
+    Sessions authorising an address the device no longer holds.
+
+    A hotspot session is keyed by MAC and address together, so when a device's
+    DHCP lease moves the authorisation stays behind on the old address and the
+    device's traffic arrives from the new one, unauthorised. The customer sees
+    "connected, no internet" while holding a perfectly valid voucher, and the
+    dead session sits there indefinitely because nothing times it out --
+    keepalive is off, deliberately, and the duplicate sweep does not fire
+    because there is only ONE session and it is simply on the wrong address.
+
+    A power cut does this to the whole estate at once: both routers come back,
+    every device re-leases, and any whose address changed is stranded. Ten were
+    in that state on 2026-09-13 after a 7-hour-old reboot, idle between 55
+    minutes and 5 hours, every one of them entitled.
+
+    Only where the MAC has a BOUND lease to compare against -- no lease means
+    no evidence, and a device on a static address would otherwise be cut off
+    for not appearing in a table it was never in. And only past the idle floor,
+    so a lease renewal caught mid-flight is left alone.
+    """
+    found = []
+
+    for router in (routers if routers is not None
+                   else RouterDevice.objects.all_tenants().filter(is_active=True)):
+        api = safe_connect_router(router)
+        if not api:
+            logger.info("[sessions] %s unreachable — skipped", router)
+            continue
+
+        try:
+            leases = {
+                normalize_mac(l.get("mac-address")): str(l.get("address"))
+                for l in api.path("ip", "dhcp-server", "lease")
+                if str(l.get("status")) == "bound"
+            }
+        except Exception as exc:
+            # Without the lease table there is nothing to compare against, and
+            # guessing would mean disconnecting people on no evidence at all.
+            logger.warning(
+                "[sessions] could not read leases on %s (%s) — skipped rather "
+                "than guess", router, exc)
+            continue
+
+        # Who holds each address now, so a session can be checked against the
+        # address as well as against its own device.
+        holder = {}
+        try:
+            for l in api.path("ip", "dhcp-server", "lease"):
+                holder[str(l.get("address"))] = normalize_mac(
+                    l.get("mac-address"))
+        except Exception:
+            holder = {}
+
+        for a in list(api.path("ip", "hotspot", "active")):
+            mac = normalize_mac(a.get("mac-address"))
+            addr = str(a.get("address"))
+            lease = leases.get(mac)
+
+            idle = ros_duration_seconds(a.get("idle-time")) or 0
+            if idle < min_idle:
+                continue
+
+            # Two ways to know a session is authorising the wrong address.
+            #
+            # The device has a bound lease somewhere else -- it moved, and the
+            # authorisation stayed behind.
+            moved = lease is not None and addr != lease
+
+            # Or the address it authorises now belongs to a DIFFERENT handset.
+            # That one is unambiguous however little is known about the device
+            # itself: 59 sessions were in this state on 2026-09-13, every one
+            # of them with no lease of its own, because the device went away,
+            # its 15-minute lease expired, and the address was handed to
+            # somebody else while nothing reaped the session -- keepalive and
+            # idle-timeout are both off, deliberately.
+            #
+            # It matters more than a device losing its own internet: two
+            # handsets disagree about who owns an address, and when the first
+            # comes back it lands on a new address with this session still
+            # standing, which is exactly the stranding above.
+            recycled = (holder.get(addr) not in (None, mac))
+
+            if not (moved or recycled):
+                continue
+
+            # The reason travels with the row rather than a value whose
+            # meaning changes by branch. The first version passed the new
+            # holder's MAC through the same slot as the lease address, so the
+            # log read "its lease is C2:41:D9:5F:D0:A3" -- a MAC where it says
+            # lease, which is worse than saying nothing.
+            if moved:
+                why = f"its lease is now {lease}"
+            else:
+                why = f"that address now belongs to {holder.get(addr)}"
+            found.append((router, api, mac, a, why))
+
+    return found
+
+
+def clear_stranded_sessions(*, apply=False, routers=None,
+                            min_idle=MIN_IDLE_SECONDS):
+    """
+    Free the devices whose authorisation is pinned to an address they have lost.
+
+    Removes the session AND its host entry. The host is not tidiness: RouterOS
+    will not re-run MAC authentication while a stale one is standing, which is
+    the whole reason retry_mac_login exists. Removing only the session leaves
+    the device exactly as stuck as it was.
+
+    The account is untouched. This ends a session already carrying nothing; it
+    takes nothing away from anybody.
+    """
+    freed = 0
+
+    for router, api, mac, a, why in find_stranded_sessions(
+            routers=routers, min_idle=min_idle):
+        if not apply:
+            freed += 1
+            continue
+        try:
+            api.path("ip", "hotspot", "active").remove(a[".id"])
+            hosts = api.path("ip", "hotspot", "host")
+            for h in list(hosts):
+                if (normalize_mac(h.get("mac-address")) == mac
+                        and str(h.get("address")) == str(a.get("address"))):
+                    try:
+                        hosts.remove(h[".id"])
+                    except Exception:
+                        pass
+            freed += 1
+            logger.info(
+                "[sessions] freed %s on %s: authorised on %s but %s; idle %s "
+                "— it can log in again on the address it has",
+                mac, router.name, a.get("address"), why, a.get("idle-time"))
+        except Exception as exc:
+            logger.warning("[sessions] could not free %s on %s: %s",
+                           mac, router.name, exc)
+
+    return freed
