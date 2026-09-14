@@ -5,7 +5,7 @@ from django.conf import settings
 from django.http import HttpResponse
 from django.db import IntegrityError, transaction
 from celery import chain
-from .utils import is_real_mac, mac_variants, normalize_mac
+from .utils import is_real_mac, mac_variants, normalize_mac, phone_fragment
 from .auth_tokens import TenantTokenObtainPairView, TenantTokenObtainPairSerializer
 from rest_framework.filters import SearchFilter
 from .permissions import (
@@ -273,10 +273,49 @@ class TenantUserViewSet(viewsets.ModelViewSet):
             self.request.user, AdminActionLog.DISABLE_USER, target_user=instance)
 
 
+class PhoneAwareSearchFilter(SearchFilter):
+    """
+    Search that finds a subscriber by the number they actually give you.
+
+    SearchFilter matches substrings, and a Kenyan number has no substring in
+    common between the forms it is written in: `254701071435` does not contain
+    `0701071435`. So an operator holding a counter slip that reads 0701071435
+    searched for it, found nothing, and had to know to retype it as 254.
+
+    It failed in both directions here, because the database holds both -- 2344
+    rows begin 254 and two begin 07 -- and neither form finds the other.
+
+    What every form does share is the nine digits after the country code. This
+    adds a match on those, OR-ed with the ordinary search, so one query finds
+    a subscriber however their number was typed: 0701071435, 254701071435,
+    +254 701 071 435, or 0110… now that the newer prefix is in use.
+
+    Only when the term is phone-shaped. A name or a voucher code is left to the
+    ordinary search, and a fragment shorter than six digits is not treated as a
+    number at all -- it would match half the estate.
+    """
+
+    def filter_queryset(self, request, queryset, view):
+        found = super().filter_queryset(request, queryset, view)
+
+        terms = self.get_search_terms(request)
+        if not terms:
+            return found
+
+        fragment = phone_fragment(" ".join(terms))
+        if not fragment:
+            return found
+
+        # OR-ed with what the ordinary search found rather than replacing it:
+        # a term can be a number AND something else, and dropping the rest
+        # would make searching by phone hide a match on a voucher code.
+        return (found | queryset.filter(phone__icontains=fragment)).distinct()
+
+
 class CustomerViewSet(viewsets.ModelViewSet):
     serializer_class = CustomerSerializer
     permission_classes = [IsTenantAdminOrReadOnlyMember]
-    filter_backends = [SearchFilter]
+    filter_backends = [PhoneAwareSearchFilter]
     # A hotspot subscriber has no pppoe_username, so searching by the only
     # identifiers they actually have — the code on their receipt, the device
     # they are sitting behind — matched nothing at all. Which is exactly what

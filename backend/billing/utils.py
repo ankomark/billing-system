@@ -118,3 +118,55 @@ def generate_invoice_number():
     random_part = secrets.token_hex(5).upper()
     return f"INV-{timestamp}-{random_part}"
 
+
+
+# The country, and what a subscriber number looks like under it. Kept beside
+# notifications.normalise_phone rather than imported from it: that one exists to
+# satisfy an SMS provider and returns the number untouched when it cannot parse
+# it, which is right there and wrong here.
+_COUNTRY_CODE = "254"
+_MOBILE_PREFIXES = ("7", "1")
+
+# Short enough to be useful while somebody is still typing, long enough not to
+# match half the estate. Six digits of a Kenyan subscriber number is roughly one
+# in a million.
+_SHORTEST_USEFUL = 6
+
+
+def phone_fragment(term):
+    """
+    The subscriber part of a number, whichever way it was written.
+
+    A Kenyan number reaches this system in every form anybody says it in:
+    0701071435 on a counter slip, 254701071435 from an M-Pesa callback,
+    +254 701 071 435 on a business card, and 01… now that the newer prefix is
+    in use. The database has both -- 2344 rows begin 254 and two begin 07 --
+    so a search that matches one form misses the others in BOTH directions.
+
+    The common part of every form is the nine digits after the country code, so
+    that is what this returns and what the search matches on. `254701071435`
+    contains `701071435`; so does `0701071435`; so does `+254 701 071 435` once
+    the spaces are gone. One fragment finds all of them and no variants have to
+    be enumerated.
+
+    None when the term is not phone-shaped, so the caller leaves an ordinary
+    search -- a name, a voucher code -- alone.
+    """
+    digits = re.sub(r"\D", "", str(term or ""))
+    if len(digits) < _SHORTEST_USEFUL:
+        return None
+
+    # 00 is the international prefix dialled from a handset; + is the written
+    # form of the same thing and has already gone with the non-digits.
+    if digits.startswith("00"):
+        digits = digits[2:]
+
+    if digits.startswith(_COUNTRY_CODE):
+        digits = digits[len(_COUNTRY_CODE):]
+    elif digits.startswith("0"):
+        digits = digits[1:]
+
+    if len(digits) < _SHORTEST_USEFUL or not digits.startswith(_MOBILE_PREFIXES):
+        return None
+
+    return digits
