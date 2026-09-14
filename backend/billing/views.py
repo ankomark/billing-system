@@ -34,7 +34,7 @@ from billing.services.voucher_service import (
 )
 from billing.router_service import enable_customer_access
 from .mpesa_client import initiate_stk_push
-from billing.models import Customer,Subscription,PPPoEUsageRecord
+from billing.models import Customer,Subscription,PPPoEUsageRecord,PPPoEUsageState
 from billing.notifications import send_sms, send_whatsapp, notify_customer
 from billing.serializers import BroadcastSerializer
 from billing.mpesa_client import get_mpesa_access_token, missing_mpesa_keys
@@ -4127,6 +4127,66 @@ class AdminPPPoESessionsView(APIView):
             ).exclude(pppoe_username="")
         }
 
+        # What each subscriber has used ALTOGETHER, which the live session
+        # cannot say.
+        #
+        # A PPPoE session's byte counters live on its interface, and RouterOS
+        # destroys that interface at disconnect and builds a new one at zero.
+        # So the rx/tx below restart from nothing every time a line drops --
+        # and on a link that flaps, an operator watching this page sees the
+        # figure fall back to zero several times a day and cannot tell what
+        # anybody has actually consumed.
+        #
+        # Summed from the LEDGER, not from the running counters on
+        # PPPoEUsageState.
+        #
+        # Both survive a reconnect, so either would fix the resetting figure --
+        # but they do not agree, and the ledger is the one that is right. The
+        # running totals were added to that model after the per-interval rows
+        # already existed, so they count only from the day they were switched
+        # on: st.ambros reads 11.15GB on the counters against 29.60GB in the
+        # rows, eighteen gigabytes of it simply before the counters began.
+        #
+        # PPPoEUsageState says as much itself -- "The per-interval rows in
+        # PPPoEUsageRecord are the ledger and stay the source of truth for
+        # billing and caps" -- and this page has to agree with the customer
+        # page, which reads the same rows through usage_since. Two screens
+        # disagreeing about one subscriber is worse than either number.
+        #
+        # One grouped query for every subscriber on the page, not one each.
+        from django.db.models import Sum
+
+        totals = {}
+        for row in (PPPoEUsageRecord.objects
+                    .filter(customer__connection_type="pppoe")
+                    .values("customer__pppoe_username")
+                    .annotate(down=Sum("download_bytes"),
+                              up=Sum("upload_bytes"),
+                              uptime=Sum("uptime_seconds"))):
+            name = row["customer__pppoe_username"]
+            if name:
+                totals[name] = {
+                    "down": row["down"] or 0,
+                    "up": row["up"] or 0,
+                    "uptime": row["uptime"] or 0,
+                    "reconnects": 0,
+                }
+
+        # The drop count is the one thing the ledger does not carry as a total,
+        # so it still comes from the state -- and it is a floor either way, as
+        # that field's own note explains: a drop that begins and ends between
+        # two polls is invisible to a poller.
+        for st in (PPPoEUsageState.objects.filter(
+                       customer__connection_type="pppoe")
+                   .select_related("customer")
+                   .only("customer__pppoe_username", "reconnect_count")):
+            name = st.customer.pppoe_username
+            if not name:
+                continue
+            acc = totals.setdefault(
+                name, {"down": 0, "up": 0, "uptime": 0, "reconnects": 0})
+            acc["reconnects"] += st.reconnect_count or 0
+
         data = []
         routers = RouterDevice.objects.filter(is_active=True)
 
@@ -4138,6 +4198,9 @@ class AdminPPPoESessionsView(APIView):
 
             for s in sessions:
                 customer = customer_by_username.get(s.get("username"))
+                acc = totals.get(s.get("username"),
+                                 {"down": 0, "up": 0, "uptime": 0,
+                                  "reconnects": 0})
                 data.append({
                     "router": router.name,
                     "username": s.get("username"),
@@ -4145,8 +4208,21 @@ class AdminPPPoESessionsView(APIView):
                     "phone": customer.phone if customer else "",
                     "ip_address": s.get("ip_address"),
                     "uptime": s.get("uptime"),
+                    # This session only. Zero again after every reconnect.
                     "rx_bytes": s.get("rx_bytes", 0),
                     "tx_bytes": s.get("tx_bytes", 0),
+                    # Everything they have ever used, which is the figure an
+                    # operator is actually asking for. From the subscriber's
+                    # point of view, as the columns are named: what they
+                    # downloaded and what they sent.
+                    "total_download_bytes": acc["down"],
+                    "total_upload_bytes": acc["up"],
+                    "total_bytes": acc["down"] + acc["up"],
+                    "total_uptime_seconds": acc["uptime"],
+                    # How many times the line has dropped and come back. A
+                    # number that climbs with little traffic against it is the
+                    # shape of a fault rather than of usage.
+                    "reconnects": acc["reconnects"],
                 })
 
         cache.set(cache_key, data, self.CACHE_SECONDS)

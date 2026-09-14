@@ -132,7 +132,7 @@ export default function PPPoESessions() {
               <table className="w-full text-sm">
                 <thead className="bg-white/5 border-b border-white/10">
                   <tr>
-                    {["Customer", "Username", "IP Address", "Uptime", "Download", "Upload", "Router", "Action"].map((h) => (
+                    {["Customer", "Username", "IP Address", "Uptime", "Total used", "This session", "Drops", "Router", "Action"].map((h) => (
                       <th key={h} className="px-5 py-3 text-left text-[11px] font-semibold text-slate-400 uppercase tracking-[0.14em]">{h}</th>
                     ))}
                   </tr>
@@ -151,7 +151,7 @@ export default function PPPoESessions() {
               <table className="w-full text-sm">
                 <thead className="bg-white/5 border-b border-white/10">
                   <tr>
-                    {["Customer", "Username", "IP Address", "Uptime", "Download", "Upload", "Router", "Action"].map((h) => (
+                    {["Customer", "Username", "IP Address", "Uptime", "Total used", "This session", "Drops", "Router", "Action"].map((h) => (
                       <th key={h} className="px-5 py-3 text-left text-[11px] font-semibold text-slate-400 uppercase tracking-[0.14em] whitespace-nowrap">
                         {h}
                       </th>
@@ -174,11 +174,35 @@ export default function PPPoESessions() {
                       </td>
                       <td className="px-5 py-3.5 text-slate-300 font-mono text-xs">{s.ip_address}</td>
                       <td className="px-5 py-3.5 text-slate-300 font-medium">{fmtUptime(s.uptime)}</td>
+                      {/* What they have used ALTOGETHER. A PPPoE session's
+                          counters live on its interface, which RouterOS
+                          destroys at disconnect and rebuilds at zero — so the
+                          session figure beside this one falls back to nothing
+                          every time a line drops, and on a link that flaps it
+                          never says what anybody actually consumed. These
+                          totals are kept across reconnects for that reason. */}
+                      <td className="px-5 py-3.5 font-medium whitespace-nowrap">
+                        <span className="text-emerald-300">{fmtMB(s.total_download_bytes)}</span>
+                        <span className="text-slate-600 mx-1">/</span>
+                        <span className="text-blue-300">{fmtMB(s.total_upload_bytes)}</span>
+                      </td>
                       {/* Crossed over: rx and tx come straight off the router
                           and are counted from its side, so what it received is
                           what the subscriber uploaded. */}
-                      <td className="px-5 py-3.5 text-blue-300 font-medium">{fmtMB(s.tx_bytes)}</td>
-                      <td className="px-5 py-3.5 text-emerald-300 font-medium">{fmtMB(s.rx_bytes)}</td>
+                      <td className="px-5 py-3.5 text-slate-400 whitespace-nowrap">
+                        {fmtMB((s.rx_bytes || 0) + (s.tx_bytes || 0))}
+                      </td>
+                      {/* A number that climbs with little traffic against it is
+                          the shape of a fault rather than of usage. */}
+                      <td className="px-5 py-3.5">
+                        <span className={
+                          (s.reconnects || 0) >= 10
+                            ? "text-amber-300 font-medium"
+                            : "text-slate-400"
+                        }>
+                          {s.reconnects || 0}
+                        </span>
+                      </td>
                       <td className="px-5 py-3.5">
                         <span className="inline-flex items-center px-2.5 py-0.5 rounded-md text-xs font-medium bg-white/5 text-slate-300">
                           {s.router}
