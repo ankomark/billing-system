@@ -434,6 +434,11 @@ class CustomerViewSet(viewsets.ModelViewSet):
                         .order_by("-expiry_date"),
                 ),
                 "subscriptions__vouchers",
+                # Who actually paid, for the row that shows it. Without this
+                # the serializer reaches through invoice -> transactions once
+                # per subscription, which is the shape CustomerDetailSerializer
+                # Tests holds the count against.
+                "subscriptions__invoice__mpesa_transactions",
                 "devices",
             )
 

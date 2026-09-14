@@ -1018,15 +1018,23 @@ class CustomerDetailSerializerTests(TestCase):
 
     def test_detail_query_count_does_not_grow_with_subscriptions(self):
         """Prefetching must keep the detail page at a fixed query count."""
-        # 5 = customer (+select_related) + subscriptions prefetch + vouchers
-        # prefetch + devices prefetch + one aggregate for data used. On
-        # Postgres add 2: the middleware sets the RLS scope on the connection
-        # at the start of the request and clears it at the end.
+        # 6 = customer (+select_related) + subscriptions prefetch + vouchers
+        # prefetch + mpesa transactions prefetch + devices prefetch + one
+        # aggregate for data used. On Postgres add 2: the middleware sets the
+        # RLS scope on the connection at the start of the request and clears it
+        # at the end.
+        #
+        # It was 5 until the subscription rows began showing who paid. That
+        # needs the transaction on each subscription's invoice, and the choice
+        # was one prefetch for all of them or one query per row — so the fixed
+        # cost moved by one and the thing this test actually guards, that the
+        # count does not GROW with subscriptions, is unchanged.
         #
         # Fixed overhead — the point of this test is that it does not grow,
-        # and it earned its keep: the usage and devices panels first shipped
-        # querying per call and pushed this to ten.
-        expected = 5 + (2 if connection.vendor == "postgresql" else 0)
+        # and it earned its keep twice: the usage and devices panels first
+        # shipped querying per call and pushed this to ten, and the usage
+        # figure on each subscription row did it again.
+        expected = 6 + (2 if connection.vendor == "postgresql" else 0)
         with self.assertNumQueries(expected):
             self._detail()
 
@@ -1039,15 +1047,23 @@ class CustomerDetailSerializerTests(TestCase):
                 expires_at=timezone.now() + timezone.timedelta(days=5),
             )
 
-        # 5 = customer (+select_related) + subscriptions prefetch + vouchers
-        # prefetch + devices prefetch + one aggregate for data used. On
-        # Postgres add 2: the middleware sets the RLS scope on the connection
-        # at the start of the request and clears it at the end.
+        # 6 = customer (+select_related) + subscriptions prefetch + vouchers
+        # prefetch + mpesa transactions prefetch + devices prefetch + one
+        # aggregate for data used. On Postgres add 2: the middleware sets the
+        # RLS scope on the connection at the start of the request and clears it
+        # at the end.
+        #
+        # It was 5 until the subscription rows began showing who paid. That
+        # needs the transaction on each subscription's invoice, and the choice
+        # was one prefetch for all of them or one query per row — so the fixed
+        # cost moved by one and the thing this test actually guards, that the
+        # count does not GROW with subscriptions, is unchanged.
         #
         # Fixed overhead — the point of this test is that it does not grow,
-        # and it earned its keep: the usage and devices panels first shipped
-        # querying per call and pushed this to ten.
-        expected = 5 + (2 if connection.vendor == "postgresql" else 0)
+        # and it earned its keep twice: the usage and devices panels first
+        # shipped querying per call and pushed this to ten, and the usage
+        # figure on each subscription row did it again.
+        expected = 6 + (2 if connection.vendor == "postgresql" else 0)
         with self.assertNumQueries(expected):
             resp = self._detail()
         self.assertEqual(len(resp.data["subscriptions"]), 5)

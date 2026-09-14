@@ -375,83 +375,154 @@ export default function CustomerDetail() {
           </div>
         </div>
 
-        {/* Subscriptions */}
+        {/* Purchases — one card each, voucher included.
+
+            Subscriptions and vouchers used to be two panels, so an operator
+            holding a code had to match it against a separate list to answer
+            the questions anyone actually asks: what is this for, has it run
+            out, how much is left. They are the same thing and now read as
+            one. */}
         <div className="rounded-xl border border-white/10 bg-slate-900/80 shadow-lg shadow-black/20 overflow-hidden">
           <div className="px-5 py-4 border-b border-white/5">
-            <h2 className="text-sm font-semibold text-slate-300">Subscriptions</h2>
+            <h2 className="text-sm font-semibold text-slate-300">Purchases</h2>
           </div>
           {!customer.subscriptions?.length ? (
-            <p className="px-5 py-6 text-slate-500 text-sm">No subscriptions found.</p>
+            <p className="px-5 py-6 text-slate-500 text-sm">No purchases yet.</p>
           ) : (
             customer.subscriptions.map((s) => (
-              <div
+              <PurchaseCard
                 key={s.id}
-                className="px-5 py-4 border-b border-white/5 last:border-0 text-sm flex items-center justify-between"
-              >
-                <div>
-                  <p className="font-medium text-white">{s.package_name || s.package}</p>
-                  <p className="text-slate-500 text-xs mt-0.5">
-                    Expires {new Date(s.expiry_date || s.expires_at).toLocaleDateString("en-KE")}
-                  </p>
-                </div>
-                <StatusBadge status={s.status} />
-              </div>
+                sub={s}
+                canComp={canComp}
+                busy={actionLoading}
+                onRetire={handleDeactivateVoucher}
+                onResend={handleResendVoucher}
+              />
             ))
           )}
         </div>
 
-        {/* Vouchers */}
-        {customer.vouchers?.length > 0 && (
-          <div className="rounded-xl border border-white/10 bg-slate-900/80 shadow-lg shadow-black/20 overflow-hidden">
-            <div className="px-5 py-4 border-b border-white/5">
-              <h2 className="text-sm font-semibold text-slate-300">Vouchers</h2>
-            </div>
-            {customer.vouchers.map((v) => (
-              <div
-                key={v.code}
-                className="px-5 py-3 border-b border-white/5 last:border-0 flex items-center justify-between text-sm"
-              >
-                <code className="bg-white/5 text-slate-300 px-2 py-0.5 rounded text-xs">
-                  {v.code}
-                </code>
-                <div className="flex items-center gap-3">
-                  <StatusBadge status={v.is_active ? "active" : "expired"} />
-                  <span className="text-slate-500 text-xs">
-                    Expires {new Date(v.expires_at).toLocaleDateString("en-KE")}
-                  </span>
-                  {/* Beside the code, because this is the moment somebody asks
-                      for it again. The button at the top of the page does the
-                      same thing, but you have to know it is there and that it
-                      means this code. */}
-                  {v.is_active && canComp && (
-                    <button
-                      onClick={() => handleDeactivateVoucher(v)}
-                      disabled={actionLoading}
-                      title="Stop this code working"
-                      aria-label={`Retire ${v.code}`}
-                      className="rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-red-500/10 hover:text-red-300 disabled:opacity-40"
-                    >
-                      <Ban size={14} />
-                    </button>
-                  )}
-                  {v.is_active && (
-                    <button
-                      onClick={handleResendVoucher}
-                      disabled={actionLoading}
-                      title="Send this code to the customer"
-                      aria-label={`Send ${v.code} to ${customer.full_name}`}
-                      className="rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-blue-500/10 hover:text-blue-300 disabled:opacity-40"
-                    >
-                      <Send size={14} />
-                    </button>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
       </div>
     </AdminLayout>
+  );
+}
+
+
+/**
+ * One purchase, whole.
+ *
+ * Reads top to bottom the way somebody asks about it: the code first, because
+ * that is what is in their hand, then what it bought, then whether it is still
+ * running and how much is left.
+ *
+ * `is_live` rather than `status`: a row reads "active" until a sweep reaches
+ * it, and telling an operator at 03:00 that a bundle which ended at midnight
+ * is running is worse than saying nothing.
+ */
+function PurchaseCard({ sub, canComp, busy, onRetire, onResend }) {
+  const voucher = sub.vouchers?.[0] || null;
+  const cap = Number(sub.data_cap_mb) || 0;
+  const usedMb =
+    sub.data_used_bytes == null ? null : sub.data_used_bytes / (1024 * 1024);
+  const pct = cap && usedMb != null ? Math.min((usedMb / cap) * 100, 100) : null;
+
+  const when = (v) =>
+    v ? new Date(v).toLocaleString("en-KE", {
+      day: "2-digit", month: "short", year: "numeric",
+      hour: "2-digit", minute: "2-digit",
+    }) : "—";
+
+  return (
+    <div className="px-5 py-4 border-b border-white/5 last:border-0">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          {voucher ? (
+            <div className="flex items-center gap-2 flex-wrap">
+              <code className="bg-white/5 text-slate-200 px-2 py-0.5 rounded text-xs font-semibold tracking-wide">
+                {voucher.code}
+              </code>
+              {!voucher.is_active && (
+                <span className="text-[0.65rem] uppercase tracking-wider text-slate-500">
+                  retired
+                </span>
+              )}
+            </div>
+          ) : (
+            <span className="text-xs text-slate-500">No code issued</span>
+          )}
+          <p className="font-medium text-white mt-1.5">
+            {sub.package_name || sub.package}
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <StatusBadge status={sub.is_live ? "active" : "expired"} />
+          {voucher?.is_active && canComp && (
+            <button
+              onClick={() => onRetire(voucher)}
+              disabled={busy}
+              title="Stop this code working"
+              aria-label={`Retire ${voucher.code}`}
+              className="rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-red-500/10 hover:text-red-300 disabled:opacity-40"
+            >
+              <Ban size={14} />
+            </button>
+          )}
+          {voucher?.is_active && (
+            <button
+              onClick={onResend}
+              disabled={busy}
+              title="Send this code to the customer"
+              aria-label={`Send ${voucher.code}`}
+              className="rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-blue-500/10 hover:text-blue-300 disabled:opacity-40"
+            >
+              <Send size={14} />
+            </button>
+          )}
+        </div>
+      </div>
+
+      <dl className="mt-3 grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-2 text-xs">
+        <Fact label="Bought" value={when(sub.start_date)} />
+        <Fact label="Expires" value={when(sub.expiry_date)} />
+        <Fact
+          label="Paid from"
+          /* Not always the subscriber's own number — a friend with M-Pesa
+             balance buys for them, and a disputed payment is settled by the
+             number that was actually charged. Blank means nothing was: a
+             comped bundle has no payer. */
+          value={sub.paid_from || (sub.payment_status === "paid" ? "—" : "Not paid")}
+        />
+        <Fact
+          label="Data"
+          value={
+            cap === 0
+              ? "Unlimited"
+              : usedMb == null
+              ? `${cap.toLocaleString()} MB`
+              : `${Math.round(usedMb).toLocaleString()} / ${cap.toLocaleString()} MB`
+          }
+        />
+      </dl>
+
+      {pct != null && (
+        <div className="mt-2 h-1 rounded-full bg-white/10 overflow-hidden">
+          <div
+            className={`h-full rounded-full ${pct >= 100 ? "bg-red-500" : "bg-emerald-500"}`}
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Fact({ label, value }) {
+  return (
+    <div className="min-w-0">
+      <dt className="text-slate-500">{label}</dt>
+      <dd className="text-slate-200 truncate tabular-nums">{value}</dd>
+    </div>
   );
 }
 

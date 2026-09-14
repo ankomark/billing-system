@@ -113,8 +113,40 @@ class CustomerSerializer(serializers.ModelSerializer):
 
 
 class CustomerSubscriptionSerializer(serializers.ModelSerializer):
-    """Compact subscription row for the customer detail page."""
+    """
+    One purchase, whole, for the customer detail page.
+
+    Subscriptions and vouchers used to be two panels, and an operator holding a
+    code in one hand had to match it against a list of packages in the other to
+    answer the only questions anyone actually asks: what is this code for, has
+    it run out, and how much of it is left. The voucher belongs to the
+    subscription — it is the thing that was sold — so it is carried on the row
+    rather than beside it.
+
+    `start_date` is the purchase moment, not merely when the row was written:
+    Payment.save() resets it to the moment money arrived, so a subscription
+    created during an abandoned checkout and paid for an hour later reads as
+    bought when it was paid for.
+    """
     package_name = serializers.CharField(source="package.name", read_only=True)
+
+    # The code itself, and whether it still opens the door.
+    vouchers = serializers.SerializerMethodField()
+
+    # Who paid. Usually the subscriber's own number, but not always — a
+    # subscriber whose friend had M-Pesa balance is bought for by that friend,
+    # and an operator looking at a disputed payment needs the number that was
+    # actually charged rather than the one on the account.
+    paid_from = serializers.SerializerMethodField()
+
+    # What was sold and what is left of it.
+    data_cap_mb = serializers.SerializerMethodField()
+    data_used_bytes = serializers.SerializerMethodField()
+
+    # Whether this is in force NOW, which the stored status alone does not say:
+    # a row reads "active" until a sweep gets to it, and an operator looking at
+    # 03:00 should not be told a bundle that ran out at midnight is running.
+    is_live = serializers.SerializerMethodField()
 
     # What is owed on it. Without these the page could show a subscription and
     # not whether it had been paid for, so an operator taking money at the
@@ -129,13 +161,81 @@ class CustomerSubscriptionSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Subscription
-        fields = ("id", "package", "package_name", "status", "start_date",
-                  "expiry_date", "payment_status", "invoice_number",
-                  "amount_due")
+        fields = ("id", "package", "package_name", "status", "is_live",
+                  "start_date", "expiry_date", "payment_status",
+                  "invoice_number", "amount_due", "paid_from", "vouchers",
+                  "data_cap_mb", "data_used_bytes")
 
     @staticmethod
     def _invoice(obj):
         return getattr(obj, "invoice", None)
+
+    def get_vouchers(self, obj):
+        """
+        Relies on the view prefetching subscriptions__vouchers. `.all()` on a
+        prefetched manager reads the cache; anything narrower goes back to the
+        database once per row, which is what the fixed-query test exists to
+        catch.
+        """
+        return [
+            {"code": v.code, "is_active": v.is_active,
+             "expires_at": v.expires_at, "created_at": v.created_at}
+            for v in sorted(obj.vouchers.all(),
+                            key=lambda v: v.created_at, reverse=True)
+        ]
+
+    def get_is_live(self, obj):
+        from django.utils import timezone
+
+        return bool(obj.status == "active"
+                    and obj.expiry_date and obj.expiry_date > timezone.now())
+
+    def get_paid_from(self, obj):
+        """
+        The number M-Pesa actually charged, from the transaction on this
+        subscription's invoice. None where nothing was charged — a comped
+        bundle has no payer, and inventing the subscriber's own number there
+        would make a gift look like a sale.
+        """
+        inv = self._invoice(obj)
+        if inv is None:
+            return None
+        # Prefetched by the view; sorted here rather than in SQL so the
+        # prefetch cache is used.
+        txns = sorted(inv.mpesa_transactions.all(),
+                      key=lambda t: t.created_at, reverse=True)
+        for t in txns:
+            if t.phone_number:
+                return t.phone_number
+        return None
+
+    def get_data_cap_mb(self, obj):
+        """
+        What this subscription was sold with, which is not always what the
+        package says today — see Subscription.data_cap_mb. 0 means unlimited.
+        """
+        from .services.usage import cap_bytes_for, MB
+
+        cap = cap_bytes_for(obj.customer, obj)
+        return int(cap // MB) if cap else 0
+
+    def get_data_used_bytes(self, obj):
+        """
+        Only for the subscription in force, and deliberately.
+
+        The figure is computed once by the parent and handed down, so this row
+        costs nothing. Asking per row would be one aggregate each, and a
+        subscriber with twenty-five purchases would turn one page into
+        twenty-five queries — the regression CustomerDetailSerializerTests
+        exists to catch, and has caught before.
+
+        None, not zero. Zero is a real answer meaning "bought and never used",
+        and a row that cannot say must not be mistaken for one.
+        """
+        if obj.id != self.context.get("current_subscription_id"):
+            return None
+        usage = self.context.get("current_usage") or {}
+        return usage.get("used_bytes")
 
     def get_payment_status(self, obj):
         inv = self._invoice(obj)
@@ -181,6 +281,25 @@ class CustomerDetailSerializer(CustomerSerializer):
             "devices",
             "data_usage",
         ]
+
+    def to_representation(self, instance):
+        """
+        Work out the usage once, before the nested rows are rendered.
+
+        The subscription rows want to show what has been used against what was
+        sold, and the obvious way — each row asking for its own total — is the
+        regression the fixed-query test was written for, in the same words its
+        comment uses: "the usage and devices panels first shipped querying per
+        call and pushed this to ten".
+
+        So it is computed here, for the subscription in force, and published on
+        the context. A row that is not that one shows nothing rather than a
+        number it did not pay for.
+        """
+        current = self._current_subscription(instance)
+        self.context["current_subscription_id"] = current.id if current else None
+        self.context["current_usage"] = self._usage(instance, current)
+        return super().to_representation(instance)
 
     @staticmethod
     def _current_subscription(obj):
@@ -234,6 +353,11 @@ class CustomerDetailSerializer(CustomerSerializer):
         }
 
     def get_data_usage(self, obj):
+        """Already computed in to_representation; this only hands it over."""
+        return self.context.get("current_usage")
+
+    @staticmethod
+    def _usage(obj, subscription):
         """
         What they have used, against what they are allowed.
 
@@ -248,8 +372,6 @@ class CustomerDetailSerializer(CustomerSerializer):
         from django.db.models import Sum
 
         from .models import HotspotUsageRecord, PPPoEUsageRecord
-
-        subscription = self._current_subscription(obj)
 
         # One resolver for the ceiling and one for the window, both shared
         # with the cut-off. Spelling either here again is how the console and
