@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import toast from "react-hot-toast";
 import AdminLayout from "../../components/admin/AdminLayout";
@@ -11,6 +11,7 @@ import {
   fetchSmsBalance,
   testWhatsapp,
 } from "../../services/settings";
+import { fetchPackages } from "../../services/packages";
 
 const EMPTY = {
   MPESA_CONSUMER_KEY: "",
@@ -32,6 +33,11 @@ const EMPTY = {
   SUPPORT_PHONE_2: "",
   HOTSPOT_TERMS_URL: "",
   HOTSPOT_NOTICE: "",
+  // Which package the portal puts at the top under a Featured flag. Empty is
+  // a plain list. A setting rather than a line in login.html, because that
+  // file is uploaded to each router by hand — see the Featured package
+  // section below.
+  HOTSPOT_FEATURED_PACKAGE: "",
   SMS_TEMPLATE_VOUCHER: "",
   SMS_TEMPLATE_PPPOE: "",
   SMS_TEMPLATE_WELCOME_HOTSPOT: "",
@@ -117,6 +123,22 @@ export default function SystemSettings() {
     queryFn: fetchSystemSettings,
     staleTime: 5 * 60 * 1000,
   });
+
+  // The packages the Featured picker offers. Hotspot only, and unarchived —
+  // the portal will not feature anything else, so offering it here would let
+  // an operator pick something that silently does nothing.
+  const { data: packagePage } = useQuery({
+    queryKey: ["packages", "for-featured"],
+    queryFn: () => fetchPackages(1, 100),
+    staleTime: 5 * 60 * 1000,
+  });
+  const hotspotPackages = useMemo(
+    () =>
+      (packagePage?.results || [])
+        .filter((p) => p.is_hotspot && !p.is_archived)
+        .sort((a, b) => Number(a.price) - Number(b.price)),
+    [packagePage]
+  );
 
   // Read on its own so a provider that is slow or unreachable delays this
   // panel rather than the whole settings page.
@@ -433,6 +455,37 @@ export default function SystemSettings() {
               Reaches every router at once and needs no upload. Turn it off and
               it disappears from all of them — worth remembering for a message
               that stops being true.
+            </p>
+          </Section>
+
+          {/* Featured package */}
+          <Section title="Featured package">
+            <p className="text-sm text-slate-400">
+              One package sits at the top of your portal, large, under a
+              Featured flag. The rest follow underneath. Use it for whatever you
+              want people to buy — a weekend offer, a bundle you are pushing,
+              the one with the best margin.
+            </p>
+
+            <Select
+              label="Show at the top"
+              name="HOTSPOT_FEATURED_PACKAGE"
+              value={form.HOTSPOT_FEATURED_PACKAGE}
+              onChange={handleChange}
+              options={[
+                ["", "Nothing — show a plain list"],
+                ...hotspotPackages.map((p) => [
+                  String(p.id),
+                  `${p.name} — ${p.price}/=`,
+                ]),
+              ]}
+            />
+
+            <p className="text-xs text-slate-500">
+              Reaches every router at once and needs no upload, so you can move
+              it on a Friday and back on a Monday from here. If the package you
+              pick is later archived, the portal quietly drops back to a plain
+              list rather than showing a price nobody can buy.
             </p>
           </Section>
 

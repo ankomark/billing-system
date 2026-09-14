@@ -63,6 +63,10 @@ ALL_SETTING_KEYS = [
     # was broken.
     "HOTSPOT_TERMS_URL",
     "HOTSPOT_NOTICE",
+    # Which package the portal puts at the top, large, under a Featured flag.
+    # Named here for the same reason the notice is: an operator flipping the
+    # weekend offer would otherwise watch the old one stay on every portal.
+    "HOTSPOT_FEATURED_PACKAGE",
 ]
 
 

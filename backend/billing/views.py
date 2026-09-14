@@ -3628,6 +3628,7 @@ class SystemSettingsView(APIView):
         "WHATSAPP_PHONE_ID",
         "HOTSPOT_TERMS_URL",
         "HOTSPOT_NOTICE",
+        "HOTSPOT_FEATURED_PACKAGE",
         "SMS_TEMPLATE_VOUCHER",
         "SMS_TEMPLATE_PPPOE",
         "SMS_TEMPLATE_WELCOME_HOTSPOT",
@@ -5566,8 +5567,48 @@ class HotspotPackagesView(APIView):
             # working on it" has to come down promptly once it is no longer
             # true, and a notice nobody can remove quickly is worse than none.
             "notice": get_setting("HOTSPOT_NOTICE", default="", tenant=tenant) or None,
+            # Which package to put at the top under a Featured flag, or null
+            # for a plain list.
+            #
+            # A setting rather than a line in the portal file, for exactly the
+            # reason given above the notice: login.html is uploaded to each
+            # MikroTik by hand, so a featured package written there costs a site
+            # visit to change and another to change back. An operator who wants
+            # the 3hr bundle featured over a weekend has to be able to do it
+            # from a chair.
+            #
+            # Sent as the id and nothing else. The portal matches it against
+            # the list in the same response, so an id naming a package that has
+            # since been archived simply matches nothing and the portal falls
+            # back to a plain list -- no stale name or price can reach a
+            # subscriber from a setting nobody updated.
+            "featured_package": _featured_package_id(tenant, packages),
             "results": PublicPackageSerializer(packages, many=True).data,
         })
+
+
+def _featured_package_id(tenant, packages):
+    """
+    The package an operator has chosen to feature, if it is still on sale.
+
+    Returns an int id or None.
+
+    Validated against the list being sent rather than trusted. The setting is a
+    number typed once and then left alone, and the package it names can be
+    archived, re-priced or deleted long afterwards -- so the only safe reading
+    is "is this still one of the packages this portal is about to show". An id
+    that is not gets treated as no choice at all, which degrades to a plain
+    list rather than to an empty card or a stale price.
+    """
+    raw = (get_setting("HOTSPOT_FEATURED_PACKAGE", default="", tenant=tenant)
+           or "").strip()
+    if not raw:
+        return None
+    try:
+        wanted = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return wanted if any(p.id == wanted for p in packages) else None
 
 
 class HotspotPurchaseView(APIView):

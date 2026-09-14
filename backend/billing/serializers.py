@@ -634,6 +634,17 @@ class SystemSettingSerializer(serializers.Serializer):
     HOTSPOT_NOTICE = serializers.CharField(
         required=False, allow_blank=True, max_length=400)
 
+    # The package the portal features, by id. Blank means none, and the portal
+    # then shows a plain list -- which is also what happens if the id names a
+    # package that has since been archived or deleted, because the portal looks
+    # it up in the list it was given rather than trusting the number.
+    #
+    # A string rather than an integer so that clearing it is an empty value
+    # like every other setting here, instead of a null that the key/value store
+    # would write as the text "None".
+    HOTSPOT_FEATURED_PACKAGE = serializers.CharField(
+        required=False, allow_blank=True, max_length=12)
+
     SUPPORT_PHONE   = serializers.CharField(max_length=20, required=False, allow_blank=True)
     SUPPORT_PHONE_2 = serializers.CharField(max_length=20, required=False, allow_blank=True)
 
