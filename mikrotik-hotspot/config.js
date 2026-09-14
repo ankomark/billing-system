@@ -110,6 +110,11 @@ var STRINGS = {
     'code.checking':    'Connecting you now…',
     'code.nomatch':     "We couldn't match that. Check you pasted the whole message.",
     'packages.title':   'Buy a package',
+    // The badge on the one package the operator has chosen to put at the top.
+    // Deliberately not "Best value" or "Most popular" -- the operator picks it
+    // for their own reasons, and a claim the system cannot verify is one a
+    // customer can catch out.
+    'pkg.featured':     'Featured',
     'packages.loading': 'Loading packages…',
     'packages.none':    'No packages are on sale right now. Please ask at the counter.',
     'packages.failed':  "Couldn't load the packages. ",
@@ -174,6 +179,7 @@ var STRINGS = {
     'code.checking':    'Tunakuunganisha sasa…',
     'code.nomatch':     'Hatukuweza kuupata. Hakikisha umebandika ujumbe mzima.',
     'packages.title':   'Nunua kifurushi',
+    'pkg.featured':     'Maalum',
     'packages.loading': 'Inapakia vifurushi…',
     'packages.none':    'Hakuna vifurushi kwa sasa. Tafadhali uliza kaunta.',
     'packages.failed':  'Imeshindwa kupakia vifurushi. ',

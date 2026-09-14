@@ -25,6 +25,26 @@
       page load and another thing to go wrong for someone standing at a
       counter. Buying and reconnecting are the only two reasons anyone opens
       this page, so both are on it.
+
+      ── The look ────────────────────────────────────────────────────────────
+      One black and one green.
+
+      Black everywhere — page and cards alike, all #000. An earlier draft lifted
+      the page a couple of percent so the cards would read as cut out of it;
+      two blacks that close do not look like a decision, they look like a
+      mistake. The separation is carried by a hairline instead, which was
+      already strong enough to do it.
+
+      Green #056349 on every action: the eight Buy buttons, Connect, and the
+      brand mark. Its brighter relative #00e5a8 belongs to the featured package
+      alone — its edge, its figures, its button — so the one thing being pushed
+      is the one bright thing on the screen.
+
+      Amber stays amber on the notice. It is the only element whose job is to
+      interrupt, so it does not take the page's colour.
+
+      No gradients on any card. A flat dark page gives backdrop-filter nothing
+      to refract, and a wash behind a price only makes the price harder to read.
     */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -32,12 +52,11 @@
 
     body {
       min-height: 100vh;
-      background: linear-gradient(160deg, #0f172a 0%, #1e3a5f 55%, #0f172a 100%);
-      background-attachment: fixed;
+      background: #000;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
       -webkit-font-smoothing: antialiased;
       padding: 1rem 1rem calc(1.5rem + env(safe-area-inset-bottom));
-      color: #fff;
+      color: #f8fafc;
     }
 
     .wrap { width: 100%; max-width: 26rem; margin: 0 auto; }
@@ -46,12 +65,13 @@
     .brand { text-align: center; margin-bottom: .875rem; }
     .brand-icon {
       display: inline-flex; align-items: center; justify-content: center;
-      width: 2.5rem; height: 2.5rem; background: #2563eb;
-      border-radius: .75rem; margin-bottom: .375rem;
-      box-shadow: 0 .375rem 1.25rem rgba(37,99,235,.5);
+      width: 2.625rem; height: 2.625rem; background: #056349;
+      border: 1px solid #0e8f6a;
+      border-radius: .8125rem; margin-bottom: .375rem;
+      box-shadow: 0 0 1.375rem -.25rem rgba(14,143,106,.75);
     }
-    .brand h1 { font-size: 1.0625rem; font-weight: 700; letter-spacing: -.02em; }
-    .brand p { color: #94a3b8; font-size: .75rem; margin-top: .0625rem; }
+    .brand h1 { font-size: 1.375rem; font-weight: 800; letter-spacing: -.025em; }
+    .brand p { color: #cbd5e1; font-size: .78125rem; margin-top: .0625rem; }
 
     /* ── Operator notice ───────────────────────────────────────
        A temporary message from the operator, above everything else
@@ -60,45 +80,49 @@
        it. Amber rather than red — this is guidance, not an error,
        and the page below it works.
 
-       Hidden unless config.js sets NOTICE, so a portal with nothing
+       Amber on black rather than on white: it is the one thing here
+       that keeps its own colour whatever the rest of the page does,
+       because interrupting is its whole purpose.
+
+       Hidden unless the backend sends one, so a portal with nothing
        to say shows nothing rather than an empty box. */
     .notice {
-      background: #fffbeb; border: 1px solid #fcd34d;
-      border-left: 3px solid #f59e0b; border-radius: .625rem;
+      background: rgba(255,176,32,.13);
+      border: 1px solid rgba(255,176,32,.50);
+      border-radius: .6875rem;
       padding: .625rem .75rem; margin-bottom: .625rem;
       display: flex; gap: .5rem; align-items: flex-start;
     }
     .notice svg { flex-shrink: 0; margin-top: .0625rem; }
     .notice p {
-      margin: 0; font-size: .8125rem; line-height: 1.45; color: #78350f;
+      margin: 0; font-size: .78125rem; line-height: 1.45; color: #ffd894;
       word-break: break-word;
     }
 
     /* ── Reconnect card ────────────────────────────────────────
-       Two thirds smaller than it was. It had a tab bar, a label, a
-       two-row field, a two-line hint and a full-width button — most
-       of a phone screen, above a page whose actual job is selling.
-       Everyone who needs it already knows what it is for, so it is
-       one row: paste, tap, done. */
-    .reconnect {
-      background: #fff; border-radius: .875rem; padding: .625rem;
-      box-shadow: 0 .75rem 2rem rgba(0,0,0,.3);
-    }
-    .rc-row { display: flex; gap: .375rem; }
+       One row: paste, tap, done. Everyone who needs it already knows
+       what it is for, and most people opening this page have already
+       paid — so it sits above the price list, where the thumb is. */
+    .reconnect { margin-bottom: .125rem; }
+    .rc-row { display: flex; gap: .4375rem; }
     .rc-row input {
-      flex: 1; min-width: 0; border: 1.5px solid #d1d5db; border-radius: .5rem;
-      padding: .5rem .625rem; font-size: .875rem; font-family: inherit;
-      color: #111827; outline: none;
+      flex: 1; min-width: 0; background: #000;
+      border: 1px solid rgba(255,255,255,.24); border-radius: .6875rem;
+      padding: .625rem .6875rem; font-size: .875rem; font-family: inherit;
+      color: #fff; outline: none;
     }
-    .rc-row input:focus { border-color: #2563eb; box-shadow: 0 0 0 2px rgba(37,99,235,.18); }
-    .rc-row input::placeholder { color: #9ca3af; }
+    .rc-row input:focus { border-color: #0e8f6a; box-shadow: 0 0 0 2px rgba(14,143,106,.28); }
+    .rc-row input::placeholder { color: #7c8aa0; }
     .rc-row button {
-      flex-shrink: 0; border: 0; border-radius: .5rem; background: #2563eb;
-      color: #fff; font: inherit; font-size: .8125rem; font-weight: 700;
-      padding: 0 .75rem; cursor: pointer;
+      flex-shrink: 0; border: 1px solid #0e8f6a; border-radius: .6875rem;
+      background: #056349; color: #fff; font: inherit;
+      font-size: .78125rem; font-weight: 700;
+      letter-spacing: .05em; text-transform: uppercase;
+      padding: 0 .875rem; cursor: pointer;
+      box-shadow: 0 0 1.125rem -.3125rem rgba(14,143,106,.75);
     }
-    .rc-row button:disabled { opacity: .55; cursor: default; }
-    .rc-hint { font-size: .6875rem; color: #6b7280; margin-top: .3125rem; padding: 0 .125rem; }
+    .rc-row button:disabled { opacity: .55; cursor: default; box-shadow: none; }
+    .rc-hint { font-size: .6875rem; color: #cbd5e1; margin-top: .375rem; padding: 0 .125rem; }
 
     /* ── Messages ──────────────────────────────────────────── */
     .msg {
@@ -106,8 +130,14 @@
       font-size: .75rem; font-weight: 500; margin-top: .375rem;
     }
     .msg.show { display: block; }
-    .msg.ok   { background: #f0fdf4; color: #15803d; border: 1px solid #bbf7d0; }
-    .msg.bad  { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; }
+    .msg.ok   { background: rgba(0,229,168,.12); color: #7cffd8; border: 1px solid rgba(0,229,168,.38); }
+    .msg.bad  { background: rgba(239,68,68,.12); color: #fca5a5; border: 1px solid rgba(239,68,68,.40); }
+
+    .router-error {
+      background: rgba(239,68,68,.12); border: 1px solid rgba(239,68,68,.40);
+      color: #fca5a5; border-radius: .625rem; padding: .5625rem .6875rem;
+      font-size: .78125rem; margin-bottom: .625rem;
+    }
 
     /* Waiting.
 
@@ -119,121 +149,157 @@
        their phone helps nobody. */
     .wait {
       display: none; position: fixed; inset: 0; z-index: 50;
-      background: rgba(15,23,42,.72);
+      background: rgba(0,0,0,.82);
       align-items: center; justify-content: center; padding: 1.5rem;
     }
     .wait.show { display: flex; }
     .wait-card {
-      background: #fff; border-radius: .875rem; padding: 1.5rem 1.75rem;
+      background: #000; border: 1px solid rgba(255,255,255,.18);
+      border-radius: .875rem; padding: 1.5rem 1.75rem;
       text-align: center; max-width: 17rem; width: 100%;
-      box-shadow: 0 1rem 2.5rem rgba(0,0,0,.35);
+      box-shadow: 0 1rem 2.5rem rgba(0,0,0,.75);
     }
     .wait-spin {
-      width: 2.25rem; height: 2.25rem; margin: 0 auto .875rem;
-      border: 3px solid #e2e8f0; border-top-color: #2563eb; border-radius: 50%;
-      animation: wait-turn .7s linear infinite;
+      width: 2rem; height: 2rem; margin: 0 auto .75rem;
+      border: 3px solid rgba(255,255,255,.16); border-top-color: #00e5a8;
+      border-radius: 50%; animation: spin .8s linear infinite;
     }
-    @keyframes wait-turn { to { transform: rotate(360deg); } }
+    @keyframes spin { to { transform: rotate(360deg); } }
     .wait-tick {
-      display: none; width: 2.25rem; height: 2.25rem; margin: 0 auto .875rem;
-      border-radius: 50%; background: #16a34a;
+      display: none; width: 2rem; height: 2rem; margin: 0 auto .75rem;
+      border-radius: 50%; background: #00e5a8;
       align-items: center; justify-content: center;
-      animation: wait-pop .28s ease-out;
     }
-    @keyframes wait-pop { from { transform: scale(.5); opacity: 0; } }
     .wait.done .wait-spin { display: none; }
     .wait.done .wait-tick { display: flex; }
-    .wait-text {
-      font-size: .875rem; font-weight: 600; color: #1e293b; margin: 0;
-      line-height: 1.45;
-    }
-    @media (prefers-reduced-motion: reduce) {
-      .wait-spin { animation-duration: 2s; }
-      .wait-tick { animation: none; }
-    }
-
-    .router-error {
-      background: #fef2f2; border: 1px solid #fecaca; color: #b91c1c;
-      border-radius: .625rem; padding: .5rem .75rem; font-size: .75rem;
-      margin-bottom: .625rem;
-    }
+    .wait-text { font-size: .875rem; font-weight: 600; color: #f8fafc; }
 
     /* ── Packages ──────────────────────────────────────────── */
     .sec-label {
-      font-size: .6875rem; font-weight: 700; letter-spacing: .14em;
-      text-transform: uppercase; color: #94a3b8;
-      margin: 1.125rem 0 .5rem; padding-left: .125rem;
+      font-size: .6875rem; font-weight: 700; letter-spacing: .15em;
+      text-transform: uppercase; color: #cbd5e1;
+      margin: 1.25rem 0 .5rem; padding-left: .125rem;
     }
 
-    .pkg-list { display: flex; flex-direction: column; gap: .5rem; }
+    /* Featured first and full width, then the rest two-up.
+       Both live in #packages, which is why this is a wrapper rather than a
+       grid on the list itself. */
+    .pkg-list { display: block; }
+    .pkg-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; }
 
     .pkg {
-      background: #fff; border-radius: .75rem; padding: .6875rem .75rem;
-      box-shadow: 0 .25rem .75rem rgba(0,0,0,.18);
+      background: #000; border: 1px solid rgba(255,255,255,.18);
+      border-radius: .8125rem; padding: .625rem .5625rem;
+      text-align: center;
     }
-    .pkg-main { display: flex; align-items: center; gap: .625rem; }
-    .pkg-text { flex: 1; min-width: 0; }
-    .pkg-name { font-size: .875rem; font-weight: 700; color: #111827; }
-    .pkg-meta { font-size: .6875rem; color: #6b7280; margin-top: .0625rem; }
+
+    /* An opened package takes the whole row. The phone field and the
+       television box below it need the width, and a pay panel squeezed into
+       half of a two-up grid is where somebody mistypes their number. */
+    .pkg.open { grid-column: 1 / -1; text-align: left; }
+
+    .pkg-main { display: block; }
+    .pkg-text { min-width: 0; }
     .pkg-price {
-      font-size: .9375rem; font-weight: 800; color: #1d4ed8;
-      white-space: nowrap; text-align: right;
+      font-size: 1.3125rem; font-weight: 800; color: #fff;
+      letter-spacing: -.03em; line-height: 1;
+      font-variant-numeric: tabular-nums; white-space: nowrap;
     }
+    .pkg-price .bob { font-size: .55em; font-weight: 600; letter-spacing: 0; color: #8595ab; }
+    .pkg-name { font-size: .6875rem; font-weight: 600; color: #fff; margin-top: .1875rem; }
+    .pkg-meta { font-size: .625rem; color: #a8b6c9; margin-top: .0625rem; font-variant-numeric: tabular-nums; }
     .pkg-buy {
-      flex-shrink: 0; border: 0; border-radius: .5rem; background: #16a34a;
-      color: #fff; font: inherit; font-size: .8125rem; font-weight: 700;
-      padding: .4375rem .875rem; cursor: pointer;
+      display: block; width: 100%; margin-top: .5rem;
+      border: 1px solid #0e8f6a; border-radius: .5rem; background: #056349;
+      color: #fff; font: inherit; font-size: .625rem; font-weight: 700;
+      letter-spacing: .07em; text-transform: uppercase;
+      padding: .375rem 0; cursor: pointer;
+      box-shadow: 0 0 1rem -.375rem rgba(14,143,106,.75);
     }
-    .pkg-buy:disabled { opacity: .5; cursor: default; }
+    .pkg-buy:disabled { opacity: .5; cursor: default; box-shadow: none; }
+
+    /* ── The featured one ──────────────────────────────────────
+       Chosen in Settings, sent with the package list. Everything that marks it
+       out is a step brighter than the rest rather than a different idea: same
+       black card, same shape, the green turned up. */
+    .pkg--featured {
+      text-align: left;
+      border-color: #00e5a8;
+      border-radius: 1.0625rem;
+      padding: 1rem .9375rem .9375rem;
+      margin-bottom: .625rem;
+      box-shadow: 0 0 2.125rem -.625rem rgba(0,229,168,.55);
+    }
+    .pkg-flag {
+      display: inline-block; background: #ffb020; color: #1a1000;
+      font-size: .5625rem; font-weight: 700;
+      letter-spacing: .15em; text-transform: uppercase;
+      padding: .1875rem .5rem; border-radius: 999px; margin-bottom: .5625rem;
+      box-shadow: 0 0 1rem -.25rem rgba(255,176,32,.85);
+    }
+    .pkg--featured .pkg-price { font-size: 2.375rem; }
+    .pkg--featured .pkg-price .bob { color: #00e5a8; }
+    .pkg--featured .pkg-name { font-size: .9375rem; margin-top: .1875rem; }
+    .pkg--featured .pkg-meta { font-size: .75rem; }
+    .pkg--featured .pkg-buy {
+      font-size: .75rem; padding: .5625rem 0; margin-top: .8125rem;
+      background: #00e5a8; border-color: rgba(140,255,210,.45); color: #042a21;
+      box-shadow: 0 0 1.375rem -.3125rem rgba(0,229,168,.9);
+    }
 
     /* Why the packages did not load. Quiet on purpose: no use to a customer,
        every use to whoever they read it out to. */
     .pkg-why {
       display: block; margin-top: .5rem; font-size: .6875rem; line-height: 1.4;
-      color: #94a3b8; word-break: break-word;
+      color: #8595ab; word-break: break-word;
     }
 
     /* The phone prompt, opened under the package it belongs to so there is
        never a question about which one is being bought. */
-    .pkg-pay { display: none; margin-top: .625rem; padding-top: .625rem; border-top: 1px solid #f1f5f9; }
+    .pkg-pay { display: none; margin-top: .625rem; padding-top: .625rem; border-top: 1px solid rgba(255,255,255,.14); }
     .pkg.open .pkg-pay { display: block; }
-    .pkg-pay label { display: block; font-size: .75rem; font-weight: 600; color: #374151; margin-bottom: .3125rem; }
+    .pkg-pay label { display: block; font-size: .75rem; font-weight: 600; color: #e2e8f0; margin-bottom: .3125rem; }
     .pay-row { display: flex; gap: .375rem; }
     .pay-row input {
-      flex: 1; min-width: 0; border: 1.5px solid #d1d5db; border-radius: .5rem;
+      flex: 1; min-width: 0; background: #000;
+      border: 1px solid rgba(255,255,255,.24); border-radius: .5rem;
       padding: .5rem .625rem; font-size: .9375rem; font-family: inherit;
-      color: #111827; outline: none; letter-spacing: .02em;
+      color: #fff; outline: none; letter-spacing: .02em;
     }
-    .pay-row input:focus { border-color: #16a34a; box-shadow: 0 0 0 2px rgba(22,163,74,.18); }
+    .pay-row input::placeholder { color: #7c8aa0; }
+    .pay-row input:focus { border-color: #0e8f6a; box-shadow: 0 0 0 2px rgba(14,143,106,.28); }
     .pay-row button {
-      flex-shrink: 0; border: 0; border-radius: .5rem; background: #16a34a;
-      color: #fff; font: inherit; font-size: .8125rem; font-weight: 700;
+      flex-shrink: 0; border: 1px solid #0e8f6a; border-radius: .5rem;
+      background: #056349; color: #fff; font: inherit;
+      font-size: .8125rem; font-weight: 700;
       padding: 0 .875rem; cursor: pointer;
     }
     .pay-row button:disabled { opacity: .55; cursor: default; }
-    .pay-note { font-size: .6875rem; color: #6b7280; margin-top: .3125rem; }
+    .pay-note { font-size: .6875rem; color: #a8b6c9; margin-top: .3125rem; }
+
     /* Buying for a television. Understated until it is wanted -- most
        customers are buying for the phone in their hand. */
     .tv-toggle { background: none; border: 0; padding: .375rem 0; margin-top: .25rem;
-                 font-size: .75rem; color: #4f46e5; cursor: pointer; text-align: left; }
+                 font-size: .75rem; color: #00e5a8; cursor: pointer; text-align: left; }
     .tv-toggle.on { font-weight: 600; }
-    .tv-toggle::before { content: 'F4FA'; margin-right: .3125rem; }
-    .tv-box { margin-top: .375rem; padding: .5rem; background: #f8fafc;
-              border: 1px solid #e2e8f0; border-radius: .375rem; }
+    .tv-toggle::before { content: '\1F4FA'; margin-right: .3125rem; }
+    .tv-box { margin-top: .375rem; padding: .5rem; background: #000;
+              border: 1px solid rgba(255,255,255,.18); border-radius: .375rem; }
     .tv-label { display: block; font-size: .75rem; font-weight: 600;
-                color: #334155; margin-bottom: .25rem; }
+                color: #e2e8f0; margin-bottom: .25rem; }
     .tv-mac { width: 100%; box-sizing: border-box; padding: .5rem;
-              border: 1px solid #cbd5e1; border-radius: .375rem;
+              background: #000; color: #fff;
+              border: 1px solid rgba(255,255,255,.24); border-radius: .375rem;
               font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
               font-size: .875rem; letter-spacing: .04em; }
-    .tv-mac:focus { outline: 2px solid #6366f1; outline-offset: 1px; }
+    .tv-mac:focus { outline: 2px solid #0e8f6a; outline-offset: 1px; }
     .tv-note { margin-top: .375rem; }
 
     .pkg-status { display: none; margin-top: .5rem; font-size: .75rem; }
     .pkg-status.show { display: flex; align-items: center; gap: .375rem; }
-    .pkg-status.waiting { color: #b45309; }
-    .pkg-status.bad { color: #b91c1c; }
-    .pkg-status.ok { color: #15803d; font-weight: 600; }
+    .pkg-status.waiting { color: #ffb020; }
+    .pkg-status.bad { color: #fca5a5; }
+    .pkg-status.ok { color: #00e5a8; font-weight: 600; }
 
     .dot {
       width: .5rem; height: .5rem; border-radius: 50%; background: currentColor;
@@ -242,7 +308,7 @@
     @keyframes blink { 50% { opacity: .25; } }
 
     .empty {
-      background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.12);
+      background: #000; border: 1px solid rgba(255,255,255,.18);
       border-radius: .75rem; padding: 1rem; text-align: center;
       color: #cbd5e1; font-size: .8125rem;
     }
@@ -251,39 +317,40 @@
        Directly under the packages, because the person who needs it is
        looking at a price list they cannot get past. A phone on a
        captive portal has no internet and no other way to ask. */
-    .support { margin-top: .875rem; }
+    .support { margin-top: 1.125rem; }
     .support-label {
-      font-size: .6875rem; font-weight: 700; letter-spacing: .14em;
-      text-transform: uppercase; color: #94a3b8;
+      font-size: .6875rem; font-weight: 700; letter-spacing: .15em;
+      text-transform: uppercase; color: #cbd5e1;
       margin-bottom: .5rem; padding-left: .125rem;
     }
     .support-row { display: flex; gap: .5rem; }
     .support-row a {
       flex: 1; display: flex; align-items: center; justify-content: center; gap: .375rem;
-      background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.14);
+      background: #000; border: 1px solid rgba(255,255,255,.18);
       border-radius: .625rem; padding: .625rem .5rem;
-      color: #dbeafe; font-size: .8125rem; font-weight: 600;
+      color: #e2e8f0; font-size: .8125rem; font-weight: 600;
       text-decoration: none; min-width: 0;
+      font-variant-numeric: tabular-nums;
     }
     .support-row a span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .support-row a:active { background: rgba(255,255,255,.14); }
+    .support-row a:active { background: rgba(255,255,255,.08); }
 
     /* Language, and the terms nobody had anywhere to put. */
     .lang {
       position: absolute; top: .75rem; right: .75rem;
-      background: rgba(255,255,255,.10); border: 1px solid rgba(255,255,255,.18);
-      color: #dbeafe; border-radius: .5rem; padding: .3125rem .625rem;
-      font: inherit; font-size: .6875rem; font-weight: 600; cursor: pointer;
+      background: rgba(255,255,255,.10); border: 1px solid rgba(255,255,255,.20);
+      color: #e2e8f0; border-radius: 999px; padding: .3125rem .625rem;
+      font: inherit; font-size: .6875rem; font-weight: 700; cursor: pointer;
     }
     .terms {
-      text-align: center; font-size: .6875rem; color: #7c8ba1;
-      margin-top: .875rem; line-height: 1.6;
+      text-align: center; font-size: .6875rem; color: #8595ab;
+      margin-top: 1rem; line-height: 1.6;
     }
-    .terms a { color: #60a5fa; text-decoration: underline; }
+    .terms a { color: #cbd5e1; text-decoration: underline; }
 
     /* ── Foot ──────────────────────────────────────────────── */
-    .foot { text-align: center; color: #7c8ba1; font-size: .6875rem; margin-top: 1.125rem; line-height: 1.7; }
-    .foot a { color: #60a5fa; text-decoration: none; }
+    .foot { text-align: center; color: #8595ab; font-size: .6875rem; margin-top: 1.125rem; line-height: 1.7; }
+    .foot a { color: #cbd5e1; text-decoration: none; }
     .foot .mac { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: .625rem; color: #64748b; }
 
     @media (prefers-reduced-motion: reduce) {
@@ -646,7 +713,7 @@
     return isNaN(n) ? v : n.toLocaleString();
   }
 
-  function renderPackages(list) {
+  function renderPackages(list, featuredId) {
     var host = el('packages');
     host.innerHTML = '';
 
@@ -656,9 +723,33 @@
       return;
     }
 
-    for (var i = 0; i < list.length; i++) {
-      host.appendChild(packageCard(list[i]));
+    // Which one the operator chose to feature, if any. Matched against the
+    // list we were actually given rather than trusted: the setting is an id
+    // typed once and left alone, and the package it names can be archived
+    // months later. The backend checks this too -- doing it here as well means
+    // an older router that has not been re-uploaded, or a response from a
+    // backend that predates the setting, simply shows a plain list.
+    var featured = null;
+    if (featuredId !== null && featuredId !== undefined) {
+      for (var f = 0; f < list.length; f++) {
+        if (list[f].id === featuredId) { featured = list[f]; break; }
+      }
     }
+
+    if (featured) {
+      host.appendChild(packageCard(featured, true));
+    }
+
+    // The rest, two to a row. A grid rather than a column because eight
+    // packages down one column is a lot of scrolling on a phone, and the
+    // price is short enough to read at half width.
+    var grid = document.createElement('div');
+    grid.className = 'pkg-grid';
+    for (var i = 0; i < list.length; i++) {
+      if (list[i] === featured) { continue; }
+      grid.appendChild(packageCard(list[i], false));
+    }
+    host.appendChild(grid);
   }
 
 
@@ -669,30 +760,44 @@
     return n + ' MB';
   }
 
-  function packageCard(pkg) {
+  function packageCard(pkg, isFeatured) {
     var card = document.createElement('div');
-    card.className = 'pkg';
+    card.className = isFeatured ? 'pkg pkg--featured' : 'pkg';
 
     // Caps are megabytes now. As whole gigabytes a 300MB bundle could only
     // be stored as 0, which means unlimited, so the packages these
     // operators actually sell showed no allowance here at all.
+    //
+    // The chips are half a screen wide, so they carry the speed and nothing
+    // else -- the duration and the allowance are already in the package's own
+    // name. The featured card has the room for all three.
     var speed = (pkg.download_speed || '?') + '/' + (pkg.upload_speed || '?') + ' Mbps';
-    var meta = speed + ' · ' + (pkg.duration || '');
-    if (pkg.data_cap_mb > 0) { meta += ' · ' + humanCap(pkg.data_cap_mb); }
+    var meta = speed;
+    if (isFeatured) {
+      meta += ' · ' + (pkg.duration || '');
+      if (pkg.data_cap_mb > 0) { meta += ' · ' + humanCap(pkg.data_cap_mb); }
+    }
 
     var main = document.createElement('div');
     main.className = 'pkg-main';
+    // Price first and largest: it is what somebody is choosing between.
+    // "/=" rather than "KES", which is how it is written on every price list
+    // in this market.
     main.innerHTML =
+      (isFeatured ? '<span class="pkg-flag"></span>' : '') +
+      '<div class="pkg-price">' + money(pkg.price) + '<span class="bob">/=</span></div>' +
       '<div class="pkg-text">' +
         '<div class="pkg-name"></div>' +
         '<div class="pkg-meta"></div>' +
-      '</div>' +
-      '<div class="pkg-price">KES ' + money(pkg.price) + '</div>';
+      '</div>';
 
     // Assigned as text, never interpolated: a package name is operator input
     // and this page has no framework escaping it.
     main.querySelector('.pkg-name').textContent = pkg.name || 'Package';
     main.querySelector('.pkg-meta').textContent = meta;
+    if (isFeatured) {
+      main.querySelector('.pkg-flag').textContent = t('pkg.featured');
+    }
 
     var buy = document.createElement('button');
     buy.type = 'button';
@@ -1013,7 +1118,8 @@
         el('provider').textContent = data.provider;
         document.title = data.provider;
       }
-      renderPackages((data && data.results) || []);
+      renderPackages((data && data.results) || [],
+                     data ? data.featured_package : null);
       if (data && data.terms_url) {
         var link = el('termsLink');
         link.href = data.terms_url;
