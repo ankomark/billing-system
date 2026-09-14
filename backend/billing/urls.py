@@ -45,6 +45,7 @@ from .views import (
 
     # Hotspot
     HotspotPackagesView,
+    PortalPreviewView,
     HotspotPurchaseView,
     HotspotPaymentStatusView,
     HotspotVoucherValidateView,
@@ -186,6 +187,10 @@ urlpatterns = [
     # ─── Hotspot (public) ────────────────────────────────────────────────────
     # Walk-up purchase: no account, no JWT. The operator comes from ?t=.
     path("api/hotspot/packages/",       HotspotPackagesView.as_view(),      name="hotspot-packages"),
+    # The operator looking at their own portal from the console. Serves
+    # the real login.html with buying switched off -- see
+    # services/portal_preview.py.
+    path("api/hotspot/portal-preview/", PortalPreviewView.as_view(),      name="portal-preview"),
     path("api/hotspot/purchase/",       HotspotPurchaseView.as_view(),      name="hotspot-purchase"),
     path("api/hotspot/payment-status/", HotspotPaymentStatusView.as_view(), name="hotspot-payment-status"),
     path("api/hotspot/validate/",  HotspotVoucherValidateView.as_view(), name="hotspot-validate"),

@@ -5611,6 +5611,97 @@ def _featured_package_id(tenant, packages):
     return wanted if any(p.id == wanted for p in packages) else None
 
 
+def _api_base(request):
+    """
+    The address the portal inside a preview should call.
+
+    Built from the request rather than from a setting, so a preview opened
+    against staging talks to staging. The portal's own config.js expects this
+    with no trailing slash and with /api on the end, which is how it is written
+    into every router's copy.
+    """
+    return request.build_absolute_uri("/api").rstrip("/")
+
+
+def _console_origins():
+    """
+    Who may put the preview in an iframe.
+
+    The page carries the operator's token and is a working portal, so it is
+    framed by the console and by nothing else. Taken from the CORS list, which
+    is already the answer to "where does the console live" and moves with it
+    rather than drifting behind in a second copy.
+
+    Falls back to 'self' rather than to '*': a preview nobody can frame is a
+    bug somebody reports, and one anybody can frame is not.
+    """
+    from django.conf import settings
+
+    origins = [
+        o.strip() for o in getattr(settings, "CORS_ALLOWED_ORIGINS", []) or []
+        if o.strip()
+    ]
+    return origins or ["'self'"]
+
+
+class PortalPreviewView(APIView):
+    """
+    The operator's own captive portal, as a page they can look at.
+
+    Served from the API's own origin so the portal inside the iframe talks to
+    the backend same-origin, exactly as it does from a router — no CORS to
+    arrange and no second set of rules to keep in step with the first.
+
+    Keyed by the operator's public token, like every other portal endpoint. It
+    is not a secret: a copy sits in config.js on every router, and it already
+    buys the package list and the ability to start a purchase. A preview adds
+    nothing an attacker could not already reach, and requiring a signed session
+    instead would mean an iframe that cannot carry the header.
+
+    The page it serves is inert. Connect and Buy are refused by a guard inside
+    login.html — see PREVIEW there, and portal_preview.render for why the guard
+    lives in that file rather than in this one.
+    """
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [HotspotPollThrottle]
+
+    def get(self, request):
+        tenant = _public_tenant(request)
+        if tenant is None:
+            return HttpResponse(
+                "Unknown provider.", status=404, content_type="text/plain")
+
+        from billing.services.portal_preview import render
+
+        try:
+            # No router to resolve from: the request comes from a console,
+            # not from a station. render() takes the operator's first active
+            # one, which is all the token is for here — nothing is bought.
+            html = render(tenant, _api_base(request))
+        except FileNotFoundError:
+            # The portal folder is mounted, not built in. A deployment that
+            # forgot the mount should say so rather than render a blank frame.
+            logger.exception("[portal-preview] portal files are not readable")
+            return HttpResponse(
+                "The portal files are not available on this server.",
+                status=503, content_type="text/plain")
+        except ValueError as exc:
+            # No active router, so no router token to build config.js with.
+            # Worth saying plainly: an operator with no router has nothing to
+            # preview, and the reason is actionable.
+            return HttpResponse(str(exc), status=409, content_type="text/plain")
+
+        response = HttpResponse(html, content_type="text/html; charset=utf-8")
+        # Framed by the console and nothing else. The page carries the
+        # operator's token, and a preview embedded on a third-party site would
+        # be a working portal on somebody else's page.
+        response["Content-Security-Policy"] = (
+            "frame-ancestors " + " ".join(_console_origins()))
+        response["X-Robots-Tag"] = "noindex, nofollow"
+        response["Cache-Control"] = "no-store"
+        return response
+
+
 class HotspotPurchaseView(APIView):
     """
     Buy a hotspot package without an account.

@@ -115,6 +115,10 @@ var STRINGS = {
     // for their own reasons, and a claim the system cannot verify is one a
     // customer can catch out.
     'pkg.featured':     'Featured',
+    // Shown when an operator taps Buy or Connect on the preview in their own
+    // console. Both actions are real -- one charges a phone, the other spends
+    // a voucher -- so the preview refuses them and says why.
+    'preview.blocked':  'This is a preview. Buying and connecting are switched off here.',
     'packages.loading': 'Loading packages…',
     'packages.none':    'No packages are on sale right now. Please ask at the counter.',
     'packages.failed':  "Couldn't load the packages. ",
@@ -180,6 +184,7 @@ var STRINGS = {
     'code.nomatch':     'Hatukuweza kuupata. Hakikisha umebandika ujumbe mzima.',
     'packages.title':   'Nunua kifurushi',
     'pkg.featured':     'Maalum',
+    'preview.blocked':  'Hii ni onyesho tu. Kununua na kuunganisha kumezimwa hapa.',
     'packages.loading': 'Inapakia vifurushi…',
     'packages.none':    'Hakuna vifurushi kwa sasa. Tafadhali uliza kaunta.',
     'packages.failed':  'Imeshindwa kupakia vifurushi. ',

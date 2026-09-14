@@ -489,6 +489,23 @@ export default function SystemSettings() {
             </p>
           </Section>
 
+          {/* Portal login page preview */}
+          <Section title="Portal login page preview">
+            <p className="text-sm text-slate-400">
+              Your captive portal as a customer sees it — the real page off the
+              routers, with your own packages, notice and featured choice. Change
+              anything above, press Reload, and it is here.
+            </p>
+
+            <PortalPreview token={settings?.TENANT_TOKEN} />
+
+            <p className="text-xs text-slate-500">
+              Buying and connecting are switched off in the preview. Tapping Buy
+              here would send a real M-Pesa prompt to whatever number was typed,
+              so it refuses instead.
+            </p>
+          </Section>
+
           {/* Terms */}
           <Section title="Terms of service">
             <p className="text-sm text-slate-400">
@@ -549,6 +566,75 @@ export default function SystemSettings() {
     </AdminLayout>
   );
 }
+
+/**
+ * The operator's own portal, in a frame the size of a phone.
+ *
+ * An iframe of the real page rather than a rebuild of it. A copy in here would
+ * drift from the file on the routers within a month, and a preview that does
+ * not match what customers see invites an operator to sign off on a screen
+ * nobody has.
+ *
+ * Served from the API's origin, so the portal inside talks to the backend
+ * same-origin exactly as it does from a router — nothing to arrange for CORS.
+ * The backend sends frame-ancestors so this console is the only page that can
+ * hold it.
+ */
+function PortalPreview({ token }) {
+  // Bumped to force a reload. An iframe will not re-fetch on its own, and the
+  // whole point of this panel is looking after a change.
+  const [nonce, setNonce] = useState(0);
+
+  const base = (process.env.REACT_APP_API_URL || "http://127.0.0.1:8000/api/")
+    .replace(/\/+$/, "");
+
+  if (!token) {
+    return (
+      <div className="rounded-xl border border-white/10 bg-slate-950 p-6 text-center text-sm text-slate-400">
+        Your operator token has not loaded yet.
+      </div>
+    );
+  }
+
+  const src = `${base}/hotspot/portal-preview/?t=${encodeURIComponent(token)}&v=${nonce}`;
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-xs text-slate-500">
+          Shown at 360&nbsp;&times;&nbsp;640, about a common phone
+        </span>
+        <button
+          type="button"
+          onClick={() => setNonce((n) => n + 1)}
+          className="text-xs font-semibold rounded-lg border border-white/15 bg-slate-950 px-3 py-1.5 text-slate-200 hover:bg-slate-900"
+        >
+          Reload
+        </button>
+      </div>
+
+      <div className="flex justify-center">
+        <div className="rounded-[1.75rem] border border-white/10 bg-slate-950 p-2 shadow-2xl">
+          <iframe
+            key={nonce}
+            src={src}
+            title="Portal login page preview"
+            width="360"
+            height="640"
+            className="block rounded-[1.25rem] border-0 bg-black max-w-full"
+            // Scripts, because the portal is a script: it fetches the packages
+            // and draws them. Same-origin so it may read its own response.
+            // Nothing else is granted -- no top-level navigation, no popups,
+            // no forms escaping the frame.
+            sandbox="allow-scripts allow-same-origin"
+            loading="lazy"
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 
 function Section({ title, children }) {
   return (

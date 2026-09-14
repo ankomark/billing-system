@@ -629,10 +629,30 @@
     node.className = 'msg show ' + kind;
   }
 
+  /* ── Preview ────────────────────────────────────────────────
+     True only when this page is being served to an operator looking at their
+     own portal from the console, never on a router.
+
+     It exists because both actions on this page are real. Connect redeems a
+     code against a MAC; Buy creates a customer, a subscription and an M-Pesa
+     prompt on somebody's phone. An operator tapping either one to see what it
+     does would charge a stranger or burn their own voucher -- so the preview
+     is made inert here, in the same file as the actions, rather than by
+     whatever serves it. A guard anywhere else is one redesign away from being
+     forgotten. */
+  var PREVIEW = (typeof PORTAL_PREVIEW !== 'undefined' && PORTAL_PREVIEW);
+
+  function previewBlocked(node) {
+    if (!PREVIEW) { return false; }
+    say(node, t('preview.blocked'), 'bad');
+    return true;
+  }
+
   /* ── Reconnecting with a code ───────────────────────────── */
   function connect() {
     var code = el('code').value.trim();
     var msg = el('rcMsg');
+    if (previewBlocked(msg)) { return; }
     if (!code) { say(msg, t('code.empty'), 'bad'); return; }
 
     el('connectBtn').disabled = true;
@@ -907,6 +927,14 @@
   }
 
   function buyPackage(pkg, phone, submit, status, forTv) {
+    // Nothing is bought from a preview. See PREVIEW above: this call ends in
+    // an STK push on a real phone.
+    if (PREVIEW) {
+      status.textContent = t('preview.blocked');
+      status.className = 'pkg-status show bad';
+      return;
+    }
+
     // Only one purchase can be in flight. Starting a second used to leave the
     // first card disabled and stuck on "waiting" for ever, because the poll
     // timer is shared -- so the customer sat watching a package that was no
