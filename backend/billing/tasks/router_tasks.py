@@ -444,4 +444,24 @@ def ensure_lease_script_task(self):
     except Exception:
         logger.exception("[pppoe-orphans] sweep failed")
 
+    # The hotspot equivalent, and the one that needs no credentials at all.
+    # The MikroTik setup wizard leaves an `admin` hotspot user behind on the
+    # `default` profile -- no uptime limit, no data limit, no rate limit -- so
+    # anybody who typed its name and password into the portal was on the
+    # network unmetered and for ever, with no purchase anywhere behind them.
+    # skylink3 was carrying one. It survives a reboot and returns with any
+    # restore, which is why it is asserted here rather than closed once.
+    try:
+        from billing.services.hotspot_logins import (
+            close_unearned_logins_everywhere,
+        )
+
+        shut = close_unearned_logins_everywhere(apply=True)
+        if shut:
+            logger.warning(
+                "[hotspot-logins] disabled %s login(s) that needed no "
+                "purchase", shut)
+    except Exception:
+        logger.exception("[hotspot-logins] sweep failed")
+
     return was_set

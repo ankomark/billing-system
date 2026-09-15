@@ -1451,7 +1451,8 @@ def pick_best_router_for_new_customer(customer=None, tenant_id=None, station_id=
 
 from .models import RouterFailoverLog
 
-def migrate_customer_router(customer, reason="manual_migration"):
+def migrate_customer_router(customer, reason="manual_migration",
+                            target_router=None):
     # Automatic failover never moves a hotspot subscriber. The reasoning is in
     # recheck_offline_router_task, which filters them out before dispatching;
     # this is the same rule stated where every caller passes through, so the
@@ -1498,9 +1499,30 @@ def migrate_customer_router(customer, reason="manual_migration"):
     # --------------------------------------------------
     # 2️⃣ Pick best router (load-balanced + online)
     # --------------------------------------------------
-    new_router, new_api = pick_best_router_for_new_customer(customer)
-    if not new_router or not new_api:
-        return False, "No router online for migration"
+    # A named destination, or the least-loaded one at the subscriber's own
+    # site.
+    #
+    # pick_best_router_for_new_customer only ever considers routers at the
+    # station the subscriber is already on, because "re-homing an existing
+    # subscriber must not move them towns" -- right for the automatic path and
+    # for a routine move, and exactly wrong when a whole site has gone down and
+    # its subscribers are being served from another one. A skylink customer
+    # then has one candidate, skylink, which is the router that is unreachable,
+    # and every migration reports "No router online" while a healthy router
+    # sits beside it.
+    #
+    # So the caller may name where they are going. A destination is a decision
+    # somebody made and can see; it is not reachable from the automatic path,
+    # which passes no target and is refused for hotspot subscribers anyway.
+    if target_router is not None:
+        new_router = target_router
+        new_api = safe_connect_router(target_router)
+        if not new_api:
+            return False, f"{target_router} is not reachable"
+    else:
+        new_router, new_api = pick_best_router_for_new_customer(customer)
+        if not new_router or not new_api:
+            return False, "No router online for migration"
 
     if old_router and new_router.id == old_router.id:
         return False, "Customer already on optimal router"
