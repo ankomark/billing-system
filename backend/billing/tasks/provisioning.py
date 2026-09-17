@@ -44,16 +44,23 @@ MAX_ATTEMPTS = len(RETRY_SCHEDULE) + 1
 
 
 @shared_task(bind=True, max_retries=MAX_ATTEMPTS - 1)
-def ensure_customer_access_task(self, customer_id, reason="payment"):
+def ensure_customer_access_task(self, customer_id, reason="payment",
+                                subscription_id=None):
     """
     Provision a customer, retrying while the network is uncooperative.
 
     Idempotent: enable_customer_access creates or updates the secret rather than
     assuming it is absent, so running it twice is harmless. That matters,
     because a retry cannot know whether the previous attempt half-succeeded.
+
+    `subscription_id` is the package that was just paid for or redeemed, and is
+    the one granted — see enable_customer_access. A retry of a three-hour
+    purchase that granted the customer's three-week package instead would
+    report success for a phone that is still refused.
     """
-    from billing.models import AccessAuditLog, Customer
+    from billing.models import AccessAuditLog, Customer, Subscription
     from billing.router_service import enable_customer_access
+    from billing.services.entitlement import is_entitled
     from billing.tenancy import tenant_context
 
     customer = (
@@ -65,8 +72,26 @@ def ensure_customer_access_task(self, customer_id, reason="payment"):
         return False
 
     with tenant_context(customer.tenant_id):
+        subscription = None
+        # Hotspot only, matching enable_customer_access: a PPPoE subscriber has
+        # one account carrying their longest package, so naming one here would
+        # only narrow what that account gets.
+        if subscription_id is not None and customer.connection_type == "hotspot":
+            subscription = (
+                Subscription.objects.all_tenants()
+                .select_related("invoice", "package")
+                .filter(id=subscription_id, customer_id=customer_id).first()
+            )
+            # Over or gone by the time this ran: nothing left to put on the
+            # network, and not a router fault to retry or report as one.
+            if not is_entitled(subscription):
+                logger.info(
+                    "[provisioning] subscription %s for %s no longer entitles "
+                    "anything — not granting", subscription_id, customer)
+                return False
+
         try:
-            granted = enable_customer_access(customer)
+            granted = enable_customer_access(customer, subscription)
         except Exception as exc:
             granted = False
             logger.warning(

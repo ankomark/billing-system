@@ -1879,6 +1879,7 @@ class Payment(TenantScopedModel):
 
         # Capture primitives for the closure (avoids stale ORM objects)
         customer_id = customer.id
+        subscription_id = subscription.id
         phone = customer.phone
         pkg_name = package.name
         expiry = subscription.expiry_date
@@ -1897,6 +1898,7 @@ class Payment(TenantScopedModel):
         def _post_payment_effects():
             # Runs after the DB transaction commits — safe to call external systems
             from billing.models import Customer as _Customer
+            from billing.models import Subscription as _Subscription
             from billing.tenancy import tenant_context
 
             fresh = (
@@ -1933,7 +1935,11 @@ class Payment(TenantScopedModel):
                 # for. If it still cannot, the operator is told.
                 try:
                     from billing.tasks.provisioning import ensure_customer_access_task
-                    ensure_customer_access_task.delay(customer_id, reason="payment")
+                    # The package this payment bought, not whichever package
+                    # the customer holds that runs longest.
+                    ensure_customer_access_task.delay(
+                        customer_id, reason="payment",
+                        subscription_id=subscription_id)
                 except Exception:
                     # No broker reachable. Better to try once here than to
                     # leave a paying customer with nothing because the queue
@@ -1941,7 +1947,10 @@ class Payment(TenantScopedModel):
                     logger.exception(
                         "[payment] could not queue provisioning for %s, "
                         "attempting inline", customer_id)
-                    enable_customer_access(fresh)
+                    enable_customer_access(
+                        fresh, _Subscription.objects.all_tenants()
+                        .select_related("invoice", "package")
+                        .filter(id=subscription_id).first())
 
                 # Queued, for the same reason provisioning above is queued, and
                 # it took longer to apply here than it should have. For a

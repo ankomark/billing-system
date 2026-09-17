@@ -92,6 +92,7 @@ def enforce_subscription_expiry(self):
                 f"[expiry] Subscription {sub.id} expired — customer "
                 f"{customer.id} left connected, another subscription is live"
             )
+            _drop_devices_left_uncovered(sub)
             continue
 
         disable_customer_task.delay(customer.id)
@@ -101,6 +102,43 @@ def enforce_subscription_expiry(self):
 
     logger.info(f"[expiry] Processed {processed} expired subscriptions")
     return processed
+
+
+def _drop_devices_left_uncovered(sub):
+    """
+    Take off the devices this package was serving that nothing else covers.
+
+    "Another subscription is live" is a question about the customer, and
+    leaving every device connected on that answer assumed their packages all
+    served the same phones. They need not: somebody with three weeks on one
+    phone who buys three hours for a second holds two packages for two phones.
+    When the three hours end, the second phone's time is over whatever the
+    first phone holds -- and left alone it rode out the rest of its
+    limit-uptime, which counts connected time, not the clock.
+
+    A device is kept when a live package still covers it: its own, or one paid
+    for and not yet redeemed on any device, which is a renewal waiting for its
+    code. A top-up redeemed on the same phone has already moved the binding
+    off this package, so there is nothing here to drop.
+    """
+    from billing.models import CustomerDevice
+    from billing.services.entitlement import subscription_for_device
+    from billing.tasks.router_tasks import kick_device_task
+
+    customer = sub.customer
+    macs = (
+        CustomerDevice.objects.all_tenants()
+        .filter(tenant_id=sub.tenant_id, subscription=sub)
+        .values_list("mac_address", flat=True)
+    )
+    for mac in macs:
+        if subscription_for_device(customer, mac) is not None:
+            continue
+        kick_device_task.delay(customer.id, mac, only_if_uncovered=True)
+        logger.info(
+            f"[expiry] Subscription {sub.id} expired — {mac} of customer "
+            f"{customer.id} has no package of its own left, queued for removal"
+        )
 
 
 @shared_task(

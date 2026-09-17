@@ -52,7 +52,7 @@ from django.utils import timezone
 
 from billing.models import Customer, CustomerDevice, RouterDevice
 from billing.router_service import ros_duration_seconds, safe_connect_router
-from billing.services.entitlement import granting_subscription
+from billing.services.entitlement import subscription_for_device
 from billing.utils import normalize_mac
 
 logger = logging.getLogger(__name__)
@@ -70,12 +70,23 @@ FLOOR_SECONDS = 60
 
 
 def _customer_index():
-    devices = {normalize_mac(d.mac_address): d.customer
-               for d in CustomerDevice.objects.all_tenants()
-               .select_related("customer")}
+    """
+    Who each address belongs to, and every device row of theirs.
+
+    The rows come back with it because subscription_for_device needs a
+    customer's devices to answer, and asking per account would be one query
+    per account per router per run.
+    """
+    by_mac = {}
+    by_customer = {}
+    for d in (CustomerDevice.objects.all_tenants()
+              .select_related("customer", "subscription__invoice",
+                              "subscription__package")):
+        by_mac[normalize_mac(d.mac_address)] = d.customer
+        by_customer.setdefault(d.customer_id, []).append(d)
     for c in (Customer.objects.all_tenants().exclude(hotspot_username="")):
-        devices.setdefault(normalize_mac(c.hotspot_username), c)
-    return devices
+        by_mac.setdefault(normalize_mac(c.hotspot_username), c)
+    return by_mac, by_customer
 
 
 def align_uptime_limits(*, apply=False, routers=None, now=None):
@@ -87,7 +98,7 @@ def align_uptime_limits(*, apply=False, routers=None, now=None):
     one, and are reported rather than touched.
     """
     now = now or timezone.now()
-    by_mac = _customer_index()
+    by_mac, devices_by_customer = _customer_index()
 
     checked = corrected = 0
     overdue = []
@@ -130,7 +141,14 @@ def align_uptime_limits(*, apply=False, routers=None, now=None):
             if customer is None:
                 continue
 
-            subscription = granting_subscription(customer)
+            # This device's package, not the customer's longest. Asking the
+            # customer gave every handset they had ever used the window of
+            # whichever package ran furthest: on 2026-09-15 five retired phones
+            # of customer 32, bound to three-hour packages long over, were each
+            # being topped up to the sixteen days left on a three-week one
+            # redeemed on a sixth.
+            subscription = subscription_for_device(
+                customer, mac, devices_by_customer.get(customer.pk, []))
             if subscription is None:
                 # No live paid cover. Shortening the limit would only slow down
                 # what disable_customer_access does properly, and this must not

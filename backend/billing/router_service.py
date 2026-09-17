@@ -371,7 +371,7 @@ def disable_hotspot(api, mac_address):
             users.remove(u[".id"])
             break
     return session_ended
-def enable_customer_access(customer):
+def enable_customer_access(customer, subscription=None):
     """
     Put a paying customer onto working hardware.
 
@@ -383,7 +383,32 @@ def enable_customer_access(customer):
     right after a payment. A customer could pay, have their invoice marked paid
     and their subscription activated, receive an SMS saying their account was
     ready, and have no access at all, with nothing retrying and nobody told.
+
+    `subscription` is the package a caller has in hand — the code just
+    redeemed, the invoice just paid — and when given it is the one granted.
+    Left out, this grants the customer's longest paid package, which is right
+    for somebody holding one package and wrong for somebody holding two: on
+    2026-09-15 customer 32 bought three hours for a new phone while a
+    three-week package sat on another, every redemption granted the three
+    weeks to the other phone, and the phone that paid was refused at the
+    router. Passing it does not loosen anything; it must still be this
+    customer's, paid, active and unexpired.
+
+    Hotspot only. A PPPoE subscriber has one account however many packages
+    they hold, and it should carry the longest of them; granting a shorter one
+    just bought would cut that account down to it.
     """
+    if subscription is not None and customer.connection_type == "hotspot":
+        from billing.services.entitlement import is_entitled
+
+        if subscription.customer_id != customer.pk or not is_entitled(
+                subscription):
+            logger.warning(
+                "[enable] subscription %s does not entitle customer %s — "
+                "nothing granted", subscription.pk, customer.pk)
+            return False
+        return _provision(customer, subscription)
+
     # Paid, not merely active.
     #
     # Every subscription is born `active` with an unpaid invoice — the status
@@ -409,6 +434,11 @@ def enable_customer_access(customer):
     if not subscription:
         return False
 
+    return _provision(customer, subscription)
+
+
+def _provision(customer, subscription):
+    """enable_customer_access, once it knows which package it is granting."""
     router, api = pick_working_router(customer)
     if not router or not api:
         logger.warning(f"No router online for {customer.full_name}")
@@ -680,7 +710,28 @@ def macs_to_grant(customer, subscription, *, include_blocked=False):
     wanted = {m for m in order if m}
 
     if not wanted:
-        granted = everything
+        # Except a device another package is still serving for longer. A
+        # three-hour purchase paid before its code was typed on the new phone
+        # would otherwise be granted onto the phone holding a three-week
+        # package, rewriting that account's limits down to three hours and
+        # 3 GB. A device on a package that ends sooner is still taken: that is
+        # a top-up, and the new package is what it should be running on.
+        from .services.entitlement import is_entitled
+
+        outlasting = {
+            normalize_mac(d.mac_address)
+            for d in (
+                CustomerDevice.objects.all_tenants()
+                .filter(tenant_id=customer.tenant_id, customer=customer,
+                        subscription__isnull=False)
+                .exclude(subscription=subscription)
+                .select_related("subscription__invoice")
+            )
+            if subscription.expiry_date and is_entitled(d.subscription)
+            and d.subscription.expiry_date > subscription.expiry_date
+        }
+        granted = [m for m in everything
+                   if normalize_mac(m) not in outlasting]
     else:
         granted = [m for m in everything if normalize_mac(m) in wanted]
         rank = {m: i for i, m in enumerate(order)}

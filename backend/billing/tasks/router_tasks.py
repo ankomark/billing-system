@@ -212,7 +212,7 @@ def disable_customer_task(self, customer_id):
     retry_kwargs={"max_retries": 10},
     retry_jitter=True,
 )
-def kick_device_task(self, customer_id, mac_address):
+def kick_device_task(self, customer_id, mac_address, only_if_uncovered=False):
     """
     Keep trying to take one device off the hardware.
 
@@ -233,14 +233,36 @@ def kick_device_task(self, customer_id, mac_address):
     count that auto-failover migrates subscribers on, which is a much bigger
     action than this task is entitled to take. check_router_health_task
     already tracks that, on its own schedule and its own evidence.
+
+    `only_if_uncovered` is for a device whose package ran out, and is asked
+    again on every attempt, because an hour of retries is long enough for the
+    answer to change. Removal is by MAC, so a phone that buys again on the
+    spot, or an address since handed to somebody else, would otherwise have
+    the account it was just given taken away by a retry still working through
+    the old one.
     """
+    from billing.models import CustomerDevice
     from billing.router_service import (
         _tenant_routers, connect_router, disable_hotspot,
     )
+    from billing.services.entitlement import subscription_for_device
+    from billing.utils import mac_variants
 
     customer = _load_customer(customer_id)
 
     with tenant_context(customer.tenant_id):
+        if only_if_uncovered and (
+            not CustomerDevice.objects.all_tenants()
+            .filter(tenant_id=customer.tenant_id, customer=customer,
+                    mac_address__in=mac_variants(mac_address))
+            .exists()
+            or subscription_for_device(customer, mac_address) is not None
+        ):
+            logger.info(
+                "[kick_device_task] %s is covered again or no longer "
+                "customer %s's — left alone", mac_address, customer_id)
+            return False
+
         routers = list(_tenant_routers(customer.tenant_id))
 
         # A router the health sweep has already condemned is not worth an hour

@@ -127,3 +127,69 @@ def entitlement_reason(subscription):
     if getattr(invoice, "payment_status", None) != "paid":
         return f"invoice is {invoice.payment_status!r}, not paid"
     return "entitled"
+
+
+def subscription_for_device(customer, mac_address, devices=None):
+    """
+    The package one of this customer's devices is on, or None.
+
+    Each package covers the devices it was redeemed on, and nothing else. A
+    customer holding a three-week package on one phone who buys three hours for
+    a second phone has two packages, and each phone runs on its own -- the
+    second purchase is not locked out because the first is still live, and it
+    does not stretch the first phone's three weeks onto the second one either.
+
+    Asking granting_subscription(customer) instead answered "the longest
+    package" for every device. On 2026-09-15 that is what refused customer 32:
+    they paid 10/- for three hours on a new phone at 16:06, the grant went to
+    the three-week package on their other phone, and the new one was told
+    "invalid username or password" five times and then again on a refund. The
+    same answer read by the uptime sweep had already given five of that
+    customer's retired handsets the three-week window.
+
+    A device whose own package is over, or that was never bound to one, is
+    served by a live package that has not claimed a device of its own yet --
+    somebody who paid for their next package before typing its code, which is
+    the renewal the grant has always had to carry. A package already in use on
+    another device is that device's, and is not borrowed.
+
+    `devices` is this customer's device rows when the caller already holds
+    them. The uptime sweep asks this for every account on every router every
+    five minutes, and reading one customer's devices back per account is the
+    difference between one query and several hundred.
+    """
+    from billing.models import CustomerDevice
+    from billing.utils import normalize_mac
+
+    wanted = normalize_mac(mac_address)
+    if not wanted:
+        return None
+
+    if devices is None:
+        devices = list(
+            CustomerDevice.objects.all_tenants()
+            .filter(tenant_id=customer.tenant_id, customer=customer)
+            .select_related("subscription__invoice", "subscription__package")
+        )
+    own = [d for d in devices if normalize_mac(d.mac_address) == wanted]
+    if any(d.blocked for d in own):
+        return None
+
+    bound = [d.subscription for d in own
+             if d.subscription_id and is_entitled(d.subscription)]
+    if bound:
+        return max(bound, key=lambda s: s.expiry_date)
+
+    claimed = {d.subscription_id for d in devices
+               if d.subscription_id and not d.blocked}
+    return (
+        customer.subscriptions.filter(
+            status=GRANTING_STATUS,
+            invoice__payment_status="paid",
+            expiry_date__gt=timezone.now(),
+        )
+        .exclude(pk__in=claimed)
+        .select_related("package", "invoice")
+        .order_by("-expiry_date")
+        .first()
+    )

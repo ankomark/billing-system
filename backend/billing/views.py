@@ -2272,8 +2272,16 @@ class HotspotVoucherValidateView(APIView):
         # already uses: the task is idempotent, backs off 60s/240s/960s, and
         # tells the operator if it runs out — the outcome this endpoint could
         # not produce on its own.
+        #
+        # The package this code unlocks, not the customer's longest. Holding
+        # another live package is no reason to refuse this one: customer 32
+        # had three weeks on one phone, bought three hours for another on
+        # 2026-09-15, and every redemption granted the three weeks to the first
+        # phone while the one standing at the portal was told "invalid username
+        # or password". Each package keeps its own devices; the customer picks
+        # which code a phone runs on by typing it there.
         try:
-            enable_customer_access(customer)
+            enable_customer_access(customer, subscription)
         except Exception:
             logger.exception(
                 "[hotspot] provisioning %s for customer %s raised; falling back "
@@ -2281,7 +2289,9 @@ class HotspotVoucherValidateView(APIView):
             )
             try:
                 from billing.tasks.provisioning import ensure_customer_access_task
-                ensure_customer_access_task.delay(customer.pk, reason="voucher")
+                ensure_customer_access_task.delay(
+                    customer.pk, reason="voucher",
+                    subscription_id=subscription.pk)
             except Exception:
                 # No broker. Nothing more can be arranged from here, and the
                 # customer still needs to be told the truth rather than a
@@ -5463,20 +5473,21 @@ class HotspotReconnectView(APIView):
         # HotspotStatusView has always checked the invoice and reported
         # "pending" for exactly this state. This is the same question, and it
         # was the one place giving a different answer.
-        subscription = (
-            customer.subscriptions
-            .filter(status="active", invoice__payment_status="paid")
-            .order_by("-expiry_date")
-            .first()
-        )
-
-        if not subscription:
+        if not customer.subscriptions.filter(
+                status="active", invoice__payment_status="paid").exists():
             return Response(
                 {"status": "denied", "reason": "no_subscription"},
                 status=403,
             )
 
-        if subscription.expiry_date <= timezone.now():
+        # And the package this device is on, not the customer's longest. A
+        # phone whose three hours are over is not let back on because another
+        # phone of theirs holds three weeks -- nor refused, when it is the one
+        # holding them.
+        from billing.services.entitlement import subscription_for_device
+
+        subscription = subscription_for_device(customer, mac)
+        if subscription is None:
             return Response(
                 {"status": "expired"},
                 status=403,
@@ -5497,7 +5508,7 @@ class HotspotReconnectView(APIView):
         # back to the queue when the call raises.
         provisioned = False
         try:
-            provisioned = bool(enable_customer_access(customer))
+            provisioned = bool(enable_customer_access(customer, subscription))
         except Exception:
             logger.exception(
                 "[hotspot] reconnect provisioning for customer %s raised; "
@@ -5512,7 +5523,9 @@ class HotspotReconnectView(APIView):
             # have finished reading the page.
             try:
                 from billing.tasks.provisioning import ensure_customer_access_task
-                ensure_customer_access_task.delay(customer.pk, reason="reconnect")
+                ensure_customer_access_task.delay(
+                    customer.pk, reason="reconnect",
+                    subscription_id=subscription.pk)
             except Exception:
                 logger.exception(
                     "[hotspot] could not queue reconnect retry for %s", customer.pk)
