@@ -178,11 +178,12 @@ def subscription_for_device(customer, mac_address, devices=None):
     bound = [d.subscription for d in own
              if d.subscription_id and is_entitled(d.subscription)]
     if bound:
-        return max(bound, key=lambda s: s.expiry_date)
+        return _if_the_package_covers_it(
+            customer, max(bound, key=lambda s: s.expiry_date), wanted)
 
     claimed = {d.subscription_id for d in devices
                if d.subscription_id and not d.blocked}
-    return (
+    unclaimed = (
         customer.subscriptions.filter(
             status=GRANTING_STATUS,
             invoice__payment_status="paid",
@@ -193,3 +194,34 @@ def subscription_for_device(customer, mac_address, devices=None):
         .order_by("-expiry_date")
         .first()
     )
+    return _if_the_package_covers_it(customer, unclaimed, wanted)
+
+
+def _if_the_package_covers_it(customer, subscription, mac):
+    """
+    The subscription, but only if it would actually be granted to this device.
+
+    A package sells a number of places and macs_to_grant is what decides which
+    devices hold them. Answering "covered" for a device that granting would
+    refuse puts this rule at odds with the one that provisions: on 2026-09-17,
+    40 customers had more devices bound to a live package than it sells -- one
+    of them seven against a package selling one -- and every one of those
+    devices read as covered here while no account would ever be written for it.
+    The uptime sweep would then keep a limit fresh for it, expiry would decline
+    to take it off, and reconnect would answer "allowed" to a phone that cannot
+    log in.
+
+    Asked of macs_to_grant rather than reimplemented, because the trim has
+    rules of its own -- most recently seen first, blocked devices excluded, a
+    fallback for a package with no device of its own -- and two copies of that
+    would drift.
+    """
+    if subscription is None:
+        return None
+
+    from billing.router_service import macs_to_grant
+    from billing.utils import normalize_mac
+
+    covered = {normalize_mac(m) for m in
+               macs_to_grant(customer, subscription, include_blocked=False)}
+    return subscription if normalize_mac(mac) in covered else None

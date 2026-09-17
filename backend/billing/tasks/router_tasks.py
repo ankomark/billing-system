@@ -486,4 +486,24 @@ def ensure_lease_script_task(self):
     except Exception:
         logger.exception("[hotspot-logins] sweep failed")
 
+    # And the accounts that did have a purchase behind them once. Expiry takes
+    # off the devices of the package that ended; a payment landing before its
+    # code is typed can leave an account on a handset the code never reached.
+    # Both are closed at the source, and this is the reconciler behind them --
+    # the same shape as the orphan sweep, for the same reason: the router goes
+    # on serving what the database stopped tracking, and nothing else is
+    # looking.
+    try:
+        from billing.services.uncovered_logins import (
+            close_uncovered_logins_everywhere,
+        )
+
+        off, ended = close_uncovered_logins_everywhere(apply=True)
+        if off:
+            logger.warning(
+                "[uncovered] disabled %s account(s) no live package covers, "
+                "ending %s session(s)", off, ended)
+    except Exception:
+        logger.exception("[uncovered] sweep failed")
+
     return was_set
