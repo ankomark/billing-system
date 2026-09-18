@@ -32,6 +32,17 @@ of it, undone by setting one flag back.
 The live session goes with it. `limit-uptime` counts connected time, so a
 session left running outlives the package that paid for it by however much of
 that limit is unspent -- which for a three-week package is days.
+
+Except where the person on it has paid. An account reads uncovered when its
+own package is over and the customer's live one is bound to another address --
+the shape two handsets make, and the shape one handset makes on its own when
+it randomises its MAC between purchases. Nothing in a MAC tells those apart,
+but being connected does, and on 2026-09-18 cutting them anyway took paying
+customers off skylink3 every hour: disabled, refused when the handset landed
+back on the address, re-provisioned, disabled again on the next run. So an
+address its customer is connected on, with a live package behind them, is
+reclaimed onto that package instead of switched off. See
+reclaim_for_live_package.
 """
 
 import datetime as dt
@@ -141,6 +152,81 @@ def find_uncovered_logins(router, api, *, by_mac=None, devices_by_customer=None)
     return found
 
 
+def reclaim_for_live_package(router, api, mac, customer, *, live_macs):
+    """
+    Give an address the package its user has already paid for.
+
+    The third answer to an account that reads uncovered while its customer is
+    sitting on it. Disabling cuts somebody who has paid; leaving it runs them
+    on an account whose package is over, so their usage counts against the
+    wrong subscription and `limit-uptime` comes from the wrong one. Neither is
+    what anybody wants, and both leave the database believing this handset is
+    somewhere it is not.
+
+    What is actually true here is simpler than either: the customer holds a
+    live package, and this is the address they are using it from. So the
+    binding moves to where the person is. `macs_to_grant` orders by most
+    recently seen and trims to what the package sells, so re-pointing the row
+    puts this address in the grant and drops the one they have rotated away
+    from -- and the next sweep finds this account covered and the stale one
+    closable, which is how the hourly fight between this sweep and
+    provisioning ends rather than repeating.
+
+    Refuses when another of that subscription's devices is connected right
+    now: that is a genuine second handset holding the place the package sells,
+    and taking it away from them to give it here would be this same fault
+    pointed the other way.
+
+    Returns True when the address was reclaimed, False to fall through to the
+    disable path.
+    """
+    from django.utils import timezone
+
+    from billing.models import CustomerDevice
+    from billing.router_service import macs_to_grant, provision_customer_on_router
+    from billing.services.entitlement import granting_subscription
+    from billing.tenancy import tenant_context
+
+    with tenant_context(router.tenant_id):
+        sub = granting_subscription(customer)
+        if sub is None:
+            return False
+
+        own = CustomerDevice.objects.filter(
+            customer=customer, mac_address__iexact=mac).first()
+        if own is not None and own.blocked:
+            # Blocked is a decision somebody made about this handset. It is
+            # not for a reconciler to undo.
+            return False
+
+        held = {normalize_mac(m) for m in macs_to_grant(customer, sub)}
+        if held & (live_macs - {normalize_mac(mac)}):
+            logger.info(
+                "[uncovered] %s on %s is uncovered but the place its package "
+                "sells is in use on another connected device — not reclaimed",
+                mac, router)
+            return False
+
+        if own is None:
+            own = CustomerDevice.objects.create(
+                tenant_id=router.tenant_id, customer=customer,
+                mac_address=mac, subscription=sub)
+        else:
+            own.subscription = sub
+            own.save(update_fields=["subscription"])
+        # auto_now means last_seen only moves on save(); this address is
+        # connected, and the grant orders by it.
+        CustomerDevice.objects.filter(pk=own.pk).update(last_seen=timezone.now())
+
+        provision_customer_on_router(api, router, customer, sub)
+
+    logger.warning(
+        "[uncovered] %s on %s reclaimed onto subscription %s (%s) — the "
+        "customer was connected on it and had paid",
+        mac, router, sub.pk, sub.package.name)
+    return True
+
+
 def close_uncovered_logins(router, api, *, apply=True,
                            max_disable=DEFAULT_MAX_DISABLE):
     """
@@ -175,8 +261,25 @@ def close_uncovered_logins(router, api, *, apply=True,
     actives = api.path("ip", "hotspot", "active")
     live = {normalize_mac(a.get("mac-address")): a for a in actives}
 
-    disabled = ended = 0
+    disabled = ended = reclaimed = 0
     for mac, customer, row in uncovered:
+        # Connected, and they have paid: move the package to where they are
+        # rather than take the address away. See reclaim_for_live_package.
+        if customer is not None and normalize_mac(mac) in live:
+            try:
+                if reclaim_for_live_package(
+                        router, api, mac, customer, live_macs=set(live)):
+                    reclaimed += 1
+                    continue
+            except Exception:
+                # A reclaim that fails leaves the account exactly as it was,
+                # which is the state this loop is about to correct anyway. So
+                # it falls through and is disabled rather than skipped: an
+                # uncovered account left enabled by an error is the leak.
+                logger.warning(
+                    "[uncovered] could not reclaim %s on %s — disabling it "
+                    "instead", mac, router, exc_info=True)
+
         try:
             users.update(**{
                 ".id": row[".id"],
@@ -202,10 +305,11 @@ def close_uncovered_logins(router, api, *, apply=True,
                 "[uncovered] %s on %s is disabled but its session would not "
                 "end", mac, router, exc_info=True)
 
-    if disabled:
+    if disabled or reclaimed:
         logger.warning(
             "[uncovered] %s: disabled %s account(s) no live package covers, "
-            "ended %s live session(s)", router, disabled, ended)
+            "ended %s live session(s), reclaimed %s onto a package already "
+            "paid for", router, disabled, ended, reclaimed)
     return disabled, ended, False
 
 

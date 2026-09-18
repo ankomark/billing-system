@@ -203,10 +203,13 @@ class UncoveredLoginsTests(TestCase):
         """
         limit-uptime counts connected time, so a session left running outlives
         the package that paid for it by whatever of that limit is unspent.
+
+        Asked of a customer with nothing live behind them. The same shape with
+        a paid package behind it is reclaimed rather than cut -- see
+        test_a_connected_customer_who_has_paid_is_reclaimed.
         """
         self._sub(self.package, expires_in=timedelta(hours=-1), mac=FIRST)
-        self._sub(self.package, expires_in=timedelta(hours=3), mac=SECOND)
-        api = self._api(FIRST, SECOND, online=[FIRST])
+        api = self._api(FIRST, online=[FIRST])
 
         disabled, ended, _ = self._sweep(api)
 
@@ -334,5 +337,95 @@ class UncoveredLoginsTests(TestCase):
         api = self._api(FIRST)
 
         disabled, _, _ = self._sweep(api)
+
+        self.assertEqual(disabled, 1)
+
+    # ---- reclaiming, rather than cutting somebody who has paid -----------
+
+    @patch("billing.router_service.provision_customer_on_router")
+    def test_a_connected_customer_who_has_paid_is_reclaimed(self, provision):
+        """
+        The fault as it ran on skylink3 all day. The handset's own package is
+        over and the live one is bound to the address it rotated away from --
+        so it reads uncovered while the person is sitting on it.
+        """
+        self._sub(self.package, expires_in=timedelta(hours=-2), mac=FIRST)
+        live = self._sub(self.package, expires_in=timedelta(hours=3),
+                         mac=SECOND)
+        api = self._api(FIRST, SECOND, online=(FIRST,))
+
+        disabled, ended, _ = self._sweep(api)
+
+        self.assertEqual((disabled, ended), (0, 0),
+                         "it cut a paying customer off the address they were "
+                         "on instead of reclaiming it")
+        self.assertEqual(api.actives.removed, [])
+        with tenant_context(self.tenant):
+            row = CustomerDevice.objects.get(mac_address__iexact=FIRST)
+            self.assertEqual(row.subscription_id, live.pk,
+                             "the binding did not move to where the person is")
+
+    @patch("billing.router_service.provision_customer_on_router")
+    def test_reclaiming_puts_the_address_in_the_grant(self, provision):
+        """
+        The point of moving the binding: macs_to_grant orders by most recently
+        seen, so the address they are on takes the place its package sells and
+        the rotated-away one loses it. Without that the next sweep undoes this.
+        """
+        self._sub(self.package, expires_in=timedelta(hours=-2), mac=FIRST)
+        self._sub(self.package, expires_in=timedelta(hours=3), mac=SECOND)
+
+        self._sweep(self._api(FIRST, SECOND, online=(FIRST,)))
+
+        with tenant_context(self.tenant):
+            self.assertIsNotNone(
+                subscription_for_device(self.customer, FIRST),
+                "the reclaimed address is still not one the grant would write")
+
+    @patch("billing.router_service.provision_customer_on_router")
+    def test_it_does_not_take_a_place_from_a_connected_second_handset(
+            self, provision):
+        """
+        Both addresses connected against a package selling one place. The one
+        holding it is a person using what they bought; moving it would be this
+        same fault pointed the other way.
+        """
+        self._sub(self.package, expires_in=timedelta(hours=-2), mac=FIRST)
+        live = self._sub(self.package, expires_in=timedelta(hours=3),
+                         mac=SECOND)
+        api = self._api(FIRST, SECOND, online=(FIRST, SECOND))
+
+        disabled, _, _ = self._sweep(api)
+
+        self.assertEqual(disabled, 1, "it left an uncovered address enabled")
+        with tenant_context(self.tenant):
+            row = CustomerDevice.objects.get(mac_address__iexact=SECOND)
+            self.assertEqual(row.subscription_id, live.pk,
+                             "it moved the place off a connected handset")
+
+    @patch("billing.router_service.provision_customer_on_router")
+    def test_a_blocked_device_is_not_reclaimed(self, provision):
+        """Blocked is a decision somebody made. A reconciler does not undo it."""
+        self._sub(self.package, expires_in=timedelta(hours=-2), mac=FIRST)
+        self._sub(self.package, expires_in=timedelta(hours=3), mac=SECOND)
+        with tenant_context(self.tenant):
+            CustomerDevice.objects.filter(mac_address__iexact=FIRST).update(
+                blocked=True)
+
+        disabled, _, _ = self._sweep(self._api(FIRST, SECOND, online=(FIRST,)))
+
+        self.assertEqual(disabled, 1)
+
+    @patch("billing.router_service.provision_customer_on_router",
+           side_effect=RuntimeError("router said no"))
+    def test_a_reclaim_that_fails_disables_rather_than_skipping(self, provision):
+        """
+        An uncovered account left enabled by an error is the leak this exists
+        to close, so a failed reclaim falls through rather than passing.
+        """
+        self._sub(self.package, expires_in=timedelta(hours=-2), mac=FIRST)
+        self._sub(self.package, expires_in=timedelta(hours=3), mac=SECOND)
+
+        disabled, _, _ = self._sweep(self._api(FIRST, SECOND, online=(FIRST,)))
 
         self.assertEqual(disabled, 1)
