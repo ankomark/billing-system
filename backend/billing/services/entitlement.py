@@ -129,7 +129,8 @@ def entitlement_reason(subscription):
     return "entitled"
 
 
-def subscription_for_device(customer, mac_address, devices=None):
+def subscription_for_device(customer, mac_address, devices=None, *,
+                            require_grant=True):
     """
     The package one of this customer's devices is on, or None.
 
@@ -157,6 +158,13 @@ def subscription_for_device(customer, mac_address, devices=None):
     them. The uptime sweep asks this for every account on every router every
     five minutes, and reading one customer's devices back per account is the
     difference between one query and several hundred.
+
+    `require_grant` is what separates the two questions this answers. Most
+    callers want "would this device be granted", which is the allowance rule
+    in _if_the_package_covers_it. A caller about to *disable* something wants
+    the weaker "is anything live paying for this at all", and must not use the
+    stronger one: see close_uncovered_logins, which had it the other way on
+    2026-09-18 and took paying customers offline hourly.
     """
     from billing.models import CustomerDevice
     from billing.utils import normalize_mac
@@ -179,7 +187,8 @@ def subscription_for_device(customer, mac_address, devices=None):
              if d.subscription_id and is_entitled(d.subscription)]
     if bound:
         return _if_the_package_covers_it(
-            customer, max(bound, key=lambda s: s.expiry_date), wanted)
+            customer, max(bound, key=lambda s: s.expiry_date), wanted,
+            require_grant=require_grant)
 
     claimed = {d.subscription_id for d in devices
                if d.subscription_id and not d.blocked}
@@ -194,10 +203,12 @@ def subscription_for_device(customer, mac_address, devices=None):
         .order_by("-expiry_date")
         .first()
     )
-    return _if_the_package_covers_it(customer, unclaimed, wanted)
+    return _if_the_package_covers_it(customer, unclaimed, wanted,
+                                     require_grant=require_grant)
 
 
-def _if_the_package_covers_it(customer, subscription, mac):
+def _if_the_package_covers_it(customer, subscription, mac, *,
+                              require_grant=True):
     """
     The subscription, but only if it would actually be granted to this device.
 
@@ -215,9 +226,20 @@ def _if_the_package_covers_it(customer, subscription, mac):
     rules of its own -- most recently seen first, blocked devices excluded, a
     fallback for a package with no device of its own -- and two copies of that
     would drift.
+
+    `require_grant=False` skips the trim, and only a caller that is about to
+    take something away should pass it. The trim answers "which places does
+    this package hold *now*", and that answer moves: handsets randomise their
+    MAC per network, "most recently seen" reorders as they do, and a package
+    selling one place hands that place to whichever address spoke last. Reading
+    a live question as a verdict is what let close_uncovered_logins disable
+    accounts whose customer was connected on them at the time.
     """
     if subscription is None:
         return None
+
+    if not require_grant:
+        return subscription
 
     from billing.router_service import macs_to_grant
     from billing.utils import normalize_mac

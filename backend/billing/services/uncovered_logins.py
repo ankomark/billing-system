@@ -36,6 +36,7 @@ that limit is unspent -- which for a three-week package is days.
 
 import datetime as dt
 import logging
+import os
 
 from billing.services.entitlement import subscription_for_device
 from billing.utils import normalize_mac
@@ -83,6 +84,27 @@ def find_uncovered_logins(router, api, *, by_mac=None, devices_by_customer=None)
     Password accounts are left alone: an account not named for a device address
     is `close_unearned_logins`' business, and it judges them by a different
     rule -- whether any purchase could stand behind them at all.
+
+    Asks `require_grant=False`, which is the difference between this and every
+    other caller of that rule. They ask which devices a package would be
+    granted to; this asks only whether anything live is paying, because it is
+    the one that disables. Asking the stronger question here disabled 6
+    accounts on skylink3 on 2026-09-18 -- every one of them a paying customer,
+    two of them connected at that moment, four of them the customer's *only*
+    device against a package selling one. A handset that rotates its MAC leaves
+    a second address on the router, the device row follows one of the two, and
+    whichever the row is not reads as uncovered -- so the sweep disabled the
+    live session, the phone was refused "invalid username or password" when it
+    landed back on that address, provisioning wrote it again, and the next run
+    an hour later did the same. That is the churn the module docstring above
+    reads as a leak: two paths fighting over the same customers, not accounts
+    nobody paid for.
+
+    The allowance is still enforced, where it always was. `_trim_to_package_limit`
+    grants only what the package sells, and `shared-users` on the profile stops
+    the rest being used at once -- which is why that function says in its own
+    docstring that it leaves existing accounts alone rather than "cut somebody
+    off mid-session to correct an allowance".
     """
     from billing.models import Customer, CustomerDevice
 
@@ -110,7 +132,8 @@ def find_uncovered_logins(router, api, *, by_mac=None, devices_by_customer=None)
         mac = normalize_mac(name)
         customer = by_mac.get(mac)
         if customer is not None and subscription_for_device(
-                customer, mac, devices_by_customer.get(customer.pk, [])):
+                customer, mac, devices_by_customer.get(customer.pk, []),
+                require_grant=False):
             continue
 
         found.append((mac, customer, row))
@@ -201,8 +224,24 @@ def close_uncovered_logins_everywhere(*, apply=True, routers=None,
     if routers is None:
         routers = RouterDevice.objects.all_tenants().filter(is_active=True)
 
+    # Routers this sweep must not touch, by name, comma separated.
+    #
+    # An off switch that does not need a deploy to throw or to put back, for
+    # the case this is in production for: the sweep is disabling accounts it
+    # should not, and the operator needs it to stop now rather than after a
+    # build. Skipping is a router staying as it is, which is the state it was
+    # in before this sweep existed -- so an entry here costs only the accounts
+    # this would have closed, and those keep until it is taken out again.
+    skip = {n.strip() for n in
+            os.getenv("UNCOVERED_SWEEP_SKIP", "").split(",") if n.strip()}
+
     totals = [0, 0]
     for router in routers:
+        if router.name in skip:
+            logger.warning(
+                "[uncovered] %s is in UNCOVERED_SWEEP_SKIP — not swept",
+                router)
+            continue
         api = safe_connect_router(router)
         if not api:
             logger.info("[uncovered] %s unreachable — skipped", router)

@@ -281,3 +281,58 @@ class UncoveredLoginsTests(TestCase):
     def test_the_ceiling_is_above_the_backlog_that_was_found(self):
         """91 on one router on 2026-09-17; a ceiling under that is useless."""
         self.assertGreaterEqual(DEFAULT_MAX_DISABLE, 91)
+
+    # ---- what the sweep must not take off --------------------------------
+    #
+    # Added 2026-09-18, after the sweep spent a day disabling paying customers
+    # on skylink3. Every one of these passed before the fix by disabling
+    # somebody who had paid.
+
+    def test_a_connected_account_with_nothing_paying_is_still_swept(self):
+        """
+        Connected is not on its own a reason to stay. The 91 found on
+        2026-09-17 included five that were online and serving data.
+        """
+        self._sub(self.package, expires_in=timedelta(hours=-2), mac=FIRST)
+        api = self._api(FIRST, online=(FIRST,))
+
+        disabled, ended, _ = self._sweep(api)
+
+        self.assertEqual((disabled, ended), (1, 1))
+
+    def test_a_device_beyond_the_allowance_keeps_its_account(self):
+        """
+        The allowance is a grant-time rule, enforced by _trim_to_package_limit
+        and by shared-users on the profile. It is not grounds for disabling an
+        account somebody paid for -- which is what this sweep turned it into.
+        """
+        sub = self._sub(self.package, expires_in=timedelta(hours=3), mac=FIRST,
+                        last_seen=timezone.now() - timedelta(hours=2))
+        with tenant_context(self.tenant):
+            CustomerDevice.objects.create(
+                tenant=self.tenant, customer=self.customer, subscription=sub,
+                mac_address=SECOND)
+
+            # The grant still refuses it: the allowance itself is unchanged.
+            self.assertIsNone(subscription_for_device(self.customer, FIRST))
+            # The sweep still asks, and must get a different answer.
+            self.assertIsNotNone(
+                subscription_for_device(self.customer, FIRST,
+                                        require_grant=False))
+
+        disabled, _, _ = self._sweep(self._api(FIRST, SECOND))
+
+        self.assertEqual(disabled, 0)
+
+    def test_the_account_it_was_written_for_is_still_swept(self):
+        """
+        The narrowing must not cost the sweep its purpose. 91 accounts on
+        skylink3 had no live package at all behind them, and those are still
+        exactly what this takes off.
+        """
+        self._sub(self.package, expires_in=timedelta(hours=-1), mac=FIRST)
+        api = self._api(FIRST)
+
+        disabled, _, _ = self._sweep(api)
+
+        self.assertEqual(disabled, 1)
