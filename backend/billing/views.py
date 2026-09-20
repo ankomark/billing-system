@@ -41,6 +41,7 @@ from billing.mpesa_client import get_mpesa_access_token, missing_mpesa_keys
 from django.db.models import Count, Prefetch, Q, Sum
 from django.db.models.functions import TruncDate, TruncMonth
 from billing.services.usage import estate_usage_totals
+from billing.services.provisioning_state import is_provisioned
 from .reports import (revenue_summary,revenue_by_method,revenue_by_package,customer_stats,)
 from .analytics import (
     performance_pulse, revenue_series, peak_hours, expiring_soon,
@@ -2280,6 +2281,63 @@ class HotspotVoucherValidateView(APIView):
         # phone while the one standing at the portal was told "invalid username
         # or password". Each package keeps its own devices; the customer picks
         # which code a phone runs on by typing it there.
+        # Does the page asking know how to wait?
+        #
+        # Redeeming a code needs six round trips to the router, and the portal
+        # gives this request fifteen seconds. On a healthy link that is a
+        # second; on a degraded one it is a minute, and the customer is shown
+        # "That took too long" for a code that was perfectly good and a payment
+        # that had already cleared. On 2026-09-20, with the Airtel circuit at
+        # 30-50% loss, that was one redemption in three.
+        #
+        # So the router work comes off this request — but only for a portal
+        # that can cope with the answer arriving before the account does.
+        # `logIn()` on the page follows a 200 straight into the RouterOS login
+        # form, and a login against an account that has not been written yet is
+        # refused as "invalid username or password", which sends the browser to
+        # an error page that deliberately does not retry. Returning early to a
+        # portal that does not expect it turns a slow success into a fast
+        # failure.
+        #
+        # Absent, false or junk therefore all mean "cannot wait", which is the
+        # conservative reading and exactly what `auto` above does. Portal files
+        # live on each router and are pushed per site, so some will be older
+        # than this server for as long as that takes — those keep the behaviour
+        # they were written against, unchanged.
+        can_wait = request.data.get("provision_async") is True
+
+        if can_wait:
+            try:
+                from billing.tasks.provisioning import ensure_customer_access_task
+                ensure_customer_access_task.delay(
+                    customer.pk, reason="voucher",
+                    subscription_id=subscription.pk)
+                queued = True
+            except Exception:
+                # No broker. Fall through to doing it here, which is the whole
+                # of what this endpoint used to do — slow on a bad link, and
+                # far better than telling somebody who has paid to wait for a
+                # grant that nothing is going to perform.
+                logger.exception(
+                    "[hotspot] could not queue provisioning for customer %s; "
+                    "granting inline instead", customer.pk)
+                queued = False
+
+            if queued:
+                return Response(
+                    {
+                        "detail": "Your code is accepted. Setting up your "
+                                  "connection — this takes a few seconds.",
+                        "expires_at": subscription.expiry_date,
+                        # What the page waits on. It polls /hotspot/status/
+                        # until that reports the device provisioned, then logs
+                        # in — see services/provisioning_state.
+                        "provisioning": True,
+                        "device_token": device_token_for(mac_address),
+                    },
+                    status=status.HTTP_202_ACCEPTED,
+                )
+
         try:
             enable_customer_access(customer, subscription)
         except Exception:
@@ -3366,6 +3424,14 @@ class HotspotStatusView(APIView):
             # What they have used, and what they are allowed. The operator
             # could see this and the person paying for it could not.
             "usage": _subscriber_usage(customer, subscription),
+            # Whether this device's account has reached a router yet.
+            #
+            # Only a portal that redeemed with `provision_async` waits on this;
+            # for everyone else it is one more field they do not read. False
+            # means "not known to have landed", never "refused" — see
+            # services/provisioning_state for why unknown is the safe reading
+            # and what the page does when it stops waiting.
+            "provisioned": is_provisioned(customer.tenant_id, mac),
         }
 
         if device_token_matches(mac, request.GET.get("dt")):

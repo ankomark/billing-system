@@ -986,11 +986,33 @@ def _grant_hotspot(api, router, customer, package, expiry_date,
 
     # The devices this subscription paid for, not every address the customer
     # has ever used. macs_to_grant explains what that was costing.
+    landed = []
     for mac in macs_to_grant(customer, subscription, include_blocked=False):
         enable_hotspot(api, router, mac, package, expiry_date,
                        limit_bytes=limit)
         retry_mac_login(api, mac)
+        landed.append(mac)
         granted += 1
+
+    # Recorded per address, as each one is written, because a portal that has
+    # stopped waiting for this call is sitting on the other end asking whether
+    # it may log in yet. See services/provisioning_state.
+    #
+    # After the loop rather than inside it, and guarded: this is a convenience
+    # for a page that is waiting, never a condition of the grant. A customer
+    # is on the network because the account is on the router, not because we
+    # managed to write down that it is.
+    if landed:
+        try:
+            from .services.provisioning_state import mark_provisioned
+
+            mark_provisioned(router.tenant_id, landed)
+        except Exception:
+            logger.warning(
+                "[hotspot] granted %s device(s) for customer %s but could not "
+                "record it for the portal", len(landed), customer.pk,
+                exc_info=True)
+
     return granted
 
 

@@ -659,11 +659,31 @@
     msg.className = 'msg';
     waitShow(t('wait.checking'));
 
-    api('POST', '/hotspot/validate/', { code: code, mac_address: MAC, t: TENANT_TOKEN, r: ROUTER_TOKEN },
+    /* provision_async tells the server this page knows how to wait.
+
+       Without it the server does the router work inside this request, and the
+       request has fifteen seconds. Redeeming a code costs six round trips to
+       the router; when the uplink is degraded those do not fit, and the
+       customer is shown "That took too long" for a code that was good and a
+       payment that had already cleared.
+
+       With it the server records the purchase, answers at once, and writes the
+       account in the background. What this page must then NOT do is walk
+       straight into logIn(): the account is not there yet, RouterOS refuses it
+       as "invalid username or password", and the error page it lands on does
+       not retry. So it waits for the account instead -- see awaitProvisioned. */
+    api('POST', '/hotspot/validate/',
+      { code: code, mac_address: MAC, t: TENANT_TOKEN, r: ROUTER_TOKEN,
+        provision_async: true },
       function (data) {
         // Keep the proof. The connected page needs it to be shown the code
         // again, and only a device that has redeemed one gets it.
         if (data && data.device_token) { saveDeviceToken(MAC, data.device_token); }
+        if (data && data.provisioning) {
+          waitSay(t('wait.preparing'));
+          awaitProvisioned();
+          return;
+        }
         waitDone(t('wait.connected'), logIn);
       },
       function (detail) {
@@ -674,6 +694,51 @@
         el('connectBtn').textContent = t('code.connect');
         say(msg, detail || t('code.nomatch'), 'bad');
       });
+  }
+
+  /* ── Waiting for the account to reach the router ────────────
+     Polls /hotspot/status/ until it reports this device provisioned, then
+     hands over to the router's login form exactly as a synchronous redemption
+     would have.
+
+     Bounded, and the deadline matters more than the interval. The server
+     retries a failed grant at 5s, 20s, 60s, 240s and 960s, so a link that is
+     merely slow lands well inside this; one that is properly broken will not
+     land at all, and holding a spinner up for sixteen minutes to find that out
+     helps nobody.
+
+     Gives up INTO the login rather than into an error. If the account did
+     arrive and we simply never saw the flag -- a cold cache, an evicted key, a
+     poll that was refused -- then logging in works and the customer never
+     learns there was a question. If it truly is not there, RouterOS says so
+     itself, which is the same place this page has always ended up and the
+     message the customer would have got anyway. Never worse than before, and
+     usually silent. */
+  var PROVISION_POLL_MS = 2500;
+  var PROVISION_WAIT_MS = 75000;
+
+  function awaitProvisioned() {
+    var started = Date.now();
+
+    function giveUp() { waitDone(t('wait.connected'), logIn); }
+
+    function poll() {
+      if (Date.now() - started > PROVISION_WAIT_MS) { giveUp(); return; }
+
+      api('GET', '/hotspot/status/?mac=' + encodeURIComponent(MAC) +
+                 '&t=' + encodeURIComponent(TENANT_TOKEN), null,
+        function (data) {
+          if (data && data.provisioned) { waitDone(t('wait.connected'), logIn); return; }
+          setTimeout(poll, PROVISION_POLL_MS);
+        },
+        function () {
+          // A refused or failed poll is not an answer about the account, so it
+          // is not treated as one. Keep asking until the deadline.
+          setTimeout(poll, PROVISION_POLL_MS);
+        });
+    }
+
+    setTimeout(poll, PROVISION_POLL_MS);
   }
 
   /* ── Getting back on without being asked for anything ──────
