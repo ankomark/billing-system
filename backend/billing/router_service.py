@@ -251,14 +251,22 @@ def enable_hotspot(api, router, mac_address, package, expiry_date,
     # unambiguously, and an uncapped package must never be one release note
     # away from cutting everybody off at zero bytes.
     #
-    # Floored at 1 MB rather than 0. This is called on re-provisioning too —
-    # failover moves a subscriber mid-bundle — and a subscriber who has
-    # already spent their allowance would otherwise be handed a limit of 0,
-    # which RouterOS reads as no limit at all. The floor makes an exhausted
-    # allowance stay exhausted; the suspended subscription is what stops them
-    # reaching this code at all, and this is the second lock on that door.
+    # Floored rather than 0. This is called on re-provisioning too — failover
+    # moves a subscriber mid-bundle — and a subscriber who has already spent
+    # their allowance would otherwise be handed a limit of 0, which RouterOS
+    # reads as no limit at all.
+    #
+    # The floor stops an exhausted allowance being written as unlimited; what
+    # it cannot do is make a megabyte that is not there into one the
+    # subscriber may spend. Reaching the floor at all used to mean exactly
+    # that — see MIN_BYTE_CEILING for the day it cost. _grant_hotspot now
+    # refuses before this is called, and check_cap suspends them before that,
+    # so this is the third lock rather than the only one, and it stays here
+    # for the callers that arrive with a limit of their own.
     if limit_bytes is not None:
-        attrs["limit-bytes-total"] = str(max(int(limit_bytes), 1024 * 1024))
+        from .services.usage import MIN_BYTE_CEILING
+
+        attrs["limit-bytes-total"] = str(max(int(limit_bytes), MIN_BYTE_CEILING))
 
     try:
         users.add(**attrs)
@@ -496,8 +504,19 @@ def _provision(customer, subscription):
             return False
 
     elif customer.connection_type == "hotspot":
-        _grant_hotspot(api, router, customer, package, subscription.expiry_date,
-                       subscription=subscription)
+        # Reported, not raised onward. _grant_hotspot refuses a subscription
+        # whose data allowance is spent, and this function's contract is a
+        # boolean — every caller from the payment path to the captive portal
+        # reads it as "did they get on", and an exception here would reach a
+        # subscriber as a 500 rather than an answer. The refusal is loud in
+        # the log and False to the caller, which is what "not provisioned" has
+        # always meant here.
+        try:
+            _grant_hotspot(api, router, customer, package,
+                           subscription.expiry_date, subscription=subscription)
+        except NotEntitled as exc:
+            logger.warning("[hotspot] %s", exc)
+            return False
 
     return True
 
@@ -940,8 +959,31 @@ def _grant_hotspot(api, router, customer, package, expiry_date,
     Returns how many were granted, so a caller can tell "provisioned nothing"
     from "provisioned everything".
     """
+    from .services.usage import MIN_BYTE_CEILING
+
     granted = 0
     limit = _remaining_data_bytes(customer, subscription)
+
+    # Nothing left worth writing. See MIN_BYTE_CEILING: below it the only
+    # ceiling the hardware can be given is larger than the allowance actually
+    # remaining, so granting here hands the subscriber a megabyte they have
+    # not got, the router takes it back two minutes later, and whatever asked
+    # for this grant asks again.
+    #
+    # check_cap now suspends them a megabyte early, which should mean no
+    # caller ever reaches this with a spent allowance. That is exactly why it
+    # is worth refusing here as well -- the byte ceiling is the one lock on
+    # this door that does not depend on a sweep having run, and it was the one
+    # that quietly granted anyway. Raising rather than returning a count,
+    # because a caller that has already told a customer they are connected
+    # must not be able to ignore this.
+    if limit is not None and limit < MIN_BYTE_CEILING:
+        raise NotEntitled(
+            f"refusing to provision customer {customer.pk} on {router}: "
+            f"{limit} bytes left on subscription "
+            f"{getattr(subscription, 'pk', None)} is under the {MIN_BYTE_CEILING}"
+            f"-byte floor — the allowance is spent")
+
     # The devices this subscription paid for, not every address the customer
     # has ever used. macs_to_grant explains what that was costing.
     for mac in macs_to_grant(customer, subscription, include_blocked=False):
@@ -1586,9 +1628,18 @@ def migrate_customer_router(customer, reason="manual_migration",
         enable_pppoe(new_api, new_router, customer.pppoe_username, package)
 
     elif customer.connection_type == "hotspot":
-        _grant_hotspot(
-            new_api, new_router, customer, package, subscription.expiry_date,
-            subscription=subscription)
+        # A refusal, as a refusal. Every other way this function declines
+        # returns a message rather than raising, and its callers — the admin
+        # migrate button and the failover task — read the tuple. A subscriber
+        # whose allowance is spent is not a migration that failed; it is one
+        # that should not happen, and it says so the same way as the rest.
+        try:
+            _grant_hotspot(
+                new_api, new_router, customer, package,
+                subscription.expiry_date, subscription=subscription)
+        except NotEntitled as exc:
+            logger.warning("[migrate] %s", exc)
+            return False, "Data allowance is spent — nothing left to grant"
 
     else:
         return False, "Unsupported connection type"

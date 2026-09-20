@@ -25,6 +25,7 @@ from billing.router_service import (
     tenant_sessions_everywhere,
 )
 from billing.services.usage import (
+    MIN_BYTE_CEILING,
     cap_applies_to,
     cap_bytes_for,
     roll_up_day,
@@ -742,10 +743,45 @@ def check_cap(customer, subscription=None):
     # drift, and the way that surfaces is somebody disconnected while the
     # portal tells them they still have data left.
     used = usage_since(customer, since)
-    if used < cap:
+    if used < _cap_threshold(cap, customer.connection_type):
         return False
 
     return cut_off_for_cap(customer, subscription, used, cap)
+
+
+def _cap_threshold(cap, connection_type):
+    """
+    The used-bytes figure at which an allowance counts as spent.
+
+    The cap itself for PPPoE, and a megabyte short of it for hotspot.
+
+    The difference is not a policy about heavy users, it is what the hardware
+    can be told. A hotspot subscriber is enforced by `limit-bytes-total`, and
+    _grant_hotspot will not write one below MIN_BYTE_CEILING -- so a
+    subscriber inside the last megabyte is one the router can only be asked to
+    serve MORE than they have left.
+
+    Leaving them active was the whole of the loop described on
+    MIN_BYTE_CEILING: cut off by the router every couple of minutes for
+    reaching a limit larger than their remaining allowance, re-granted the
+    same limit by the captive portal still open on their handset, and never
+    once read as over their cap by this function. Cutting off a megabyte early
+    ends it, and a megabyte is a rounding error against every bundle these
+    operators sell.
+
+    PPPoE has no such ceiling -- the cap is polled and nothing is written to
+    the hardware -- so there is no reason to shorten one, and shortening it
+    would be taking a megabyte from somebody for a constraint their connection
+    does not have.
+
+    A cap at or below the floor is its own threshold whatever the connection.
+    A bundle smaller than the smallest ceiling we can write is a
+    misconfiguration rather than a case to be clever about, and subtracting
+    here would cut the subscriber off before they had used anything at all.
+    """
+    if connection_type != "hotspot" or cap <= MIN_BYTE_CEILING:
+        return cap
+    return cap - MIN_BYTE_CEILING
 
 
 @shared_task(

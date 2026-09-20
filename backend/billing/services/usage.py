@@ -39,6 +39,34 @@ logger = logging.getLogger(__name__)
 MB = 1024 * 1024
 
 
+# The smallest byte ceiling this system is willing to write onto a router.
+#
+# RouterOS reads `limit-bytes-total=0` as no limit at all on some builds, so an
+# allowance that has run out must never be written as zero -- enable_hotspot
+# floors it instead. The floor is therefore not a rounding convenience: it is
+# the point below which "what is left" can no longer be expressed to the
+# hardware.
+#
+# Which makes it a threshold for the cap check as well, and it was not one.
+# A subscriber with less left than this got a ceiling LARGER than their
+# remaining allowance -- more than they were entitled to, because a megabyte
+# is the least we can say -- while check_cap went on reading them as under
+# their cap and left them active. On 2026-09-20 customer 1757 was 966,879
+# bytes short of a 20 GB bundle and spent the day in the gap: granted 1 MB,
+# logged out by the router two minutes later as "traffic limit reached", the
+# captive portal on their handset re-requesting access, granted another 1 MB.
+# The remove-and-re-add that each grant performs resets the router's byte
+# counters, so the collector re-baselined and threw the interval away, and
+# their recorded usage never climbed the last megabyte to where the cap would
+# have bitten. Two subscribers were in that state at once; every subscriber
+# passes through it on the way out of every bundle.
+#
+# So both sides read this one number. Below it there is nothing left to sell:
+# the cap has bitten (see check_cap) and the hardware is not asked to pretend
+# otherwise (see _grant_hotspot).
+MIN_BYTE_CEILING = MB
+
+
 def cap_bytes_for(customer, subscription=None):
     """
     The ceiling that applies to one subscriber, in bytes. 0 means unlimited.
