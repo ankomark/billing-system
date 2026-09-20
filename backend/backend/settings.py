@@ -466,6 +466,35 @@ CELERY_TASK_TIME_LIMIT = 300        # Hard kill after 5 min
 CELERY_TASK_SOFT_TIME_LIMIT = 240   # Graceful stop at 4 min
 CELERY_WORKER_PREFETCH_MULTIPLIER = 1
 
+# Acknowledge a task when it FINISHES, not when it is picked up.
+#
+# Off by default, and off was survivable only while the queue carried work
+# that something else would notice was missing. It no longer does:
+# redeeming a code hands the router work to ensure_customer_access_task and
+# answers the customer immediately, so a task lost here is a person who paid,
+# was told they were being connected, and never was -- with nothing left
+# anywhere to retry it or report it.
+#
+# deploy-quiet-hour.sh has known this for as long as it has existed and works
+# around it by draining the queue before restarting the worker, which is why
+# it says in its own comments that a task still running when the worker stops
+# "is lost outright -- enable_customer_task is one of those". That guard only
+# covers the scheduled path; ops/deploy.sh restarts without draining, and so
+# does every crash, OOM and machine reboot, which no script can gate.
+#
+# The cost is the other half of the trade, and it is the right way round here:
+# a task interrupted mid-flight is redelivered and runs again, so it must be
+# safe to run twice. Provisioning is -- enable_customer_access creates or
+# updates rather than assuming absence, which ensure_customer_access_task's
+# own docstring calls out because its retries already depend on it.
+#
+# Bounded so a task cannot be redelivered for ever: visibility timeout sits
+# above CELERY_TASK_TIME_LIMIT, so the broker waits longer than a task is
+# allowed to live before concluding the worker is gone.
+CELERY_TASK_ACKS_LATE = True
+CELERY_TASK_REJECT_ON_WORKER_LOST = True
+CELERY_BROKER_TRANSPORT_OPTIONS = {"visibility_timeout": 600}
+
 # Beat scheduler — DB so schedules survive deploys and are editable in admin
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
 
