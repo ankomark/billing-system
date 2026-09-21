@@ -59,7 +59,7 @@ def ensure_customer_access_task(self, customer_id, reason="payment",
     report success for a phone that is still refused.
     """
     from billing.models import AccessAuditLog, Customer, Subscription
-    from billing.router_service import enable_customer_access
+    from billing.router_service import allowance_spent, enable_customer_access
     from billing.services.entitlement import is_entitled
     from billing.tenancy import tenant_context
 
@@ -88,6 +88,18 @@ def ensure_customer_access_task(self, customer_id, reason="payment",
                 logger.info(
                     "[provisioning] subscription %s for %s no longer entitles "
                     "anything — not granting", subscription_id, customer)
+                return False
+
+            # Likewise for data. The grant refuses a spent allowance, and
+            # enable_customer_access reports that refusal as False -- which
+            # below reads as a router that did not answer, so it was retried
+            # for twenty-one minutes and then reported as "no router was
+            # reachable. They have paid." No retry changes it; see
+            # allowance_spent.
+            if allowance_spent(customer, subscription):
+                logger.info(
+                    "[provisioning] subscription %s for %s has no data left — "
+                    "not granting", subscription_id, customer)
                 return False
 
         try:

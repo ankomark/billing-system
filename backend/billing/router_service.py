@@ -963,6 +963,8 @@ def _grant_hotspot(api, router, customer, package, expiry_date,
 
     granted = 0
     limit = _remaining_data_bytes(customer, subscription)
+    # allowance_spent() below is this same test, for callers that need the
+    # answer before reaching the router. Change one, change both.
 
     # Nothing left worth writing. See MIN_BYTE_CEILING: below it the only
     # ceiling the hardware can be given is larger than the allowance actually
@@ -1120,6 +1122,31 @@ def _remaining_data_bytes(customer, subscription):
             "customer %s; provisioning without a byte limit", customer.pk,
         )
         return None
+
+
+def allowance_spent(customer, subscription):
+    """
+    Whether _grant_hotspot would refuse this subscription for want of data.
+
+    The same number the grant reads, asked without a router. It exists because
+    two places decided "is there data left" by different rules and a customer
+    fell between them. check_cap marks a subscription suspended, but it only
+    ever looks at the one _billable_subscription picks; a customer holding
+    three stacked packages has the other two left looking active however much
+    has been used. validate_voucher trusted that status, accepted the code,
+    told the portal it was connecting -- and the grant, reading usage itself,
+    refused. On 2026-09-21 customer 386 redeemed subscription 18562 with 0
+    bytes left: 202 at the portal, then twenty-one minutes of retries against
+    a refusal no retry could change, then an alert that no router was
+    reachable.
+
+    Fails open like _remaining_data_bytes: an allowance that cannot be read is
+    not a reason to refuse somebody.
+    """
+    from .services.usage import MIN_BYTE_CEILING
+
+    limit = _remaining_data_bytes(customer, subscription)
+    return limit is not None and limit < MIN_BYTE_CEILING
 def get_pppoe_live_usage(router, username):
     """
     Fetch live PPPoE session stats from MikroTik

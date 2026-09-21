@@ -32,7 +32,7 @@ from billing.services.voucher_service import (
     REFUSED_CAPPED, REFUSED_EXPIRED, describe_refusal, mark_voucher_used,
     validate_voucher,
 )
-from billing.router_service import enable_customer_access
+from billing.router_service import allowance_spent, enable_customer_access
 from .mpesa_client import initiate_stk_push
 from billing.models import Customer,Subscription,PPPoEUsageRecord,PPPoEUsageState
 from billing.notifications import send_sms, send_whatsapp, notify_customer
@@ -1992,6 +1992,23 @@ class HotspotVoucherValidateView(APIView):
             )
 
         customer = subscription.customer
+
+        # Spent, whatever the subscription's status says. The cap sweep only
+        # suspends the one package _billable_subscription picks, so a customer
+        # holding several can present a code whose data is gone and still find
+        # it "active". Accepting it told the portal we were connecting them,
+        # and the grant then refused -- see allowance_spent. Before binding a
+        # device, so a spent code cannot take a place from one that works.
+        if (customer.connection_type == "hotspot"
+                and allowance_spent(customer, subscription)):
+            _record_attempt(
+                tenant, code, mac_address, ConnectionAttempt.EXPIRED)
+            return Response(
+                {"detail": "You have used all the data on this package. "
+                           "Buy another one to get back online.",
+                 "capped": True},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         # Which devices may use this is decided below, by counting them against
         # the package's allowance. This used to be a single comparison against
