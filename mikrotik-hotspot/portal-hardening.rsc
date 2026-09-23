@@ -59,12 +59,35 @@ add dst-address=167.233.247.151 action=accept comment="Billing API direct"
 #
 # steps.md:1821 has said all along that these belong on 10.10.0.1/32. This is
 # that, written down where it can be pasted.
+#
+# THE FIREWALL RULE COMES FIRST. Restricting the services to 10.10.0.1/32
+# assumes the tunnel can reach them. It cannot: the only input rule for
+# wg-smartbill covers port 8728, and wg-smartbill is not in the LAN interface
+# list, so the chain's final `drop in-interface-list=!LAN` takes everything
+# else. Applied in the other order on skylink3 on 2026-09-23, ssh and winbox
+# were reachable from nowhere at all -- not the LAN, because of the service
+# address, and not the tunnel, because of the drop. WinBox by MAC on site was
+# the only way left in.
+
+/ip firewall filter
+add chain=input action=accept protocol=tcp src-address=10.10.0.1 \
+    in-interface=wg-smartbill dst-port=22,80,8291 \
+    comment="SmartBill management via tunnel" \
+    place-before=[find comment="SmartBill API via tunnel"]
 
 /ip service
 disable ftp,telnet,api-ssl
 set ssh address=10.10.0.1/32
 set www address=10.10.0.1/32
 set winbox address=10.10.0.1/32
+
+# Then WinBox reaches the router through the server:
+#
+#   ssh -L 8291:10.10.0.5:8291 deploy@SERVER_IP
+#   WinBox -> 127.0.0.1:8291
+#
+# The connection arrives at the router sourced from 10.10.0.1, which is what
+# both the service address and the rule above expect.
 
 # WinBox by MAC still works after this and ignores IP rules entirely, which is
 # the way back in if the tunnel is down. See steps.md:156.
@@ -113,3 +136,8 @@ set winbox address=10.10.0.1/32
 # /ip service set ssh address=""
 # /ip service set www address=""
 # /ip service set winbox address=""
+# /ip firewall filter remove [find comment="SmartBill management via tunnel"]
+#
+# The two service lines for ssh and winbox are also the emergency undo if the
+# management rule is missing and nobody can reach the box: clearing `address`
+# puts them back on the LAN, where a laptop on the wifi can reach them again.
