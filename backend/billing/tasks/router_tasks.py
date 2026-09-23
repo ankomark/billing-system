@@ -506,4 +506,42 @@ def ensure_lease_script_task(self):
     except Exception:
         logger.exception("[uncovered] sweep failed")
 
+    # Everything above starts from the account table, so both of these are
+    # invisible to all of it.
+    #
+    # A session outlives the account that was disabled or removed underneath
+    # it -- RouterOS counts down session-time-left once somebody is on, and
+    # nothing here was reading it. skylink3 was serving one with 4 days and
+    # 16 GB left hours after the sweep that should have ended it.
+    try:
+        from billing.services.stale_sessions import (
+            close_stale_sessions_everywhere,
+        )
+
+        ended = close_stale_sessions_everywhere(apply=True)
+        if ended:
+            logger.warning(
+                "[stale-sessions] ended %s session(s) with no account behind "
+                "them", ended)
+    except Exception:
+        logger.exception("[stale-sessions] sweep failed")
+
+    # And a bypassed ip-binding, which needs no account in the first place.
+    # Reports rather than closes: bypassing a till or a camera is a reasonable
+    # thing to have done on purpose, and those devices have no browser to sign
+    # in with. Mark the deliberate ones KEEP and this goes quiet; pass
+    # apply=True here once they are marked.
+    try:
+        from billing.services.hotspot_bindings import (
+            close_bypassing_bindings_everywhere,
+        )
+
+        open_bindings = close_bypassing_bindings_everywhere(apply=False)
+        if open_bindings:
+            logger.warning(
+                "[bindings] %s binding(s) let a device past the portal with "
+                "no account", open_bindings)
+    except Exception:
+        logger.exception("[bindings] sweep failed")
+
     return was_set
