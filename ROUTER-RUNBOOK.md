@@ -442,6 +442,48 @@ customers by hours across 790 accounts.
 
 ---
 
+## 11. HTTP injectors, and what they ride
+
+An injector app does not break anything. It opens a connection to its own
+tunnel server and writes a request whose `Host:` header — or, over TLS, whose
+SNI — names a host the hotspot permits before login. The hotspot reads the
+name, matches its walled garden, and forwards. The client lied about a string;
+it did not have to lie about an address.
+
+**So the walled garden is the whole game**, and the two rule types are not
+equivalent:
+
+| Rule | Matches | Spoofable |
+|---|---|---|
+| `/ip hotspot walled-garden` `dst-host=` | the Host header / SNI the client sends | **yes** |
+| `/ip hotspot walled-garden ip` `dst-address=` | the destination address | no |
+
+skylink3 carried both for the same destination on 2026-09-23, and
+`api.smartbillsolution.com` resolves to the address the IP rule already
+accepts — so the host rule carried no traffic of its own and cost a bypass.
+`mikrotik-hotspot/portal-hardening.rsc` disables it.
+
+The two cannot be combined: `/ip hotspot walled-garden` in ROS 7 has no
+`dst-address` parameter, and the API answers `unknown parameter dst-address`.
+
+**The router's own services are a separate door.** The input chain ends with
+`drop in-interface-list=!LAN` and the hotspot bridge is *in* `LAN`, so every
+customer device — logged in or not — reaches whatever `/ip service` is
+listening on. On skylink3 that was `ftp`, `telnet`, `ssh`, `winbox`, `www` and
+`api-ssl` on `address=ANY`; only `api` was restricted to the tunnel. Telnet and
+FTP carry the password in clear text on a network every customer is already on.
+
+**Two things stay open on purpose.** DNS is redirected to the router's resolver
+before login — that is what lets a phone find the portal at all, and it is also
+what iodine and dnstt tunnel over, at tens of kbps. And `login-by=mac` means a
+cloned address is a borrowed session, bounded by `shared-users=1` and the
+duplicate-session sweep.
+
+Already closed, and worth keeping closed: `/ip proxy` and `/ip socks` both
+disabled — the two things an injector reaches for first on a MikroTik.
+
+---
+
 ## Standing configuration
 
 Values that should be true on every router. All are asserted hourly; this is
@@ -453,7 +495,11 @@ the list to check by hand after a reset or a swap.
 | `/ip dhcp-server` | `lease-time` | `15m` | §3 — do not raise |
 | `/ip dhcp-server config` | `store-leases-disk` | `5m` | leases survive reboot |
 | `/ip hotspot walled-garden` | no public-resolver rules | — | §1 |
-| `/ip hotspot walled-garden` | Billing API allowed | host + IP | portal must load |
+| `/ip hotspot walled-garden` | Billing API allowed | **IP rule only** | §11 — a host rule is spoofable |
+| `/ip hotspot walled-garden` | `dst-host` rules | none enabled | §11 |
+| `/ip service` | `ftp`, `telnet`, `api-ssl` | disabled | §11 — the hotspot bridge is in `LAN` |
+| `/ip service` | `ssh`, `www`, `winbox` | `address=10.10.0.1/32` | §11 |
+| `/ip hotspot ip-binding` | `type=bypassed` | none unmarked | `hotspot_bindings.py` |
 | `/ip hotspot profile` | `login-by` | `mac,cookie,http-chap` | MAC re-auth |
 | `/ip hotspot profile` | `mac-auth-mode` | `mac-as-username` | §4 |
 | `/ip hotspot user profile` | `keepalive-timeout` | `none`, written explicitly | §8 |
