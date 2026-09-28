@@ -2,15 +2,17 @@
 # Starlink as overflow for the evening peak — MikroTik RouterOS v7
 # =====================================================================
 #
-# Written for skylink3 (RB5009, ROS 7.19.4): Airtel on AIRTEL_WAN, Starlink in
+# Written for skylink3 (RB5009, ROS 7.19.4): Airtel on MIDLANDS, Starlink in
 # bypass mode on ether1. ether1 is already in the WAN interface list, so the
 # default firewall covers it, and the hotspot masquerade rules match on source
 # subnet rather than out-interface, so they apply to Starlink unchanged.
 #
 # ether1 needs nothing doing to it beyond this file. Checked on 2026-09-24:
 # link down, not a bridge port, already in the WAN list, no address, no DHCP
-# client. Airtel does not come in on it -- AIRTEL_WAN is a VLAN riding
+# client. Airtel does not come in on it -- MIDLANDS is a VLAN (1429) riding
 # sfp-sfpplus1 -- so plugging the dish into ether1 cannot disturb the fibre.
+# Airtel's technician named that VLAN MIDLANDS when they rebuilt the link on
+# 2026-09-28; before that this file called it AIRTEL_WAN.
 # ether2, ether3, ether4 and ether6 are bridge ports feeding the access points
 # and must not be used for this: ether2 alone was pushing 306 Mbit/s to
 # customers when that was checked.
@@ -19,10 +21,12 @@
 #
 # Every 30 seconds it counts logged-in hotspot clients.
 #
-#   * Above HIGH (390), the newest logins beyond 390 are put on Starlink,
-#     until MAX (35) are on it. The 36th stays on Airtel.
-#   * At or below LOW (380), everybody goes back to Airtel.
-#   * In between, nothing changes. The gap stops a count wobbling around 390
+#   * Above HIGH (380), the newest logins beyond 380 are put on Starlink.
+#     MAX is 0 on skylink3 -- no ceiling, everyone past 380 goes -- which is
+#     the operator's call as of 2026-09-28; see WHY MAX EXISTS for the case
+#     for 35.
+#   * At or below LOW (370), everybody goes back to Airtel.
+#   * In between, nothing changes. The gap stops a count wobbling around 380
 #     from flipping people back and forth every half minute.
 #
 # WHY MAX EXISTS, AND WHY IT IS 35
@@ -114,7 +118,7 @@ add name=via-starlink fib
 /ip route
 add dst-address=0.0.0.0/0 gateway=100.64.0.1%ether1 routing-table=via-starlink \
     distance=1 check-gateway=ping comment="STARLINK | via-starlink default"
-add dst-address=0.0.0.0/0 gateway=102.0.38.141%AIRTEL_WAN \
+add dst-address=0.0.0.0/0 gateway=102.0.38.141%MIDLANDS \
     routing-table=via-starlink distance=2 \
     comment="STARLINK | via-starlink fallback to Airtel"
 
@@ -165,9 +169,9 @@ add chain=prerouting action=mark-routing new-routing-mark=via-starlink \
 /system script
 add name=starlink-overflow policy=read,write \
     comment="STARLINK | moves clients above HIGH onto Starlink" source={
-:local high 390
-:local low 380
-:local max 35
+:local high 380
+:local low 370
+:local max 0
 # Not "list": inside a `where`, "list=$list" compares the property to itself,
 # matches every address-list entry on the router, and the script empties them
 # all. That is what the first install on 2026-09-27 did.
@@ -283,10 +287,10 @@ add name=starlink-overflow interval=30s start-time=startup policy=read,write \
 #   /ip firewall address-list print where list=starlink-overflow
 #       who is on the dish right now
 #
-# Watch the first evening at HIGH: with 390 and MAX 35, nothing at all happens
-# until the 391st client logs in, and at most 35 are ever on the dish. If the
-# log shows "35 held of 102 wanted" every 30 seconds, that is MAX doing its
-# job, not a fault -- the other 67 are on Airtel, which is where you want them.
+# Watch the first evening at HIGH: with 380, nothing at all happens until the
+# 381st client logs in. With MAX 0 everyone past 380 goes to the dish; with a
+# ceiling set, a log line like "35 held of 102 wanted" every 30 seconds is MAX
+# doing its job, not a fault -- the rest stay on Airtel.
 #
 # 35 is a guess until the dish is in. Check it on the first evening:
 #
