@@ -86,6 +86,29 @@ class HotspotProfileRepairTests(TestCase):
         self.assertEqual(profiles.updated, [])
         self.assertEqual(profiles.added, [])
 
+    def test_a_correct_profile_as_librouteros_returns_it_is_not_rewritten(self):
+        """
+        librouteros casts what the router sends back: shared-users arrives as
+        the int 1, not "1". Compared against the string we send, it never
+        matched, and every payment rewrote a profile that was already right —
+        90+ identical updates in three minutes on skylink.
+        """
+        name = f"HOTSPOT_PKG_{self.package.id}_D1"
+        _, profiles = self._run([
+            {".id": "*1", "name": name, "rate-limit": "2M/2M",
+             "shared-users": 1, "keepalive-timeout": HOTSPOT_KEEPALIVE}
+        ])
+        self.assertEqual(profiles.updated, [])
+
+    def test_a_wrong_device_count_is_still_corrected(self):
+        """The cast must not hide real drift: 2 on the router, 1 wanted."""
+        name = f"HOTSPOT_PKG_{self.package.id}_D1"
+        _, profiles = self._run([
+            {".id": "*1", "name": name, "rate-limit": "2M/2M",
+             "shared-users": 2, "keepalive-timeout": HOTSPOT_KEEPALIVE}
+        ])
+        self.assertEqual(profiles.updated, [{".id": "*1", "shared-users": "1"}])
+
     def test_a_new_profile_is_born_with_the_keepalive(self):
         """
         RouterOS defaults keepalive-timeout to 2m, which logs out a phone for

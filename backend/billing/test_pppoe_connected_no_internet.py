@@ -104,6 +104,25 @@ class TheTunnelClampsItsSegments(TestCase):
         self.assertEqual(len(api.updated), 1)
         self.assertEqual(api.updated[0]["change-tcp-mss"], "yes")
 
+    def test_a_correct_profile_as_librouteros_returns_it_is_not_rewritten(self):
+        """
+        librouteros hands "yes" back as True. Compared against the "yes" we
+        send, only-one and change-tcp-mss looked stale on every call.
+        """
+        api = profile_api(existing=[{
+            ".id": "*9",
+            "name": f"PPPOE_PKG_{self.package.id}",
+            "rate-limit": "10M/10M",
+            "only-one": True,
+            "change-tcp-mss": True,
+            "comment": f"Auto: {self.package.name}",
+        }])
+
+        with patch("billing.router_profiles.connect_router", return_value=api):
+            ensure_pppoe_profile(self.router, self.package)
+
+        self.assertEqual(api.updated, [])
+
     def test_a_correct_profile_is_not_rewritten(self):
         """Idempotent: provisioning runs on every purchase."""
         api = profile_api(existing=[{

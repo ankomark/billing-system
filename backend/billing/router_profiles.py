@@ -75,6 +75,27 @@ def connect_router(router):
     )
 
 
+def _stale(wanted, current):
+    """
+    The fields of `wanted` that the router's copy does not already hold.
+
+    Compared as they travel on the wire, not as Python sees them. librouteros
+    casts what the router sends back — "2" arrives as the int 2, "yes" as
+    True — while `wanted` holds the strings we send. Compared directly they
+    never matched, so every provisioning call rewrote shared-users (and, on
+    PPPoE, only-one and change-tcp-mss) on a profile that was already correct:
+    90+ identical updates in three minutes, one per payment.
+    """
+    def wire(value):
+        if value is True:
+            return "yes"
+        if value is False:
+            return "no"
+        return None if value is None else str(value)
+
+    return {k: v for k, v in wanted.items() if wire(current.get(k)) != wire(v)}
+
+
 def _rate_limit(package):
     """
     MikroTik format: upload/download
@@ -174,7 +195,7 @@ def ensure_pppoe_profile(router, package):
 
     for p in profiles:
         if p.get("name") == profile_name:
-            stale = {k: v for k, v in wanted.items() if p.get(k) != v}
+            stale = _stale(wanted, p)
             if stale:
                 profiles.update(**{".id": p[".id"], **stale})
             return profile_name
@@ -244,7 +265,7 @@ def ensure_hotspot_profile(router, package):
             # Found while throttling every hotspot package to 2M for capacity
             # on 2026-09-05: the speed change would have been silently
             # cosmetic on every router in the estate.
-            stale = {k: v for k, v in wanted.items() if p.get(k) != v}
+            stale = _stale(wanted, p)
             if stale:
                 profiles.update(**{".id": p[".id"], **stale})
                 logger.info(
