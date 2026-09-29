@@ -117,6 +117,14 @@ export default function SystemSettings() {
   // router. Without somewhere to hold the text, switching off would discard
   // what the operator wrote and switching back on would mean retyping it.
   const [noticeDraft, setNoticeDraft] = useState("");
+  // Whether the switch is on, held apart from the wording.
+  //
+  // This used to be read off the text -- on meant "has text" -- so clearing
+  // the box to rewrite it switched the notice off mid-edit and disabled the
+  // box, and switching on with nothing written left it off. The only way back
+  // was reloading the page. The saved value still carries it (empty is off);
+  // this is only the editor's state.
+  const [noticeOn, setNoticeOn] = useState(false);
 
   const { data: settings, isLoading } = useQuery({
     queryKey: ["system-settings"],
@@ -155,6 +163,7 @@ export default function SystemSettings() {
       // Seed the draft from whatever is saved, so a notice that is already up
       // can be switched off and back on without being retyped.
       if (settings.HOTSPOT_NOTICE) setNoticeDraft(settings.HOTSPOT_NOTICE);
+      setNoticeOn(Boolean(settings.HOTSPOT_NOTICE));
     }
   }, [settings]);
 
@@ -437,16 +446,17 @@ export default function SystemSettings() {
             </p>
 
             <NoticeField
-              value={form.HOTSPOT_NOTICE}
+              on={noticeOn}
               onChange={handleChange}
-              onToggle={(on) =>
+              onToggle={(on) => {
+                setNoticeOn(on);
                 setForm((f) => ({
                   ...f,
                   // Off keeps the wording in the box so it can be put back
                   // without retyping; it is the saved value that empties.
                   HOTSPOT_NOTICE: on ? (noticeDraft || "") : "",
-                }))
-              }
+                }));
+              }}
               draft={noticeDraft}
               setDraft={setNoticeDraft}
             />
@@ -785,9 +795,10 @@ function TemplateEditor({ name, spec, value, error, onChange }) {
  * thing the page exists to do, and the difference between two lines and six is
  * the packages being pushed off the screen.
  */
-function NoticeField({ value, onChange, onToggle, draft, setDraft }) {
-  const on = Boolean(value);
-  const shown = on ? value : draft;
+function NoticeField({ on, onChange, onToggle, draft, setDraft }) {
+  // The draft is the wording whether on or off: while on, every keystroke
+  // writes both, so the two never differ.
+  const shown = draft;
   const MAX = 400;
 
   return (
@@ -833,7 +844,11 @@ function NoticeField({ value, onChange, onToggle, draft, setDraft }) {
 
       <div className="mt-1 flex items-baseline justify-between gap-3">
         <span className="text-[11px] text-slate-500">
-          {on ? "Showing on every portal" : "Not shown"}
+          {!on
+            ? "Not shown"
+            : shown.trim()
+              ? "Showing on every portal"
+              : "Nothing written — saving now takes the notice down"}
         </span>
         <span className={`text-[11px] tabular-nums ${
           shown.length > MAX - 40 ? "text-amber-400" : "text-slate-500"
