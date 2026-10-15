@@ -126,6 +126,43 @@ def revenue_series(start, end, station=None):
     return series
 
 
+def peak_clients_series(start, end, station=None):
+    """
+    The most clients online at once, day by day, gap-filled.
+
+    Each router's own peak is exact -- the highest count any health probe saw
+    on it that day. The operator's figure is those added together, and that is
+    a ceiling rather than a measurement: two sites can peak at different hours,
+    and their sum is more people than were ever on at one moment. Summing is
+    still the honest choice. Probes run in parallel and land at different
+    instants, so there is no moment at which the whole estate was counted, and
+    a single-site operator -- most of them -- gets an exact number either way.
+
+    A day with no probe at all is None, not zero. Zero says the network was
+    empty; None says nobody was counting, which is what the days before this
+    table existed, or a day the health sweep was down, actually were.
+    """
+    from .models import RouterDailyPeak
+
+    first = timezone.localtime(start).date()
+    last = timezone.localtime(end).date()
+    qs = RouterDailyPeak.objects.filter(day__gte=first, day__lte=last)
+    if station:
+        qs = qs.filter(router__station_id=station)
+
+    rows = {
+        r["day"]: r["peak"]
+        for r in qs.values("day").annotate(peak=Sum("peak_sessions"))
+    }
+
+    series = []
+    day = first
+    while day <= last:
+        series.append({"day": day.isoformat(), "peak": rows.get(day)})
+        day += timedelta(days=1)
+    return series
+
+
 def revenue_by_package(start, end, station=None):
     """Which packages actually earn, with the volume behind each figure."""
     qs = Payment.objects.filter(paid_at__gte=start, paid_at__lt=end)

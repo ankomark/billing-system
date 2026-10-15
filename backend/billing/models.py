@@ -835,6 +835,70 @@ class RouterEvent(TenantScopedModel):
         return f"{self.router} {self.kind} at {self.created_at}"
 
 
+class RouterDailyPeak(TenantScopedModel):
+    """
+    The most clients one router served at once on one calendar day.
+
+    RouterDevice.active_sessions is the count as of the last health probe, and
+    each probe overwrites it -- so "how many were on at the busiest moment
+    yesterday" had no answer at all, however full the network got. This keeps
+    the high-water mark of that same count, one row per router per day, so
+    the dashboard can chart it beside daily revenue.
+
+    Per router rather than per operator. Probes run in parallel and land at
+    different moments, so there is no single instant at which the whole estate
+    was counted; a router's own peak is exact, and a site filter needs them
+    separate anyway. The operator-wide figure is the sum of those -- see
+    analytics.peak_clients_series for what that does and does not claim.
+
+    The day is the local calendar day (Africa/Nairobi), the same one the
+    revenue chart buckets payments into, so the two bars for a date describe
+    the same day.
+    """
+
+    router = models.ForeignKey(
+        RouterDevice, on_delete=models.CASCADE, related_name="daily_peaks"
+    )
+    day = models.DateField()
+    peak_sessions = models.PositiveIntegerField()
+    # When the peak was first reached. A later probe that only equals it
+    # leaves this alone, so it says when the network first got that full.
+    peak_at = models.DateTimeField()
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["router", "day"], name="router_daily_peak_uniq"),
+        ]
+        indexes = [
+            models.Index(fields=["tenant", "day"], name="rpeak_tenant_day_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.router} {self.day}: {self.peak_sessions}"
+
+    @classmethod
+    def record(cls, router, count, at):
+        """
+        Raise today's mark for `router` to `count` if it is higher.
+
+        Two statements rather than a read-modify-write, so two probes of one
+        router overlapping (a slow one and the next sweep's) cannot both read
+        the old peak and have the lower one win: the conditional UPDATE only
+        ever moves the number up.
+        """
+        day = timezone.localtime(at).date()
+        row, created = cls.objects.all_tenants().get_or_create(
+            router_id=router.id, day=day,
+            defaults={"tenant_id": router.tenant_id,
+                      "peak_sessions": count, "peak_at": at},
+        )
+        if not created:
+            cls.objects.all_tenants().filter(
+                pk=row.pk, peak_sessions__lt=count,
+            ).update(peak_sessions=count, peak_at=at)
+
+
 _UNSET = object()
 
 

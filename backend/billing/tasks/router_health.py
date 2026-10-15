@@ -121,9 +121,24 @@ def check_single_router_health(router_id):
         # and be believed; overwriting the timestamp with a NULL count would
         # throw away the last thing we did know.
         if count is not None:
+            counted_at = timezone.now()
             with all_tenants():
                 RouterDevice.objects.all_tenants().filter(id=router.id).update(
-                    active_sessions=count, active_sessions_at=timezone.now())
+                    active_sessions=count, active_sessions_at=counted_at)
+
+            # And the day's high-water mark, which the line above overwrites
+            # and nothing else keeps. Same rule as the count it comes from:
+            # a failure here is a missing chart bar, never an outage, so it
+            # must not reach the health verdict below.
+            try:
+                from billing.models import RouterDailyPeak
+
+                with all_tenants():
+                    RouterDailyPeak.record(router, count, counted_at)
+            except Exception:
+                logger.warning(
+                    "[router-health] %s: could not record the daily peak",
+                    router.name, exc_info=True)
 
         # The old loop never closed these. One leaked connection per reachable
         # router per two minutes is nothing at two routers and is a RouterOS

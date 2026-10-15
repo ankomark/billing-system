@@ -45,7 +45,7 @@ from billing.services.provisioning_state import is_provisioned
 from .reports import (revenue_summary,revenue_by_method,revenue_by_package,customer_stats,)
 from .analytics import (
     performance_pulse, revenue_series, peak_hours, expiring_soon,
-    customer_flow, by_station,
+    customer_flow, by_station, peak_clients_series,
     revenue_by_package as analytics_by_package,
     today_by_package,
     revenue_by_method as analytics_by_method,
@@ -5486,6 +5486,9 @@ class OperatorAnalyticsView(APIView):
                 "arpu": round(total_revenue / active_count, 2) if active_count else 0.0,
             },
             "series": series,
+            # Busiest moment of each day, over the same days as `series` so
+            # the two charts line up date for date.
+            "peak_clients": peak_clients_series(start, end, station),
             # Today on its own, alongside the range. The panels below answer
             # how the month is going; this answers how today is going, which is
             # the question asked when the network is full and the takings look

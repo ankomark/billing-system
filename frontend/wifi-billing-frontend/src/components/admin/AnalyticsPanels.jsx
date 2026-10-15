@@ -161,6 +161,12 @@ export default function AnalyticsPanels({ compact = false, defaultDays = 30 }) {
             </div>
           </Card>
 
+          <PeakClients
+            rows={data.peak_clients}
+            tickEvery={tickEvery}
+            shortDay={shortDay}
+          />
+
           <div className="grid gap-4 lg:grid-cols-2">
             <Card surface="ledger" padded={false}>
               <CardHeader
@@ -305,6 +311,47 @@ export default function AnalyticsPanels({ compact = false, defaultDays = 30 }) {
         </>
       )}
     </div>
+  );
+}
+
+/**
+ * The most clients online at once, day by day.
+ *
+ * Beside daily revenue because the two come apart on purpose -- a network
+ * full of weekly-package holders pays nothing today -- and seeing both is how
+ * an operator tells a quiet till from a quiet network.
+ *
+ * A day with no count is a gap, not a zero bar: before the peaks were
+ * recorded, or while the health sweep was down, nobody was counting, and a
+ * bar at the floor would say the network was empty.
+ */
+function PeakClients({ rows = [], tickEvery, shortDay }) {
+  const counted = rows.filter((r) => r.peak != null);
+  const best = counted.reduce((a, r) => (a == null || r.peak > a.peak ? r : a), null);
+
+  return (
+    <Card>
+      <CardHeader
+        title="Most clients online"
+        subtitle={
+          best
+            ? `Busiest moment each day · highest ${num(best.peak)} on ${shortDay(best.day)}`
+            : "Busiest moment each day"
+        }
+      />
+      <Chart
+        kind="bar"
+        data={counted.length ? rows : []}
+        xKey="day"
+        series={[{ key: "peak", label: "Clients online" }]}
+        xTickFormatter={(v, i) => (i % tickEvery === 0 ? shortDay(v) : "")}
+        yTickFormatter={num}
+        valueFormatter={(v) => (v == null ? "not counted" : `${num(v)} online`)}
+        labelFormatter={shortDay}
+        height={240}
+        empty="No peaks recorded yet — they start filling in from today"
+      />
+    </Card>
   );
 }
 
