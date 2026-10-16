@@ -285,6 +285,15 @@ export const STATUS_STYLES = {
   inactive: "bg-slate-500/10 text-slate-400 border-slate-500/30",
   failed: "bg-red-500/10 text-red-300 border-red-500/30",
   success: "bg-emerald-500/10 text-emerald-300 border-emerald-500/30",
+  // fiber signal bands and repair tickets
+  good: "bg-emerald-500/10 text-emerald-300 border-emerald-500/30",
+  warning: "bg-amber-500/10 text-amber-300 border-amber-500/30",
+  critical: "bg-red-500/10 text-red-300 border-red-500/30",
+  overload: "bg-fuchsia-500/10 text-fuchsia-300 border-fuchsia-500/30",
+  unknown: "bg-slate-500/10 text-slate-400 border-slate-500/30",
+  open: "bg-red-500/10 text-red-300 border-red-500/30",
+  assigned: "bg-amber-500/10 text-amber-300 border-amber-500/30",
+  resolved: "bg-emerald-500/10 text-emerald-300 border-emerald-500/30",
 };
 
 export const statusStyle = (s) =>

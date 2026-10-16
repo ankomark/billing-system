@@ -7,7 +7,7 @@ import {
   Settings, MessageSquare, LogOut, Activity, Router,
   RefreshCw, Search, Wifi, ShieldAlert, HeartPulse, X,
   UserPlus, CreditCard, UserCog, MapPin, TrendingUp, Receipt, PlugZap,
-  MailWarning,
+  MailWarning, Cable, Map as MapIcon, Smartphone,
 } from "lucide-react";
 
 /**
@@ -144,6 +144,9 @@ export default function AdminSidebar({ open, onClose }) {
           <NavItem to="/admin/pppoe/sessions"  icon={Activity}      label="PPPoE Sessions"  onClick={onClose} />
           <NavItem to="/admin/routers"         icon={Router}        label="Routers"         onClick={onClose} />
           <NavItem to="/admin/router-health"   icon={HeartPulse}    label="Router Health"   onClick={onClose} />
+          <NavItem to="/admin/fiber"           icon={Cable}         label="Fiber"           onClick={onClose} />
+          <NavItem to="/admin/fiber/map"       icon={MapIcon}       label="Fiber Map"       onClick={onClose} />
+          <NavItem to="/admin/fiber/install"   icon={Smartphone}    label="Field Install"   onClick={onClose} />
           <NavItem to="/admin/failover-logs"   icon={RefreshCw}     label="Failover Logs"   onClick={onClose} />
           <NavItem to="/admin/usage-alerts"    icon={ShieldAlert}   label="Usage Alerts"    onClick={onClose} />
 

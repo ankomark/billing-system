@@ -158,6 +158,7 @@ INSTALLED_APPS = [
 
     # Local
     "billing",
+    "fiber",
 ]
 
 AUTH_USER_MODEL = "billing.User"
@@ -821,6 +822,34 @@ CELERY_BEAT_SCHEDULE = {
     "prune-tethering-cases": {
         "task": "billing.tasks.tethering_tasks.prune_tethering_cases",
         "schedule": crontab(hour=5, minute=20),
+    },
+    # =====================================================
+    # FIBER (Smart Mapping)
+    # =====================================================
+    # Every OLT, every five minutes, offset from the router sweeps so the two
+    # are not opening connections in the same second. Fanned out per OLT.
+    "fiber-poll-olts": {
+        "task": "fiber.tasks.poll_all_olts_task",
+        "schedule": crontab(minute="1-59/5"),
+        "options": {"expires": 240},
+    },
+    "fiber-rollup-hourly": {
+        "task": "fiber.tasks.rollup_fiber_hourly_task",
+        "schedule": crontab(minute="7-59/15"),
+        "options": {"expires": 600},
+    },
+    "fiber-trend-sweep": {
+        "task": "fiber.tasks.fiber_trend_sweep_task",
+        "schedule": crontab(hour=6, minute=10),
+    },
+    "fiber-maintenance-sweep": {
+        "task": "fiber.tasks.fiber_maintenance_sweep_task",
+        "schedule": crontab(minute="*/5"),
+        "options": {"expires": 240},
+    },
+    "fiber-prune": {
+        "task": "fiber.tasks.prune_fiber_task",
+        "schedule": crontab(hour=5, minute=40),
     },
 }
 

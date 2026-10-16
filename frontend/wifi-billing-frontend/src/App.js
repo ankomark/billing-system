@@ -27,6 +27,10 @@ const PPPoESessions    = lazy(() => import("./pages/admin/PPPoESessions"));
 const Routers          = lazy(() => import("./pages/admin/Routers"));
 const Stations         = lazy(() => import("./pages/admin/Stations"));
 const RouterHealth     = lazy(() => import("./pages/admin/RouterHealth"));
+const Fiber            = lazy(() => import("./pages/admin/Fiber"));
+const FiberOnu         = lazy(() => import("./pages/admin/FiberOnu"));
+const FiberMap         = lazy(() => import("./pages/admin/FiberMap"));
+const FiberInstall     = lazy(() => import("./pages/admin/FiberInstall"));
 const FailoverLogs     = lazy(() => import("./pages/admin/FailoverLogs"));
 const UsageAlerts      = lazy(() => import("./pages/admin/UsageAlerts"));
 const AccessLookup     = lazy(() => import("./pages/admin/AccessLookup"));
@@ -162,6 +166,10 @@ export default function App() {
         <Route path="/admin/routers"                element={<Admin><Routers /></Admin>} />
         <Route path="/admin/stations"               element={<Admin roles={SUPER_ROLES}><Stations /></Admin>} />
         <Route path="/admin/router-health"          element={<Admin><RouterHealth /></Admin>} />
+        <Route path="/admin/fiber"                  element={<Admin><Fiber /></Admin>} />
+        <Route path="/admin/fiber/onus/:id"         element={<Admin><FiberOnu /></Admin>} />
+        <Route path="/admin/fiber/map"              element={<Admin><FiberMap /></Admin>} />
+        <Route path="/admin/fiber/install"          element={<Admin><FiberInstall /></Admin>} />
         <Route path="/admin/failover-logs"          element={<Admin><FailoverLogs /></Admin>} />
         <Route path="/admin/usage-alerts"           element={<Admin><UsageAlerts /></Admin>} />
 

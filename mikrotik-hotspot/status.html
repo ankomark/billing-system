@@ -148,6 +148,13 @@
           </svg>
           Disconnect Session
         </a>
+        <button class="btn btn-ghost" type="button" id="lineBtn" onclick="checkLine()">
+          <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
+          </svg>
+          Check my line
+        </button>
+        <p id="lineResult" class="refresh-note" style="display:none;margin:4px 0 0"></p>
         <a class="btn btn-ghost" href="$(link-status)">
           <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
             <polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/>
@@ -181,6 +188,39 @@
   }
   fmtBytes(document.getElementById('rxVal'));
   fmtBytes(document.getElementById('txVal'));
+
+  /*
+   * "Is it you or me?" -- the fiber link serving this device, in plain words.
+   * Written with textContent: the message comes from our API, but this page
+   * has no framework escaping anything and should not start trusting HTML.
+   */
+  function checkLine() {
+    var out = document.getElementById('lineResult');
+    var btn = document.getElementById('lineBtn');
+    out.style.display = 'block';
+    if (!API_BASE || API_BASE.indexOf('your-backend') !== -1) {
+      out.textContent = 'Line check is not set up on this hotspot yet.';
+      return;
+    }
+    out.textContent = 'Checking your line...';
+    btn.disabled = true;
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', API_BASE + '/hotspot/line-check/?mac=' + encodeURIComponent('$(mac)')
+      + '&t=' + encodeURIComponent(TENANT_TOKEN) + '&r=' + encodeURIComponent(ROUTER_TOKEN), true);
+    xhr.timeout = 10000;
+    xhr.onload = function () {
+      btn.disabled = false;
+      try {
+        var data = JSON.parse(xhr.responseText);
+        out.textContent = (data && data.message) || 'We could not check your line right now.';
+      } catch (e) { out.textContent = 'We could not check your line right now.'; }
+    };
+    xhr.onerror = xhr.ontimeout = function () {
+      btn.disabled = false;
+      out.textContent = 'We could not reach the network to check. If this keeps happening, contact support.';
+    };
+    xhr.send();
+  }
 </script>
 </body>
 </html>
