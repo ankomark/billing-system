@@ -2,31 +2,31 @@
 # Starlink as overflow for the evening peak — MikroTik RouterOS v7
 # =====================================================================
 #
-# Written for skylink3 (RB5009, ROS 7.19.4): Airtel on MIDLANDS, Starlink in
-# bypass mode on ether1. ether1 is already in the WAN interface list, so the
-# default firewall covers it, and the hotspot masquerade rules match on source
-# subnet rather than out-interface, so they apply to Starlink unchanged.
+# Written for skylink3, now on a CCR2004-1G-12S+2XS (ROS 7.21.4) since the
+# 2026-10-15 cut-over from the RB5009: Airtel on the AIRTEL VLAN (1429 on
+# sfp-sfpplus1), Starlink in bypass mode on ether1. ether1 is in the WAN
+# interface list and is not a bridge port, so the default firewall covers it,
+# and the hotspot masquerade rules match on source subnet rather than
+# out-interface, so they apply to Starlink unchanged.
 #
-# ether1 needs nothing doing to it beyond this file. Checked on 2026-09-24:
-# link down, not a bridge port, already in the WAN list, no address, no DHCP
-# client. Airtel does not come in on it -- MIDLANDS is a VLAN (1429) riding
-# sfp-sfpplus1 -- so plugging the dish into ether1 cannot disturb the fibre.
-# Airtel's technician named that VLAN MIDLANDS when they rebuilt the link on
-# 2026-09-28; before that this file called it AIRTEL_WAN.
-# ether2, ether3, ether4 and ether6 are bridge ports feeding the access points
-# and must not be used for this: ether2 alone was pushing 306 Mbit/s to
-# customers when that was checked.
+# On the RB5009 that VLAN was MIDLANDS (Airtel's technician's name for it,
+# 2026-09-28; AIRTEL_WAN before that) and the LAN bridge was "bridge". On the
+# CCR they are AIRTEL and bridge1. Running the RB5009 copy of this file on the
+# CCR fails on the first route and the first mangle rule.
+# The access points and both OLTs hang off SFP ports on bridge1; ether1 is the
+# only copper port and the only one free for the dish.
 #
 # WHAT IT DOES
 #
 # Every 30 seconds it counts logged-in hotspot clients.
 #
-#   * Above HIGH (380), the newest logins beyond 380 are put on Starlink.
-#     MAX is 0 on skylink3 -- no ceiling, everyone past 380 goes -- which is
-#     the operator's call as of 2026-09-28; see WHY MAX EXISTS for the case
-#     for 35.
-#   * At or below LOW (370), everybody goes back to Airtel.
-#   * In between, nothing changes. The gap stops a count wobbling around 380
+#   * Above HIGH (430), the newest logins beyond 430 are put on Starlink.
+#     MAX is 0 on skylink3 -- no ceiling, everyone past 430 goes -- which is
+#     the operator's call; see WHY MAX EXISTS for the case for 35. HIGH went
+#     380 -> 430 on 2026-10-16, after the move to the CCR and the FAIR queue
+#     going to 400M/500M.
+#   * At or below LOW (420), everybody goes back to Airtel.
+#   * In between, nothing changes. The gap stops a count wobbling around 430
 #     from flipping people back and forth every half minute.
 #
 # WHY MAX EXISTS, AND WHY IT IS 35
@@ -54,7 +54,7 @@
 # A connection leaves by the WAN it was opened on, and stays there until it
 # closes. Moving a client only changes where their NEW connections go. Moving
 # an open one would change its public address mid-stream -- a video call drops,
-# a download restarts, a bank session logs out. So at 380 a client's open
+# a download restarts, a bank session logs out. So at 430 a client's open
 # connections finish on Starlink and everything they open after that uses
 # Airtel.
 #
@@ -66,18 +66,18 @@
 # FAILOVER
 #
 # Separately, Starlink's DHCP default route goes into main at distance 2, so if
-# Airtel's route goes down EVERYONE -- and the billing tunnel -- moves to
-# Starlink. Note that the Airtel route's check-gateway only pings Airtel's own
-# gateway. On 2026-09-20 that gateway kept answering while traffic past it was
-# being lost, so this alone would not have failed over that night.
+# Airtel goes down EVERYONE -- and the billing tunnel -- moves to Starlink, and
+# moves back when Airtel answers again.
 #
-# Measured again on 2026-09-23: 10 pings to the Airtel gateway came back with
-# 10% loss and a 6ms floor, while 20 pings past it to 8.8.8.8 lost 5% at 145ms
-# average. The gateway looks healthier than the path behind it, which is
-# exactly the reading that keeps a dead route alive. A netwatch on something
-# beyond the gateway is what would actually trigger failover -- not included
-# here, because it belongs with the route rather than with overflow, and
-# because raising the Airtel route's distance affects every customer at once.
+# Airtel's own gateway is not a good enough test of "Airtel is up". On
+# 2026-09-20 it kept answering while traffic past it was being lost, and on
+# 2026-09-23 it showed 10% loss at 6ms while 8.8.8.8 behind it showed 5% at
+# 145ms. So since 2026-10-16 the Airtel default is recursive: it goes via
+# 9.9.9.9, which is pinned to Airtel's gateway by a /32 route, and
+# check-gateway pings 9.9.9.9 -- past Airtel's network, not just its first hop.
+# If 9.9.9.9 stops answering for about 10 seconds the Airtel default drops and
+# Starlink's distance-2 route takes over. The /32 keeps the probe on Airtel
+# during failover, so it notices Airtel coming back. Section 5 has the routes.
 #
 # REMOVING IT
 #
@@ -118,7 +118,7 @@ add name=via-starlink fib
 /ip route
 add dst-address=0.0.0.0/0 gateway=100.64.0.1%ether1 routing-table=via-starlink \
     distance=1 check-gateway=ping comment="STARLINK | via-starlink default"
-add dst-address=0.0.0.0/0 gateway=102.0.38.141%MIDLANDS \
+add dst-address=0.0.0.0/0 gateway=102.0.38.141%AIRTEL \
     routing-table=via-starlink distance=2 \
     comment="STARLINK | via-starlink fallback to Airtel"
 
@@ -140,11 +140,11 @@ add list=starlink-local address=10.10.0.0/24 comment="STARLINK | billing tunnel"
 /ip firewall mangle
 add chain=prerouting action=mark-connection new-connection-mark=via-starlink \
     passthrough=yes connection-state=new connection-mark=no-mark \
-    in-interface=bridge src-address-list=starlink-overflow \
+    in-interface=bridge1 src-address-list=starlink-overflow \
     dst-address-list=!starlink-local dst-address-type=!local \
     comment="STARLINK | new connections from overflow clients"
 add chain=prerouting action=mark-routing new-routing-mark=via-starlink \
-    passthrough=no connection-mark=via-starlink in-interface=bridge \
+    passthrough=no connection-mark=via-starlink in-interface=bridge1 \
     dst-address-list=!starlink-local \
     comment="STARLINK | send marked connections out Starlink"
 
@@ -169,8 +169,8 @@ add chain=prerouting action=mark-routing new-routing-mark=via-starlink \
 /system script
 add name=starlink-overflow policy=read,write \
     comment="STARLINK | moves clients above HIGH onto Starlink" source={
-:local high 380
-:local low 370
+:local high 430
+:local low 420
 :local max 0
 # Not "list": inside a `where`, "list=$list" compares the property to itself,
 # matches every address-list entry on the router, and the script empties them
@@ -287,8 +287,8 @@ add name=starlink-overflow interval=30s start-time=startup policy=read,write \
 #   /ip firewall address-list print where list=starlink-overflow
 #       who is on the dish right now
 #
-# Watch the first evening at HIGH: with 380, nothing at all happens until the
-# 381st client logs in. With MAX 0 everyone past 380 goes to the dish; with a
+# Watch the first evening at HIGH: with 430, nothing at all happens until the
+# 431st client logs in. With MAX 0 everyone past 430 goes to the dish; with a
 # ceiling set, a log line like "35 held of 102 wanted" every 30 seconds is MAX
 # doing its job, not a fault -- the rest stay on Airtel.
 #
@@ -300,6 +300,34 @@ add name=starlink-overflow interval=30s start-time=startup policy=read,write \
 # are not using their share and MAX can rise. If it is pinned at 25, MAX is
 # already too high and the people on it are queuing.
 #
+# ---------------------------------------------------------------------
+# 5. Failover: Airtel checked past its own gateway
+# ---------------------------------------------------------------------
+# See FAILOVER at the top. Installed on the CCR on 2026-10-16. The Airtel
+# default that only pinged 102.0.38.141 is kept, disabled, for rollback.
+#
+# target-scope=11 lets the default resolve 9.9.9.9 through the /32 (scope 10)
+# and nothing else -- not Starlink's default -- so the probe can only ever
+# succeed over Airtel.
+
+/ip route
+set [find where dst-address=0.0.0.0/0 gateway=102.0.38.141 routing-table=main] \
+    disabled=yes \
+    comment="AIRTEL | old gateway-only route, replaced by the health-check one (rollback: enable)"
+add dst-address=9.9.9.9/32 gateway=102.0.38.141 scope=10 \
+    comment="AIRTEL | health-check host, always via Airtel"
+add dst-address=0.0.0.0/0 gateway=9.9.9.9 distance=1 target-scope=11 \
+    check-gateway=ping comment="AIRTEL | default via health check"
+
+# ROLLBACK, if the recursive route misbehaves:
+#
+# /ip route enable [find where comment~"old gateway-only"]
+# /ip route disable [find where comment="AIRTEL | default via health check"]
+#
+# Test it at a quiet hour: unplug sfp-sfpplus1 (or disable the AIRTEL VLAN),
+# watch /ip route print where dst-address=0.0.0.0/0 switch to 192.168.1.1, and
+# the billing tunnel come back over Starlink; plug it back and watch it return.
+
 # =====================================================================
 # REMOVAL -- paste this block to take all of the above back off
 # =====================================================================
