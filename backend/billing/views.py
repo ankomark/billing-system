@@ -297,20 +297,46 @@ class PhoneAwareSearchFilter(SearchFilter):
     """
 
     def filter_queryset(self, request, queryset, view):
-        found = super().filter_queryset(request, queryset, view)
-
         terms = self.get_search_terms(request)
         if not terms:
-            return found
+            return queryset
 
-        fragment = phone_fragment(" ".join(terms))
-        if not fragment:
-            return found
+        # Why this does not call SearchFilter's own filtering:
+        #
+        # Searching `subscriptions__vouchers__code` and `payments__reference`
+        # through the ORM joined every customer to every subscription x voucher
+        # x payment they had -- one row per combination, so a long-standing
+        # hotspot subscriber with fifty vouchers and fifty payments became 2500
+        # rows -- and then DISTINCT-ed the lot. Each extra word in the search
+        # added another copy of those joins, and the paginator's COUNT paid for
+        # all of it a second time. That is what made the search slow.
+        #
+        # Here the related identifiers are looked up in their own tables, and
+        # only the customer ids that matched come back. The customer table is
+        # scanned once, nothing multiplies, and no DISTINCT is needed. Same
+        # results: every term must match, any field may match it.
+        local_fields = getattr(view, "search_fields", None) or []
+        related = getattr(view, "search_related", None) or {}
+
+        matched = Q()
+        for term in terms:
+            any_field = Q()
+            for field in local_fields:
+                any_field |= Q(**{f"{field}__icontains": term})
+            for model, (lookup, customer_field) in related.items():
+                any_field |= Q(pk__in=model.objects
+                               .filter(**{f"{lookup}__icontains": term})
+                               .values(customer_field))
+            matched &= any_field
 
         # OR-ed with what the ordinary search found rather than replacing it:
         # a term can be a number AND something else, and dropping the rest
         # would make searching by phone hide a match on a voucher code.
-        return (found | queryset.filter(phone__icontains=fragment)).distinct()
+        fragment = phone_fragment(" ".join(terms))
+        if fragment:
+            matched |= Q(phone__icontains=fragment)
+
+        return queryset.filter(matched)
 
 
 class CustomerViewSet(viewsets.ModelViewSet):
@@ -326,9 +352,13 @@ class CustomerViewSet(viewsets.ModelViewSet):
         "phone",
         "pppoe_username",
         "hotspot_username",
-        "subscriptions__vouchers__code",
-        "payments__reference",
     ]
+    # Identifiers that live on other tables. Searched as subqueries that return
+    # customer ids rather than as joins -- see PhoneAwareSearchFilter.
+    search_related = {
+        Voucher: ("code", "subscription__customer_id"),
+        Payment: ("reference", "customer_id"),
+    }
 
     def get_serializer_class(self):
         # Only the detail page needs subscriptions/vouchers. Writes keep using

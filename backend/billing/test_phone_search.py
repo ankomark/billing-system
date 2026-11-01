@@ -139,3 +139,92 @@ class FindingACustomer(TestCase):
 
     def test_a_search_that_matches_nothing_returns_nothing(self):
         self.assertEqual(self.search("254799999999"), set())
+
+
+class SearchingIdentifiersOnOtherTables(TestCase):
+    """
+    Voucher codes and payment references live on their own tables. They are
+    searched as subqueries rather than joins -- a join multiplied every
+    customer by every voucher and payment they had, which is what made the
+    search slow -- and this holds the results to what the join gave.
+    """
+
+    def setUp(self):
+        from datetime import timedelta
+        from decimal import Decimal
+        from unittest.mock import patch
+
+        from django.utils import timezone
+
+        from billing.models import Package, Payment, Subscription, Voucher
+
+        self.tenant = Tenant.objects.get(slug="skylink")
+        with tenant_context(self.tenant), \
+                patch("billing.models.notify_customer"):
+            router = RouterDevice.objects.create(
+                tenant=self.tenant, name="find-r2", ip_address="10.9.0.151",
+                username="u", password="p")
+            package = Package.objects.create(
+                tenant=self.tenant, name="Search 2hr", download_speed=5,
+                upload_speed=2, price=Decimal("50.00"), duration_value=2,
+                duration_unit="hours", data_cap_mb=0, is_hotspot=True)
+            self.regular = Customer.objects.create(
+                tenant=self.tenant, full_name="Many Vouchers",
+                phone="254722000111", connection_type="hotspot",
+                router=router, status="active")
+            self.other = Customer.objects.create(
+                tenant=self.tenant, full_name="Someone Else",
+                phone="254722000222", connection_type="hotspot",
+                router=router, status="active")
+
+            # Several of each, so a join would have returned this customer
+            # once per combination.
+            for i in range(3):
+                sub = Subscription.objects.create(
+                    tenant=self.tenant, customer=self.regular, package=package)
+                Voucher.objects.create(
+                    tenant=self.tenant, subscription=sub, code=f"ZQX{i}AB",
+                    expires_at=timezone.now() + timedelta(hours=2))
+                # bulk_create: Payment.save() provisions access, which is not
+                # what is under test here.
+                Payment.objects.bulk_create([Payment(
+                    tenant=self.tenant, customer=self.regular,
+                    subscription=sub, amount=package.price, method="mpesa",
+                    reference=f"TKR{i}QWERTY")])
+
+        U = get_user_model()
+        admin = U.objects.create_user(
+            username="find-admin2", password="x", role="tenant_admin",
+            tenant=self.tenant)
+        self.client = APIClient()
+        self.client.force_authenticate(user=admin)
+
+    def search(self, term):
+        resp = self.client.get("/api/customers/", {"search": term})
+        self.assertEqual(resp.status_code, 200, resp.content[:200])
+        return [r["id"] for r in resp.data["results"]], resp.data["count"]
+
+    def test_a_voucher_code_finds_its_customer(self):
+        ids, _ = self.search("zqx1ab")
+        self.assertEqual(ids, [self.regular.id])
+
+    def test_a_payment_reference_finds_its_customer(self):
+        ids, _ = self.search("TKR2QWERTY")
+        self.assertEqual(ids, [self.regular.id])
+
+    def test_a_customer_with_many_matches_is_listed_once(self):
+        """Every voucher matches "ZQX"; the customer is still one row."""
+        ids, count = self.search("ZQX")
+        self.assertEqual(ids, [self.regular.id])
+        self.assertEqual(count, 1)
+
+    def test_every_word_must_match_somewhere(self):
+        ids, _ = self.search("Many ZQX0AB")
+        self.assertEqual(ids, [self.regular.id])
+        ids, _ = self.search("Someone ZQX0AB")
+        self.assertEqual(ids, [])
+
+    def test_a_number_still_finds_its_customer(self):
+        """The phone match is OR-ed in, so it still finds the number."""
+        ids, _ = self.search("0722000222")
+        self.assertEqual(ids, [self.other.id])
