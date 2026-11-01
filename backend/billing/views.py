@@ -38,7 +38,7 @@ from billing.models import Customer,Subscription,PPPoEUsageRecord,PPPoEUsageStat
 from billing.notifications import send_sms, send_whatsapp, notify_customer
 from billing.serializers import BroadcastSerializer
 from billing.mpesa_client import get_mpesa_access_token, missing_mpesa_keys
-from django.db.models import Count, Prefetch, Q, Sum
+from django.db.models import Count, OuterRef, Prefetch, Q, Subquery, Sum
 from django.db.models.functions import TruncDate, TruncMonth
 from billing.services.usage import estate_usage_totals
 from billing.services.provisioning_state import is_provisioned
@@ -79,7 +79,7 @@ from .serializers import (PlatformPlanSerializer, TenantSubscriptionSerializer,
                           OperatorCreateSerializer, OperatorUpdateSerializer,
                           ChangePasswordSerializer, TenantUserSerializer,
                           StationSerializer,)
-from .serializers import (CustomerSerializer,CustomerDetailSerializer,PackageSerializer,SubscriptionSerializer,InvoiceSerializer,  PaymentSerializer,SystemSettingSerializer,)
+from .serializers import (CustomerSerializer,CustomerDetailSerializer,CustomerSubscriptionSerializer,PackageSerializer,SubscriptionSerializer,InvoiceSerializer,  PaymentSerializer,SystemSettingSerializer,)
 from billing.tasks.notification_tasks import notify_customer_task,send_sms_task, send_whatsapp_task
 from .config import get_setting
 from rest_framework.permissions import IsAuthenticated
@@ -484,31 +484,44 @@ class CustomerViewSet(viewsets.ModelViewSet):
         )
 
         if self.action in ("retrieve", "list"):
+            # The code a hotspot row shows, worked out by the database. The
+            # list used to prefetch every subscription and every voucher the
+            # page's customers had ever bought just to pick this one out.
+            qs = qs.annotate(latest_voucher_code=Subquery(
+                Voucher.objects
+                .filter(subscription__customer=OuterRef("pk"), is_active=True)
+                .order_by("-created_at")
+                .values("code")[:1]
+            ))
+
+        if self.action == "retrieve":
+            # Only the most recent purchases. A regular hotspot subscriber has
+            # bought hundreds of times, and sending all of them made the page
+            # 150 KB and hundreds of cards when the question is nearly always
+            # about the last one. The rest come from the `purchases` action,
+            # a page at a time, when somebody asks for them.
+            qs = qs.annotate(purchases_total=Subquery(
+                Subscription.objects
+                .filter(customer=OuterRef("pk"))
+                .order_by()
+                .values("customer")
+                .annotate(n=Count("id"))
+                .values("n")
+            ))
             # Prefetch what the serializers walk, so rendering stays at a fixed
-            # number of queries. The list needs it too now that a row carries
-            # the subscriber's voucher — without it that is one extra query per
-            # customer on a paginated page.
+            # number of queries.
             qs = qs.prefetch_related(
+                # Onto its own attribute, with the nested lookups riding on
+                # the sliced queryset. Attached to `subscriptions` itself,
+                # Django tries to filter the sliced queryset again and raises
+                # a TypeError -- which DRF's get_object reports as a 404.
                 Prefetch(
                     "subscriptions",
-                    queryset=Subscription.objects
-                        # `invoice` as well as `package`: the row now carries
-                        # what is owed on it, so the counter can be told which
-                        # subscription a payment settles. It is a reverse
-                        # one-to-one, which select_related handles — read per
-                        # subscription instead, it is one query each and the
-                        # detail page grows with the length of somebody's
-                        # history. CustomerDetailSerializerTests holds the
-                        # count fixed and caught exactly that.
-                        .select_related("package", "invoice")
-                        .order_by("-expiry_date"),
+                    queryset=self._purchases_queryset()
+                    .prefetch_related("vouchers", "invoice__mpesa_transactions")
+                    [:self.RECENT_PURCHASES],
+                    to_attr="recent_purchases",
                 ),
-                "subscriptions__vouchers",
-                # Who actually paid, for the row that shows it. Without this
-                # the serializer reaches through invoice -> transactions once
-                # per subscription, which is the shape CustomerDetailSerializer
-                # Tests holds the count against.
-                "subscriptions__invoice__mpesa_transactions",
                 "devices",
             )
 
@@ -519,6 +532,47 @@ class CustomerViewSet(viewsets.ModelViewSet):
         if conn_filter:
             qs = qs.filter(connection_type=conn_filter)
         return qs
+
+    # How many purchases the detail page opens with.
+    RECENT_PURCHASES = 10
+
+    @staticmethod
+    def _purchases_queryset():
+        # `invoice` as well as `package`: the row carries what is owed on it,
+        # so the counter can be told which subscription a payment settles. It
+        # is a reverse one-to-one, which select_related handles — read per
+        # subscription instead, it is one query each. CustomerDetailSerializer
+        # Tests holds the count fixed and caught exactly that.
+        return (
+            Subscription.objects
+            .select_related("package", "invoice")
+            .order_by("-expiry_date", "-id")
+        )
+
+    @action(detail=True, methods=["get"], url_path="purchases")
+    def purchases(self, request, pk=None):
+        """
+        Older purchases, a page at a time, newest first.
+
+        The detail page opens with the most recent few; this is what its
+        "show older" asks for. Same rows, same serializer, so a card looks
+        the same whichever request delivered it.
+        """
+        customer = self.get_object()
+        subs = (
+            self._purchases_queryset()
+            .filter(customer=customer)
+            .prefetch_related("vouchers", "invoice__mpesa_transactions")
+        )
+        paginator = StandardPagination()
+        page = paginator.paginate_queryset(subs, request, view=self)
+        # Usage is only shown against the subscription in force, which the
+        # detail page already has.
+        for sub in page:
+            sub.customer = customer
+        data = CustomerSubscriptionSerializer(
+            page, many=True, context={"request": request}).data
+        return paginator.get_paginated_response(data)
 
     def perform_destroy(self, instance):
         """

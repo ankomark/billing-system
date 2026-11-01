@@ -53,7 +53,10 @@ class CustomerSerializer(serializers.ModelSerializer):
     def get_voucher_code(self, obj):
         if obj.connection_type != "hotspot":
             return None
-        # Prefetched by the list view, so this costs no query per row.
+        # Annotated by the list and detail views, so this costs no query per
+        # row and does not need every subscription fetched to find it.
+        if hasattr(obj, "latest_voucher_code"):
+            return obj.latest_voucher_code
         vouchers = [
             v
             for sub in obj.subscriptions.all()
@@ -268,14 +271,19 @@ class CustomerDetailSerializer(CustomerSerializer):
     not pay for the nested joins on every row.
     """
     router_name   = serializers.SerializerMethodField()
-    subscriptions = CustomerSubscriptionSerializer(many=True, read_only=True)
+    # The most recent purchases only -- see CustomerViewSet.get_queryset.
+    subscriptions = serializers.SerializerMethodField()
     vouchers      = serializers.SerializerMethodField()
     devices       = serializers.SerializerMethodField()
     data_usage    = serializers.SerializerMethodField()
+    # `subscriptions` holds only the most recent purchases; this is how many
+    # there are in all, so the page knows whether to offer the older ones.
+    purchases_total = serializers.SerializerMethodField()
 
     class Meta(CustomerSerializer.Meta):
         fields = CustomerSerializer.Meta.fields + [
             "router_name",
+            "purchases_total",
             "subscriptions",
             "vouchers",
             "devices",
@@ -302,6 +310,22 @@ class CustomerDetailSerializer(CustomerSerializer):
         return super().to_representation(instance)
 
     @staticmethod
+    def _recent(obj):
+        """
+        The purchases the view fetched: the newest few, newest first, on
+        `recent_purchases`. Falls back to the relation for an instance that
+        did not come through the view.
+        """
+        recent = getattr(obj, "recent_purchases", None)
+        if recent is None:
+            recent = list(obj.subscriptions.all())
+        return recent
+
+    def get_subscriptions(self, obj):
+        return CustomerSubscriptionSerializer(
+            self._recent(obj), many=True, context=self.context).data
+
+    @staticmethod
     def _current_subscription(obj):
         """
         The subscription in force, chosen from what the view already fetched.
@@ -312,7 +336,7 @@ class CustomerDetailSerializer(CustomerSerializer):
         page into five extra queries, caught by the test that exists to stop
         exactly that.
         """
-        subs = list(obj.subscriptions.all())   # prefetched, already ordered
+        subs = CustomerDetailSerializer._recent(obj)   # prefetched, ordered
         if not subs:
             return None
         return next((s for s in subs if s.status == "active"), subs[0])
@@ -414,10 +438,18 @@ class CustomerDetailSerializer(CustomerSerializer):
     def get_router_name(self, obj):
         return obj.router.name if obj.router_id else None
 
+    def get_purchases_total(self, obj):
+        total = getattr(obj, "purchases_total", None)
+        if total is None:
+            # Not annotated (or nothing bought): what was fetched is all
+            # there is to go on.
+            total = len(self._recent(obj))
+        return total
+
     def get_vouchers(self, obj):
         # Vouchers hang off Subscription, not Customer — flatten them here.
         # Relies on the view prefetching subscriptions__vouchers.
-        vouchers = [v for sub in obj.subscriptions.all() for v in sub.vouchers.all()]
+        vouchers = [v for sub in self._recent(obj) for v in sub.vouchers.all()]
         vouchers.sort(key=lambda v: v.created_at, reverse=True)
         return CustomerVoucherSerializer(vouchers, many=True).data
 

@@ -14,6 +14,17 @@ export const fetchCustomerDetail = async (id) => {
   return res.data;
 };
 
+/**
+ * Purchases, a page at a time, newest first. The detail page opens with only
+ * the most recent few; this fetches the rest when someone asks for them.
+ */
+export const fetchCustomerPurchases = async (id, { page = 1, pageSize = 25 } = {}) => {
+  const res = await api.get(`customers/${id}/purchases/`, {
+    params: { page, page_size: pageSize },
+  });
+  return res.data;
+};
+
 export const createCustomer = async (data) => {
   const res = await api.post("customers/", data);
   return res.data;

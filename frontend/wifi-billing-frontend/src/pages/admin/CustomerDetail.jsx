@@ -1,5 +1,5 @@
 import { useParams, useNavigate } from "react-router-dom";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import toast from "react-hot-toast";
 import { ArrowLeft, Banknote, Edit, KeyRound, Router as RouterIcon, Gift, Send, Ban } from "lucide-react";
@@ -14,6 +14,7 @@ import StatusBadge from "../../components/ui/StatusBadge";
 import { Skeleton, SkeletonText } from "../../components/ui/Skeleton";
 import {
   fetchCustomerDetail,
+  fetchCustomerPurchases,
   suspendOrResumeCustomer,
   resendVoucher,
   blockDevice,
@@ -389,16 +390,33 @@ export default function CustomerDetail() {
           {!customer.subscriptions?.length ? (
             <p className="px-5 py-6 text-slate-500 text-sm">No purchases yet.</p>
           ) : (
-            customer.subscriptions.map((s) => (
-              <PurchaseCard
-                key={s.id}
-                sub={s}
-                canComp={canComp}
-                busy={actionLoading}
-                onRetire={handleDeactivateVoucher}
-                onResend={handleResendVoucher}
+            <>
+              {customer.subscriptions.map((s) => (
+                <PurchaseCard
+                  key={s.id}
+                  sub={s}
+                  canComp={canComp}
+                  busy={actionLoading}
+                  onRetire={handleDeactivateVoucher}
+                  onResend={handleResendVoucher}
+                />
+              ))}
+              <OlderPurchases
+                customerId={id}
+                shown={customer.subscriptions}
+                total={customer.purchases_total ?? customer.subscriptions.length}
+                renderCard={(s) => (
+                  <PurchaseCard
+                    key={s.id}
+                    sub={s}
+                    canComp={canComp}
+                    busy={actionLoading}
+                    onRetire={handleDeactivateVoucher}
+                    onResend={handleResendVoucher}
+                  />
+                )}
               />
-            ))
+            </>
           )}
         </div>
 
@@ -407,6 +425,67 @@ export default function CustomerDetail() {
   );
 }
 
+
+// How many purchases the detail endpoint opens with (RECENT_PURCHASES on the
+// server). Older pages are fetched at the same size, starting from page 2.
+const RECENT_PURCHASES = 10;
+
+/**
+ * The rest of somebody's purchase history, fetched only when asked for.
+ *
+ * Nearly every question at the counter is about the last purchase, so the
+ * page opens with the most recent few. A regular hotspot subscriber has
+ * bought hundreds of times, and sending all of that up front made the page
+ * slow to load for an answer that was at the top of it.
+ */
+function OlderPurchases({ customerId, shown, total, renderCard }) {
+  const [open, setOpen] = useState(false);
+  const {
+    data, fetchNextPage, hasNextPage, isFetching, isError,
+  } = useInfiniteQuery({
+    // Under ["customer", id] so every action that refreshes the customer
+    // refreshes these too.
+    queryKey: ["customer", customerId, "purchases"],
+    queryFn: ({ pageParam }) =>
+      fetchCustomerPurchases(customerId, { page: pageParam, pageSize: RECENT_PURCHASES }),
+    initialPageParam: 2,
+    getNextPageParam: (last) => (last.next ? last.current_page + 1 : undefined),
+    enabled: open,
+  });
+
+  const remaining = total - shown.length;
+  if (remaining <= 0) return null;
+
+  // A purchase made while the page was open shifts every page down by one;
+  // skip anything already on screen rather than show it twice.
+  const seen = new Set(shown.map((s) => s.id));
+  const older = (data?.pages ?? [])
+    .flatMap((p) => p.results)
+    .filter((s) => !seen.has(s.id) && seen.add(s.id));
+  const left = total - shown.length - older.length;
+
+  return (
+    <>
+      {older.map(renderCard)}
+      {isError && (
+        <p className="px-5 py-3 text-sm text-rose-400">
+          Could not load older purchases.
+        </p>
+      )}
+      {(!open || hasNextPage || isFetching) && left > 0 && (
+        <button
+          onClick={() => (open ? fetchNextPage() : setOpen(true))}
+          disabled={isFetching}
+          className="w-full border-t border-white/5 px-5 py-3 text-sm font-medium text-blue-400 transition-colors hover:bg-white/5 disabled:opacity-60"
+        >
+          {isFetching
+            ? "Loading…"
+            : `Show older purchases (${left.toLocaleString()} more)`}
+        </button>
+      )}
+    </>
+  );
+}
 
 /**
  * One purchase, whole.

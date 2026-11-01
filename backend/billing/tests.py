@@ -1069,6 +1069,67 @@ class CustomerDetailSerializerTests(TestCase):
         self.assertEqual(len(resp.data["subscriptions"]), 5)
         self.assertEqual(len(resp.data["vouchers"]), 5)
 
+    def _buy(self, n):
+        from datetime import timedelta
+        base = timezone.now()
+        for i in range(n):
+            # Distinct expiry dates so "newest first" has one right answer.
+            sub = Subscription.objects.create(
+                customer=self.customer, package=self.package)
+            Subscription.objects.filter(pk=sub.pk).update(
+                expiry_date=base + timedelta(days=100 + i))
+
+    def test_detail_opens_with_only_the_recent_purchases(self):
+        """
+        A long history is not sent up front: the detail page gets the newest
+        few and the total, and fetches the rest when somebody asks.
+        """
+        self._buy(14)   # 15 in all, with the one from setUp
+
+        resp = self._detail()
+
+        subs = resp.data["subscriptions"]
+        self.assertEqual(len(subs), 10)
+        self.assertEqual(resp.data["purchases_total"], 15)
+        expiries = [s["expiry_date"] for s in subs]
+        self.assertEqual(expiries, sorted(expiries, reverse=True))
+
+    def test_older_purchases_come_a_page_at_a_time(self):
+        self._buy(14)
+        url = f"/api/customers/{self.customer.id}/purchases/"
+
+        first = self.client.get(url, {"page": 1, "page_size": 10})
+        second = self.client.get(url, {"page": 2, "page_size": 10})
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.data["count"], 15)
+        detail_ids = [s["id"] for s in self._detail().data["subscriptions"]]
+        # Page 1 is exactly what the detail page opened with, so page 2 picks
+        # up where it left off.
+        self.assertEqual([s["id"] for s in first.data["results"]], detail_ids)
+        self.assertEqual(len(second.data["results"]), 5)
+        self.assertFalse(
+            set(detail_ids) & {s["id"] for s in second.data["results"]})
+
+    def test_purchases_are_scoped_to_the_operator(self):
+        """Another operator's customer id is a 404, not their history."""
+        other = Tenant.objects.create(name="Other Op", slug="other-op-purch")
+        with tenant_context(other):
+            theirs = Customer.objects.create(
+                tenant=other, full_name="Not Yours", phone="254799000999",
+                connection_type="pppoe")
+        # A real token, as the login view builds it: force_authenticate skips
+        # the tenant claim, and with it the scoping under test.
+        client = APIClient()
+        token = TenantTokenObtainPairSerializer.get_token(
+            make_admin("purch_scope_admin")).access_token
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        resp = client.get(f"/api/customers/{theirs.id}/purchases/")
+        self.assertEqual(resp.status_code, 404)
+        mine = client.get(f"/api/customers/{self.customer.id}/purchases/")
+        self.assertEqual(mine.status_code, 200)
+
     def test_patch_still_preserves_pppoe_password(self):
         """Write path must keep using CustomerSerializer's password guard."""
         self.customer.pppoe_password = "originalpass"
