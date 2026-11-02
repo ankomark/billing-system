@@ -239,6 +239,10 @@ class AdminActionLog(models.Model):
     DELETE_OPERATOR = "delete_operator"
     COMP_VOUCHER = "comp_voucher"
     RECORD_PAYMENT = "record_payment"
+    ENABLE_MFA = "enable_mfa"
+    DISABLE_MFA = "disable_mfa"
+    RESET_MFA = "reset_mfa"
+    SIGN_OUT_EVERYWHERE = "sign_out_everywhere"
 
     ACTION_CHOICES = (
         (RESET_PASSWORD, "Reset password"),
@@ -252,6 +256,10 @@ class AdminActionLog(models.Model):
         (CONFIGURE_PAYMENTS, "Configured payment credentials"),
         (CHANGE_PLAN, "Changed plan"),
         (DELETE_OPERATOR, "Deleted operator permanently"),
+        (ENABLE_MFA, "Turned on two-step sign-in"),
+        (DISABLE_MFA, "Turned off two-step sign-in"),
+        (RESET_MFA, "Reset two-step sign-in"),
+        (SIGN_OUT_EVERYWHERE, "Signed out everywhere"),
     )
 
     actor = models.ForeignKey(
@@ -364,6 +372,90 @@ def default_tenant():
     )
 
 
+class LoginEvent(models.Model):
+    """
+    One attempt to sign in, and how it went.
+
+    What the account lockout counts lives in the cache, because it has to
+    expire by itself. This is the record a person reads afterwards: an
+    operator wondering whether that was them at 03:00, or someone working out
+    how an account was got into. Deliberately not tenant-scoped -- it is
+    written before anyone is signed in, and read back filtered explicitly.
+    """
+
+    SUCCESS = "success"
+    FAILED = "failed"
+    LOCKED = "locked"
+    MFA_FAILED = "mfa_failed"
+    OUTCOMES = (
+        (SUCCESS, "Signed in"),
+        (FAILED, "Wrong username or password"),
+        (LOCKED, "Refused: too many failed attempts"),
+        (MFA_FAILED, "Wrong verification code"),
+    )
+
+    PASSWORD = "password"
+    TOTP = "totp"
+    BACKUP_CODE = "backup_code"
+    ADMIN_SITE = "admin_site"
+    METHODS = (
+        (PASSWORD, "Password"),
+        (TOTP, "Password and authenticator code"),
+        (BACKUP_CODE, "Password and backup code"),
+        (ADMIN_SITE, "Django admin"),
+    )
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="login_events")
+    # Copied from the user at the time, so an operator admin can list their
+    # team's sign-ins without a join through accounts that may since have
+    # moved.
+    tenant = models.ForeignKey(
+        "Tenant", null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="+")
+    # What was typed, which may be nobody's username at all.
+    username = models.CharField(max_length=150)
+    ip = models.GenericIPAddressField(null=True, blank=True)
+    user_agent = models.CharField(max_length=300, blank=True)
+    # A hash of the random id the browser keeps for itself -- see
+    # services/auth.js. How "a new device" is told from "the same laptop on a
+    # different network".
+    device = models.CharField(max_length=64, blank=True)
+    outcome = models.CharField(max_length=20, choices=OUTCOMES)
+    method = models.CharField(max_length=20, choices=METHODS, blank=True)
+    new_device = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+        indexes = [
+            models.Index(fields=["user", "-created_at"]),
+            models.Index(fields=["tenant", "-created_at"]),
+        ]
+
+    def __str__(self):
+        return f"{self.username} {self.outcome} {self.created_at:%Y-%m-%d %H:%M}"
+
+
+class MFABackupCode(models.Model):
+    """
+    A one-time code for when the phone with the authenticator is not to hand.
+
+    Stored as a keyed hash, never the code: these are as good as the
+    authenticator for getting in. The codes are long random strings, so a
+    fast keyed hash is enough -- the slow hashing passwords need is for
+    things people choose.
+    """
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+        related_name="mfa_backup_codes")
+    code_hash = models.CharField(max_length=64, unique=True)
+    used_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
 class TenantScopedModel(models.Model):
     """
     Base for every model owned by exactly one operator.
@@ -452,6 +544,21 @@ class User(AbstractUser):
     # working for up to 24 hours after the password it was issued against had
     # been replaced. That is precisely the window a reset exists to close.
     token_version = models.PositiveIntegerField(default=0)
+
+    # Two-step sign-in: a code from an authenticator app (TOTP, RFC 6238) on
+    # top of the password. See billing/mfa.py.
+    #
+    # The secret is encrypted at rest like router passwords are: a database
+    # dump alone must not be enough to mint codes. It is written when setup
+    # starts and only trusted once `mfa_enabled` is set, which happens when
+    # the holder proves their app produces the right codes.
+    mfa_secret = EncryptedCharField(blank=True, default="")
+    mfa_enabled = models.BooleanField(default=False)
+    mfa_enabled_at = models.DateTimeField(null=True, blank=True)
+    # The last 30-second step a code was accepted for. A code is good for its
+    # whole window, so without this one read over a shoulder could be replayed
+    # straight away.
+    mfa_last_step = models.BigIntegerField(default=0)
 
     objects = BillingUserManager()
 

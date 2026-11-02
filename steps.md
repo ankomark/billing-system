@@ -1495,6 +1495,33 @@ the old schema. Vercel redeploys the frontend on push by itself.
 
 ---
 
+## Sign-in security
+
+What protects the dashboard login, and the knobs. Code: `billing/login_security.py`,
+`billing/mfa.py`, `billing/auth_views.py`.
+
+- **Lockout.** 10 wrong passwords (or codes) for one username from one IP
+  locks that pair for 15 minutes; 50 from anywhere in an hour locks the
+  username. Covers the Django admin too. The account's operator gets an SMS
+  on their contact phone when it trips.
+- **Two-step sign-in** is required for `MFA_REQUIRED_ROLES` (default
+  `platform_owner,platform_staff,tenant_admin`). Those accounts are walked
+  through setting it up at their next sign-in. To relax it in an emergency,
+  set `MFA_REQUIRED_ROLES=` (empty, or fewer roles) in `.env` and restart web.
+- **Lost phone and lost backup codes:**
+  `docker compose exec -T web python manage.py reset_mfa <username>` — turns it
+  off and ends their sessions; they set it up again at the next sign-in.
+- **Django admin** asks for the code as well. Move it off `/admin/` by setting
+  `DJANGO_ADMIN_PATH=some-unguessable-path/` in `.env` (trailing slash).
+- **Alerts for platform accounts** go to `SECURITY_ALERT_PHONE` (a platform
+  setting or env var). Operator accounts' alerts go to the operator's contact
+  phone. Both are sent through the platform's own SMS/WhatsApp, not the
+  operator's credit.
+- **Breached-password check** calls api.pwnedpasswords.com with the first five
+  characters of the password's SHA-1 only. `PASSWORD_BREACH_CHECK=0` turns it off.
+
+---
+
 ## Running the tests on the server
 
 ```bash

@@ -1,11 +1,10 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from rest_framework_simplejwt.views import TokenRefreshView
+from . import auth_views
 
 from .views import (
     home,
     health_check,
-    ThrottledLoginView,
     UserProfileView,
     ChangePasswordView,
     TenantUserViewSet,
@@ -147,8 +146,19 @@ urlpatterns = [
     path("health/", health_check, name="health-check"),
 
     # ─── Auth ────────────────────────────────────────────────────────────────
-    path("api/auth/login/",   ThrottledLoginView.as_view(), name="token_obtain_pair"),
-    path("api/auth/refresh/", TokenRefreshView.as_view(),   name="token_refresh"),
+    # Signing in, in one or two steps -- see billing/auth_views.py and mfa.py.
+    path("api/auth/login/",     auth_views.LoginView.as_view(),     name="token_obtain_pair"),
+    path("api/auth/login/mfa/", auth_views.MFALoginView.as_view(),  name="login-mfa"),
+    path("api/auth/refresh/",   auth_views.CheckedTokenRefreshView.as_view(), name="token_refresh"),
+    path("api/auth/logout/",    auth_views.LogoutView.as_view(),    name="logout"),
+    path("api/auth/logout-everywhere/", auth_views.LogoutEverywhereView.as_view(), name="logout-everywhere"),
+    path("api/auth/login-history/",     auth_views.LoginHistoryView.as_view(),     name="login-history"),
+    path("api/auth/mfa/",              auth_views.MFAStatusView.as_view(),  name="mfa-status"),
+    path("api/auth/mfa/setup/",        auth_views.MFASetupView.as_view(),   name="mfa-setup"),
+    path("api/auth/mfa/confirm/",      auth_views.MFAConfirmView.as_view(), name="mfa-confirm"),
+    path("api/auth/mfa/disable/",      auth_views.MFADisableView.as_view(), name="mfa-disable"),
+    path("api/auth/mfa/backup-codes/", auth_views.BackupCodesView.as_view(), name="mfa-backup-codes"),
+    path("api/auth/mfa/verify/",       auth_views.StepUpView.as_view(),     name="mfa-step-up"),
     path("api/auth/profile/", UserProfileView.as_view(),    name="auth-profile"),
     path("api/auth/change-password/", ChangePasswordView.as_view(), name="change-password"),
 

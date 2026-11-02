@@ -1,5 +1,5 @@
 """
-The test runner, which exists to turn one production setting off.
+The test runner, which exists to turn production settings off for a test run.
 
 SECURE_SSL_REDIRECT is on whenever DEBUG is off, which is every deployed
 environment and therefore every container anyone runs the suite in. Django's
@@ -31,7 +31,8 @@ Nothing is lost by not exercising the redirect. It is Django's middleware
 acting on a Django setting; the behaviour belongs to Django's own tests, and
 production still redirects because production does not run this runner.
 
-Everything else about the run is DiscoverRunner's.
+Everything else about the run is DiscoverRunner's, bar the breach check -- see
+setup_test_environment.
 """
 
 from django.conf import settings
@@ -47,3 +48,10 @@ class BillingTestRunner(DiscoverRunner):
         # __init__ and keeps it, so setting it any later than this would have
         # no effect on a handler that had already answered a request.
         settings.SECURE_SSL_REDIRECT = False
+
+        # And one more, for the same kind of reason: a test must not reach
+        # out to the internet. The breach check asks Have I Been Pwned about
+        # every password a test sets, which made the suite depend on a
+        # third-party service and on the network of whoever ran it. Its own
+        # tests switch it back on with the HTTP call mocked.
+        settings.PASSWORD_BREACH_CHECK = False

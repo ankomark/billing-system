@@ -8,6 +8,9 @@ and schemas resolves DEFAULT_AUTHENTICATION_CLASSES at import time — back into
 the module still being imported, before the class existed.
 """
 
+import time
+
+from django.core.cache import cache
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework_simplejwt.exceptions import AuthenticationFailed
 
@@ -15,6 +18,25 @@ TENANT_CLAIM = "tenant_id"
 VERSION_CLAIM = "tv"
 
 _ABSENT = object()
+
+
+def _revoked_key(jti):
+    return f"jwt:revoked:{jti}"
+
+
+def revoke_access_token(token):
+    """
+    Refuse this access token from now on, though it has not expired.
+
+    What makes signing out end the session on the server. Kept in the cache
+    only until the token would have expired anyway, so the list never grows.
+    """
+    jti = token.get("jti")
+    if not jti:
+        return
+    ttl = int(token.get("exp", 0) - time.time())
+    if ttl > 0:
+        cache.set(_revoked_key(jti), 1, ttl)
 
 
 class TenantAwareJWTAuthentication(JWTAuthentication):
@@ -57,6 +79,13 @@ class TenantAwareJWTAuthentication(JWTAuthentication):
         #
         # Tokens predating the claim have no version to compare and are left
         # alone; they expire within a day of this deploying.
+        jti = token.payload.get("jti")
+        if jti and cache.get(_revoked_key(jti)):
+            raise AuthenticationFailed(
+                "You have signed out. Please sign in again.",
+                code="token_revoked",
+            )
+
         version = token.payload.get(VERSION_CLAIM, _ABSENT)
         if version is not _ABSENT and version != user.token_version:
             raise AuthenticationFailed(

@@ -27,6 +27,7 @@ flower>=2.0             # the `flower` service in docker-compose.yml needs this
 
 # ── Integrations ─────────────────────────────────────────────────────────────
 librouteros>=3.2          # MikroTik RouterOS API
+segno>=1.6                # QR codes for setting up two-step sign-in (pure Python)
 requests>=2.28            # M-Pesa Daraja, Africa's Talking, WhatsApp Cloud API
 
 # ── Utilities ────────────────────────────────────────────────────────────────

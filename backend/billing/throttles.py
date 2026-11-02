@@ -5,6 +5,24 @@ class LoginRateThrottle(AnonRateThrottle):
     scope = "login"
 
 
+class MFARateThrottle(AnonRateThrottle):
+    """
+    Checking a code: signing in with one, setting it up, confirming an
+    action. Its own bucket rather than the login one, so that the two steps
+    of one sign-in do not spend two of the five a minute an office behind one
+    address shares. Guessing is bounded by the account lockout regardless --
+    wrong codes count towards it exactly as wrong passwords do.
+
+    Keyed by address even when signed in (AnonRateThrottle keys signed-in
+    users by account), which is what is wanted: per account is the lockout's
+    job.
+    """
+    scope = "mfa"
+
+    def get_cache_key(self, request, view):
+        return self.cache_format % {"scope": self.scope, "ident": self.get_ident(request)}
+
+
 class HotspotPublicThrottle(AnonRateThrottle):
     """
     The endpoints where a stranger could be guessing: redeeming a code, and

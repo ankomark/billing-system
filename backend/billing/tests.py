@@ -904,6 +904,9 @@ class LoginThrottleTests(TestCase):
         resp = self.client.post(self.URL, {"username": "throttle_user", "password": "wrong"})
         self.assertEqual(resp.status_code, 429)
 
+    # Two-step not required here: this is about the throttle letting a right
+    # password through, and test_login_security covers what two-step changes.
+    @override_settings(MFA_REQUIRED_ROLES="")
     def test_correct_credentials_within_limit_return_tokens(self):
         resp = self.client.post(
             self.URL,
@@ -2645,6 +2648,7 @@ class TokenClaimTests(TwoOperatorMixin, TestCase):
         token = TenantTokenObtainPairSerializer.get_token(make_platform_owner()).access_token
         self.assertIsNone(token["tenant_id"])
 
+    @override_settings(MFA_REQUIRED_ROLES="")   # see test_login_security
     def test_login_response_states_the_operator(self):
         """Saves the frontend a round-trip just to choose a dashboard."""
         resp = APIClient().post(
@@ -3648,6 +3652,16 @@ class ImpersonationCorsTests(TestCase):
         allowed = self.preflight("authorization,x-impersonate-reason")[
             "access-control-allow-headers"].lower()
         self.assertIn("x-impersonate-reason", allowed)
+
+    def test_preflight_allows_the_device_id_header(self):
+        """
+        The dashboard sends it on every request. If the preflight does not
+        name it, the browser sends nothing at all and the whole app looks
+        offline.
+        """
+        allowed = self.preflight("authorization,x-device-id")[
+            "access-control-allow-headers"].lower()
+        self.assertIn("x-device-id", allowed)
 
     def test_the_ordinary_headers_are_still_allowed(self):
         """The custom entries are added to the defaults, not substituted."""

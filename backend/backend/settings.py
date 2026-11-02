@@ -150,6 +150,9 @@ INSTALLED_APPS = [
 
     # Third-party
     "rest_framework",
+    # Lets a refresh token be ended before it expires: on sign-out, and on
+    # every renewal now that refresh tokens rotate. See SIMPLE_JWT below.
+    "rest_framework_simplejwt.token_blacklist",
     "corsheaders",
 
     # Celery
@@ -199,7 +202,9 @@ WSGI_APPLICATION = "backend.wsgi.application"
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
-        "DIRS": [],
+        # Ahead of the app directories, so templates/admin/login.html replaces
+        # the Django admin's own login page -- it needs the code field.
+        "DIRS": [BASE_DIR / "templates"],
         "APP_DIRS": True,
         "OPTIONS": {
             "context_processors": [
@@ -287,9 +292,12 @@ else:
 
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
-    {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
+    # Twelve characters for anyone who runs a business here, eight for a
+    # subscriber's portal login. See billing/password_validation.py.
+    {"NAME": "billing.password_validation.RoleMinimumLengthValidator"},
     {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
+    {"NAME": "billing.password_validation.BreachedPasswordValidator"},
 ]
 
 # =====================================================
@@ -382,6 +390,10 @@ CORS_ALLOW_HEADERS = (
     *default_headers,
     "x-impersonate-tenant",
     "x-impersonate-reason",
+    # Sent on every request by the dashboard (lib/deviceId.js) so a sign-in
+    # from a new browser can be told apart. Every request: leaving it out of
+    # this list would stop the browser sending ANY of them.
+    "x-device-id",
 )
 
 # =====================================================
@@ -409,6 +421,8 @@ REST_FRAMEWORK = {
         "anon": "120/min",
         "user": "300/min",
         "login": "5/min",
+        # Checking two-step codes. See MFARateThrottle.
+        "mfa": "10/min",
         # Guessing surface: redeeming a code, starting a purchase. Voucher
         # codes are six characters from a 36-symbol alphabet chosen with
         # secrets — about 2.2 billion — so this bounds an attacker to a
@@ -433,7 +447,40 @@ SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=30),
     "REFRESH_TOKEN_LIFETIME": timedelta(days=1),
     "AUTH_HEADER_TYPES": ("Bearer",),
+    # Every renewal hands back a new refresh token and ends the old one. A
+    # refresh token copied out of a browser therefore stops working the next
+    # time the real owner's page renews, instead of being good for a day --
+    # and if the thief renews first, the owner is signed out and notices.
+    "ROTATE_REFRESH_TOKENS": True,
+    "BLACKLIST_AFTER_ROTATION": True,
 }
+
+# =====================================================
+# SIGN-IN SECURITY
+# =====================================================
+
+# Django's own backend, refusing while a username is locked out after repeated
+# failures. Every authenticate() call goes through it, the Django admin's
+# included -- which had no limit at all before. See billing/login_security.py.
+AUTHENTICATION_BACKENDS = ["billing.login_security.LockoutModelBackend"]
+
+# Roles that must use two-step sign-in. They are walked through setting it up
+# at their next sign-in; a password alone no longer gets them a session.
+# Comma-separated, and an environment variable so it can be relaxed without a
+# deploy if it ever has to be.
+MFA_REQUIRED_ROLES = os.getenv(
+    "MFA_REQUIRED_ROLES", "platform_owner,platform_staff,tenant_admin")
+
+# Where the Django admin is served. Default unchanged; set it in .env to a
+# path nobody would guess, which takes it out of the way of scanners that
+# hammer /admin/ on every host they find. Must end in a slash.
+DJANGO_ADMIN_PATH = os.getenv("DJANGO_ADMIN_PATH", "admin/")
+
+# Refuse passwords that appear in known breaches, by asking Have I Been
+# Pwned's range API -- which is sent the first five characters of the
+# password's SHA-1 and nothing else. Fails open: if the service cannot be
+# reached the password is judged on the other rules alone.
+PASSWORD_BREACH_CHECK = os.getenv("PASSWORD_BREACH_CHECK", "1") == "1"
 
 # =====================================================
 # CELERY CONFIGURATION (CRITICAL)

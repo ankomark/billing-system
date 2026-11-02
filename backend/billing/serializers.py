@@ -1142,7 +1142,14 @@ class OperatorCreateSerializer(serializers.Serializer):
 
     # The operator's first admin.
     admin_username = serializers.CharField(max_length=150)
-    admin_password = serializers.CharField(min_length=8, write_only=True)
+    admin_password = serializers.CharField(write_only=True)
+
+    def validate_admin_password(self, value):
+        # The same rules as every other staff password -- twelve characters,
+        # not in a breach list -- rather than a min_length of its own.
+        validate_password(value, user=User(username=self.initial_data.get("admin_username", ""),
+                                           role=User.TENANT_ADMIN))
+        return value
     admin_email = serializers.EmailField(required=False, allow_blank=True)
 
     # Optional — an operator may start with no plan and be put on one later.

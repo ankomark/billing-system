@@ -21,6 +21,7 @@ from rest_framework.response import Response
 from rest_framework import status, permissions
 from rest_framework.exceptions import ValidationError
 from django.shortcuts import get_object_or_404
+from .mfa import require_recent_mfa
 from .security import (
     device_token_for,
     device_token_matches,
@@ -88,11 +89,6 @@ from billing.router_service import (
     disable_customer_access, enable_customer_access,
 )
 from billing.tasks.router_tasks import (enable_customer_task,disable_customer_task,disconnect_pppoe_task)
-
-class ThrottledLoginView(TenantTokenObtainPairView):
-    """Issues tokens carrying the operator and role claims."""
-    throttle_classes = [LoginRateThrottle]
-
 
 def home(request):
     return HttpResponse("WiFi Billing Backend is Running")
@@ -199,6 +195,13 @@ class TenantUserViewSet(viewsets.ModelViewSet):
 
     serializer_class = TenantUserSerializer
     permission_classes = [IsTenantAdmin]
+
+    def initial(self, request, *args, **kwargs):
+        super().initial(request, *args, **kwargs)
+        # Creating an account, changing a role or a password, disabling
+        # someone: each decides who can get in, so each needs a fresh code.
+        if request.method not in permissions.SAFE_METHODS:
+            require_recent_mfa(request)
 
     def get_queryset(self):
         tenant_id = get_current_tenant_id()
@@ -3933,11 +3936,32 @@ class SystemSettingsView(APIView):
 
         return Response(data)
 
+    def _changes_credentials(self, tenant, data):
+        """Whether this save changes a payment setting or any secret."""
+        watched = {
+            k: v for k, v in data.items()
+            if (k.startswith("MPESA_") or k in self.SENSITIVE_KEYS) and v != "********"
+        }
+        if not watched:
+            return False
+        current = dict(
+            SystemSetting.objects.filter(tenant=tenant, key__in=watched)
+            .values_list("key", "value")
+        )
+        return any((current.get(k) or "") != (v or "") for k, v in watched.items())
+
     def put(self, request):
         serializer = SystemSettingSerializer(data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
 
         tenant = getattr(request.user, "tenant", None)
+
+        # Changing where M-Pesa money goes, or any credential, needs a fresh
+        # two-step code -- an unattended session must not be enough to point
+        # an operator's takings at someone else's till. Only when such a value
+        # actually changes: saving the support number asks for nothing.
+        if self._changes_credentials(tenant, serializer.validated_data):
+            require_recent_mfa(request)
 
         # Support numbers live on the tenant, not in SystemSetting, so they are
         # applied here rather than in the key/value loop below.
@@ -6478,6 +6502,8 @@ class PlatformOperatorListView(APIView):
         return super().get_permissions()
 
     def post(self, request):
+        # Who can get in, and where an operator's money goes: a fresh code.
+        require_recent_mfa(request)
         serializer = OperatorCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
@@ -7211,6 +7237,8 @@ class OperatorMpesaSetupView(APIView):
         return Response(data)
 
     def put(self, request, tenant_id):
+        # Who can get in, and where an operator's money goes: a fresh code.
+        require_recent_mfa(request)
         tenant = self._tenant(tenant_id)
         if tenant is None:
             return Response({"detail": "Operator not found"}, status=404)
@@ -7307,6 +7335,8 @@ class OperatorPasswordResetView(APIView):
     ALPHABET = string.ascii_letters + string.digits
 
     def post(self, request, tenant_id):
+        # Who can get in, and where an operator's money goes: a fresh code.
+        require_recent_mfa(request)
         tenant = Tenant.objects.filter(id=tenant_id).first()
         if tenant is None:
             return Response({"detail": "Operator not found"}, status=404)
@@ -7446,6 +7476,8 @@ class PlatformOperatorDetailView(APIView):
         name as text — so afterwards there is still an answer to "what happened
         to them".
         """
+        # Irreversible: a fresh code first.
+        require_recent_mfa(request)
         if request.user.role != User.PLATFORM_OWNER:
             return Response(
                 {"detail": "This endpoint is restricted to the platform owner."},
