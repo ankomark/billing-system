@@ -2,49 +2,81 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { CalendarDays, Download } from "lucide-react";
 import { Card, CardHeader, DataTable, KES, num } from "./ui";
-import { fetchMonthlyRevenue } from "../../services/dashboard";
+import { fetchMonthlyRevenue, fetchYearlyRevenue } from "../../services/dashboard";
 
-const monthName = (ym, style = "long") => {
+const monthName = (ym) => {
   const [y, m] = ym.split("-").map(Number);
-  return new Date(y, m - 1, 1).toLocaleDateString("en-KE", { month: style, year: "numeric" });
+  return new Date(y, m - 1, 1).toLocaleDateString("en-KE", { month: "long", year: "numeric" });
 };
 
 /**
- * Earnings month by month.
+ * Earnings by month and by year.
  *
- * The dashboard used to have no memory: at midnight on the 1st, "This month"
- * went back to zero and the month that had just closed was nowhere on the
- * page. This is the record of every month, the one in progress at the top.
+ * The dashboard used to have no memory: at midnight on the 1st "This month"
+ * went back to zero, and on 1 January "This year" did the same, and the
+ * period that had just closed was nowhere on the page. This keeps them.
  *
- * Change is against the month before; for the month in progress it is against
- * the same days of last month, so the 5th is not compared with a whole month
- * and always shown as a fall.
+ * By month: the month in progress at the top, and under the table this
+ * year's total — the whole year, however few months are being shown.
+ * By year: a row per year, kept for good.
+ *
+ * Change is against the period before; for the one in progress it is
+ * against the same day and time of the period before, so the 5th is not
+ * compared with a whole month and always shown as a fall.
  */
 export default function MonthlyEarnings() {
+  const [view, setView] = useState("month");
   const [months, setMonths] = useState(6);
-  const { data: rows, isLoading, isError } = useQuery({
+
+  const monthly = useQuery({
     queryKey: ["monthly-revenue", months],
     queryFn: () => fetchMonthlyRevenue(months),
     staleTime: 5 * 60 * 1000,
     placeholderData: (prev) => prev,
   });
+  // Fetched for both views: the year total sits under the monthly table.
+  const yearly = useQuery({
+    queryKey: ["yearly-revenue"],
+    queryFn: fetchYearlyRevenue,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const thisYear = yearly.data?.find((y) => y.in_progress);
+  const active = view === "month" ? monthly : yearly;
+
+  const periodColumn =
+    view === "month"
+      ? {
+          key: "period",
+          label: "Month",
+          className: "font-medium text-slate-100 whitespace-nowrap",
+          render: (r) =>
+            r._total ? (
+              <>
+                {r.year} total
+                {r.in_progress && <SoFar />}
+              </>
+            ) : (
+              <>
+                {monthName(r.month)}
+                {r.in_progress && <SoFar />}
+              </>
+            ),
+        }
+      : {
+          key: "period",
+          label: "Year",
+          className: "font-medium text-slate-100 whitespace-nowrap",
+          render: (r) => (
+            <>
+              {r.year}
+              {r.in_progress && <SoFar />}
+            </>
+          ),
+        };
 
   const columns = [
-    {
-      key: "month",
-      label: "Month",
-      className: "font-medium text-slate-100 whitespace-nowrap",
-      render: (r) => (
-        <>
-          {monthName(r.month)}
-          {r.in_progress && (
-            <span className="ml-2 rounded bg-blue-500/15 px-1.5 py-0.5 text-[11px] font-semibold text-blue-300">
-              so far
-            </span>
-          )}
-        </>
-      ),
-    },
+    periodColumn,
     {
       key: "revenue",
       label: "Earnings",
@@ -101,29 +133,53 @@ export default function MonthlyEarnings() {
     },
   ];
 
+  const footerRow = view === "month" && thisYear ? { ...thisYear, _total: true } : null;
+
   return (
     <Card>
       <CardHeader
-        title="Monthly earnings"
-        subtitle="Every month's takings, including the ones that have closed"
+        title="Earnings"
+        subtitle={
+          view === "month"
+            ? "Month by month, with this year's total"
+            : "Year by year — every closed year is kept"
+        }
         chip="green"
         icon={CalendarDays}
         action={
-          <div className="flex items-center gap-2">
-            <select
-              value={months}
-              onChange={(e) => setMonths(Number(e.target.value))}
-              aria-label="How many months to show"
-              className="rounded-lg border border-white/15 bg-slate-950 px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-              <option value={6}>6 months</option>
-              <option value={12}>12 months</option>
-              <option value={24}>24 months</option>
-            </select>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex rounded-lg border border-white/10 p-0.5 text-xs" role="tablist">
+              {[["month", "By month"], ["year", "By year"]].map(([k, label]) => (
+                <button
+                  key={k}
+                  type="button"
+                  role="tab"
+                  aria-selected={view === k}
+                  onClick={() => setView(k)}
+                  className={`rounded-md px-3 py-1 ${
+                    view === k ? "bg-white/10 text-white" : "text-slate-400 hover:text-slate-200"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            {view === "month" && (
+              <select
+                value={months}
+                onChange={(e) => setMonths(Number(e.target.value))}
+                aria-label="How many months to show"
+                className="rounded-lg border border-white/15 bg-slate-950 px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value={6}>6 months</option>
+                <option value={12}>12 months</option>
+                <option value={24}>24 months</option>
+              </select>
+            )}
             <button
               type="button"
-              onClick={() => downloadCsv(rows)}
-              disabled={!rows?.length}
+              onClick={() => downloadCsv(view, active.data, footerRow)}
+              disabled={!active.data?.length}
               title="Download as a spreadsheet (CSV)"
               className="inline-flex items-center gap-1.5 rounded-lg border border-white/15 px-2.5 py-1.5 text-xs font-medium text-slate-300 hover:bg-white/5 disabled:opacity-50"
             >
@@ -132,20 +188,29 @@ export default function MonthlyEarnings() {
           </div>
         }
       />
-      {isError ? (
-        <p className="px-1 py-6 text-sm text-red-300">Couldn't load monthly earnings.</p>
+      {active.isError ? (
+        <p className="px-1 py-6 text-sm text-red-300">Couldn't load earnings.</p>
       ) : (
         <DataTable
           columns={columns}
-          rows={rows}
-          rowKey={(r) => r.month}
-          loading={isLoading}
-          loadingRows={6}
+          rows={active.data}
+          rowKey={(r) => r.month || r.year}
+          loading={active.isLoading}
+          loadingRows={view === "month" ? 6 : 2}
           dense
+          footerRow={footerRow}
           empty="No earnings recorded yet."
         />
       )}
     </Card>
+  );
+}
+
+function SoFar() {
+  return (
+    <span className="ml-2 rounded bg-blue-500/15 px-1.5 py-0.5 text-[11px] font-semibold text-blue-300">
+      so far
+    </span>
   );
 }
 
@@ -165,12 +230,13 @@ function Change({ value, against }) {
 }
 
 /** The table as a spreadsheet, for the books. Built here: it is already loaded. */
-function downloadCsv(rows) {
+function downloadCsv(view, rows, footerRow) {
   if (!rows?.length) return;
-  const header = ["Month", "Earnings (KES)", "Change %", "Payments", "Paying customers",
+  const period = view === "month" ? "Month" : "Year";
+  const header = [period, "Earnings (KES)", "Change %", "Payments", "Paying customers",
     "M-Pesa (KES)", "Cash (KES)", "Bank (KES)", "Free accesses", "Note"];
-  const lines = rows.map((r) => [
-    r.month,
+  const line = (r, label) => [
+    label,
     r.revenue,
     r.change ?? "",
     r.payments,
@@ -179,15 +245,17 @@ function downloadCsv(rows) {
     r.by_method?.cash || 0,
     r.by_method?.bank || 0,
     r.comps,
-    r.in_progress ? "month in progress" : "",
-  ]);
+    r.in_progress ? "in progress" : "",
+  ];
+  const lines = rows.map((r) => line(r, view === "month" ? r.month : r.year));
+  if (footerRow) lines.push(line(footerRow, `${footerRow.year} total`));
   const csv = [header, ...lines]
     .map((cols) => cols.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(","))
     .join("\r\n");
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
-  a.download = `monthly-earnings-${rows[0].month}.csv`;
+  a.download = `earnings-by-${view}-${view === "month" ? rows[0].month : rows[0].year}.csv`;
   a.click();
   URL.revokeObjectURL(a.href);
 }

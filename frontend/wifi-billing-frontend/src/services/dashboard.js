@@ -9,6 +9,12 @@ export const fetchMonthlyRevenue = async (months = 12) => {
   return res.data.results;
 };
 
+/** Earnings year by year, newest first, the year in progress included. */
+export const fetchYearlyRevenue = async () => {
+  const res = await api.get("reports/revenue/yearly/");
+  return res.data.results;
+};
+
 export const fetchDashboardSummary = async () => {
   const res = await api.get("reports/revenue/");
   return res.data;

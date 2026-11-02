@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 
 from django.db.models import Sum, Count
-from django.db.models.functions import TruncMonth
+from django.db.models.functions import TruncMonth, TruncYear
 from django.utils import timezone
 
 from .models import Payment, Invoice, Subscription
@@ -201,6 +201,80 @@ def monthly_revenue(months=12):
             "change": _pct_change(revenue, against),
             "change_against": (
                 "same point last month" if in_progress else "previous month"),
+            "in_progress": in_progress,
+        })
+    return result
+
+
+def yearly_revenue(years=10):
+    """
+    Earnings year by year, newest first, the year in progress included.
+
+    The year-level counterpart of monthly_revenue, and what keeps a closed
+    year on the dashboard: on 1 January "This year" goes back to zero, and
+    without this the year that had just ended would vanish with it.
+
+    Only years with something in them, back to the first payment -- unlike
+    months, a run of empty years before an operator started is not
+    information. The same rules otherwise: Nairobi calendar years, comps
+    counted but earning nothing, and the year in progress compared with last
+    year up to the same day and time rather than with all of it.
+    """
+    years = max(1, min(int(years), 20))
+    now = timezone.now()
+    this_year = timezone.localdate().replace(month=1, day=1)
+    first = this_year.replace(year=this_year.year - years)
+
+    def year_of(dt):
+        return (timezone.localtime(dt) if timezone.is_aware(dt) else dt).year
+
+    base = Payment.objects.filter(paid_at__gte=_local_midnight(first))
+    by_year = {}
+    for r in (base.annotate(y=TruncYear("paid_at")).values("y", "method")
+              .annotate(revenue=Sum("amount"), count=Count("id"))):
+        y = by_year.setdefault(year_of(r["y"]), {
+            "revenue": 0.0, "payments": 0, "comps": 0, "by_method": {}})
+        if r["method"] == "comp":
+            y["comps"] += r["count"]
+            continue
+        amount = float(r["revenue"] or 0)
+        y["revenue"] += amount
+        y["payments"] += r["count"]
+        y["by_method"][r["method"]] = y["by_method"].get(r["method"], 0.0) + amount
+    paying = {
+        year_of(r["y"]): r["n"]
+        for r in (base.exclude(method="comp").annotate(y=TruncYear("paid_at"))
+                  .values("y").annotate(n=Count("customer", distinct=True)))
+    }
+
+    # Last year up to the same day and time, for the year in progress.
+    last_year = this_year.replace(year=this_year.year - 1)
+    elapsed = now - _local_midnight(this_year)
+    same_point = min(_local_midnight(last_year) + elapsed, _local_midnight(this_year))
+    prior_to_date = float(
+        Payment.objects.filter(
+            paid_at__gte=_local_midnight(last_year), paid_at__lt=same_point,
+        ).aggregate(t=Sum("amount"))["t"] or 0
+    )
+
+    shown = sorted((y for y in by_year if y > first.year), reverse=True)
+    if this_year.year not in shown:
+        shown.insert(0, this_year.year)   # the year in progress always has a row
+    result = []
+    for year in shown:
+        y = by_year.get(year, {})
+        revenue = y.get("revenue", 0.0)
+        in_progress = year == this_year.year
+        against = prior_to_date if in_progress else by_year.get(year - 1, {}).get("revenue", 0.0)
+        result.append({
+            "year": year,
+            "revenue": round(revenue, 2),
+            "payments": y.get("payments", 0),
+            "customers": paying.get(year, 0),
+            "comps": y.get("comps", 0),
+            "by_method": {k: round(v, 2) for k, v in y.get("by_method", {}).items()},
+            "change": _pct_change(revenue, against),
+            "change_against": "same point last year" if in_progress else "previous year",
             "in_progress": in_progress,
         })
     return result

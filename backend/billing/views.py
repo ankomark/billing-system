@@ -43,7 +43,7 @@ from django.db.models import Count, OuterRef, Prefetch, Q, Subquery, Sum
 from django.db.models.functions import TruncDate, TruncMonth
 from billing.services.usage import estate_usage_totals
 from billing.services.provisioning_state import is_provisioned
-from .reports import (revenue_summary,revenue_by_method,revenue_by_package,customer_stats,monthly_revenue,)
+from .reports import (revenue_summary,revenue_by_method,revenue_by_package,customer_stats,monthly_revenue,yearly_revenue,)
 from .analytics import (
     performance_pulse, revenue_series, peak_hours, expiring_soon,
     customer_flow, by_station, peak_clients_series,
@@ -5631,6 +5631,14 @@ class MonthlyRevenueView(APIView):
         except (TypeError, ValueError):
             months = 12
         return Response({"results": monthly_revenue(months)})
+
+
+class YearlyRevenueView(APIView):
+    """Earnings year by year -- see reports.yearly_revenue."""
+    permission_classes = [IsTenantMember]
+
+    def get(self, request):
+        return Response({"results": yearly_revenue()})
 
 
 class DailyRevenueView(APIView):

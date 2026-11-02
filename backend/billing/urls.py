@@ -38,6 +38,7 @@ from .views import (
     MpesaTransactionsView,
     DailyRevenueView,
     MonthlyRevenueView,
+    YearlyRevenueView,
 
     # M-Pesa
     MpesaSTKPushView,
@@ -167,6 +168,7 @@ urlpatterns = [
     path("api/reports/revenue/",            RevenueDashboardView.as_view(),         name="revenue-dashboard"),
     path("api/reports/revenue/daily/",      DailyRevenueView.as_view(),             name="daily-revenue"),
     path("api/reports/revenue/monthly/",    MonthlyRevenueView.as_view(),           name="monthly-revenue"),
+    path("api/reports/revenue/yearly/",     YearlyRevenueView.as_view(),            name="yearly-revenue"),
     path("api/reports/analytics/",          OperatorAnalyticsView.as_view(),        name="operator-analytics"),
     path("api/dashboard/active-clients/",   ActiveClientsByStationView.as_view(),   name="active-clients"),
     path("api/dashboard/invoices/unpaid/",  UnpaidInvoicesView.as_view(),           name="unpaid-invoices"),

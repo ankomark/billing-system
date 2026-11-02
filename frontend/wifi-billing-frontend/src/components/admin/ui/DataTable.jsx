@@ -6,6 +6,9 @@
  *
  * `columns`: { key, label, align?, render?(row), className?, hideBelow? }[]
  *
+ * `footerRow`: an optional totals row, drawn through the same columns (so
+ * every render gets it like any other row) under a heavier rule.
+ *
  * `className` styles the CELLS only. It is deliberately not passed to the
  * header: the three tables using it pass things like "font-medium
  * text-slate-100", which would fight the header's own "font-semibold
@@ -35,6 +38,7 @@ export default function DataTable({
   dense = false,
   loading = false,
   loadingRows = 5,
+  footerRow = null,
 }) {
   const pad = dense ? "px-4 py-2" : "px-5 py-3";
 
@@ -96,6 +100,22 @@ export default function DataTable({
             ))
           )}
         </tbody>
+        {footerRow && !loading && (
+          <tfoot>
+            <tr className="border-t-2 border-white/15 bg-white/[0.03]">
+              {columns.map((c) => (
+                <td
+                  key={c.key}
+                  className={`${pad} font-semibold text-slate-100 ${
+                    c.align === "right" ? "text-right tabular-nums" : ""
+                  } ${c.className || ""} ${hideClass(c)}`}
+                >
+                  {c.render ? c.render(footerRow) : footerRow[c.key]}
+                </td>
+              ))}
+            </tr>
+          </tfoot>
+        )}
       </table>
     </div>
   );

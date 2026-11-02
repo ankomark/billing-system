@@ -16,7 +16,7 @@ from rest_framework.test import APIClient
 
 from billing.auth_tokens import TenantTokenObtainPairSerializer
 from billing.models import Customer, Payment, Subscription, Tenant
-from billing.reports import _add_months, monthly_revenue, revenue_summary
+from billing.reports import _add_months, monthly_revenue, revenue_summary, yearly_revenue
 from billing.tenancy import tenant_context
 from billing.tests import make_admin, make_package, make_router
 
@@ -161,3 +161,63 @@ class MonthlyEarnings(TestCase):
         with tenant_context(self.tenant):
             self.assertEqual(len(monthly_revenue(500)), 36)
             self.assertEqual(len(monthly_revenue(0)), 1)
+
+
+class YearlyEarnings(MonthlyEarnings):
+    """
+    The year-level record. Inherits the fixtures above (and re-runs their
+    tests, which is harmless and cheap).
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.this_year = timezone.localdate().replace(month=1, day=1)
+        self.last_year = self.this_year.replace(year=self.this_year.year - 1)
+
+    def year_row(self, year):
+        with tenant_context(self.tenant):
+            return next((r for r in yearly_revenue() if r["year"] == year), None)
+
+    def test_the_year_in_progress_always_has_a_row(self):
+        with tenant_context(self.tenant):
+            rows = yearly_revenue()
+        self.assertEqual(rows[0]["year"], self.this_year.year)
+        self.assertTrue(rows[0]["in_progress"])
+        self.assertEqual(rows[0]["revenue"], 0)
+
+    def test_a_closed_year_stays_with_its_total(self):
+        self.pay(self.alice, "1000", local(self.last_year.replace(month=3, day=1)))
+        self.pay(self.bob, "2500", local(self.last_year.replace(month=12, day=31), hour=23))
+        r = self.year_row(self.last_year.year)
+        self.assertEqual(r["revenue"], 3500)
+        self.assertEqual(r["payments"], 2)
+        self.assertEqual(r["customers"], 2)
+        self.assertFalse(r["in_progress"])
+
+    def test_just_after_midnight_on_new_years_day_is_the_new_year(self):
+        self.pay(self.alice, "700", local(self.this_year, hour=0, minute=30))
+        self.assertEqual(self.year_row(self.this_year.year)["revenue"], 700)
+        self.assertIsNone(self.year_row(self.last_year.year))
+
+    def test_the_year_total_is_the_sum_of_its_months(self):
+        self.pay(self.alice, "400", local(self.this_month))
+        if self.last_month.year == self.this_year.year:
+            self.pay(self.bob, "600", local(self.last_month.replace(day=3)))
+        with tenant_context(self.tenant):
+            months = [m for m in monthly_revenue(12) if m["month"].startswith(str(self.this_year.year))]
+        self.assertEqual(self.year_row(self.this_year.year)["revenue"],
+                         sum(m["revenue"] for m in months))
+
+    def test_free_access_earns_nothing_in_a_year_either(self):
+        self.pay(self.alice, "0", local(self.last_year.replace(month=6, day=1)), "comp")
+        self.pay(self.alice, "300", local(self.last_year.replace(month=6, day=1)))
+        r = self.year_row(self.last_year.year)
+        self.assertEqual((r["revenue"], r["payments"], r["comps"]), (300, 1, 1))
+
+    def test_the_endpoint_answers(self):
+        client = APIClient()
+        token = TenantTokenObtainPairSerializer.get_token(make_admin("yearly_admin")).access_token
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        resp = client.get("/api/reports/revenue/yearly/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["results"][0]["year"], self.this_year.year)
