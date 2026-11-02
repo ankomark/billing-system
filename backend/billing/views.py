@@ -43,7 +43,7 @@ from django.db.models import Count, OuterRef, Prefetch, Q, Subquery, Sum
 from django.db.models.functions import TruncDate, TruncMonth
 from billing.services.usage import estate_usage_totals
 from billing.services.provisioning_state import is_provisioned
-from .reports import (revenue_summary,revenue_by_method,revenue_by_package,customer_stats,)
+from .reports import (revenue_summary,revenue_by_method,revenue_by_package,customer_stats,monthly_revenue,)
 from .analytics import (
     performance_pulse, revenue_series, peak_hours, expiring_soon,
     customer_flow, by_station, peak_clients_series,
@@ -5616,6 +5616,21 @@ def _analytics_total(start, end, station=None):
     if station:
         qs = qs.filter(customer__router__station_id=station)
     return qs.aggregate(t=Sum("amount"))["t"] or 0
+
+
+class MonthlyRevenueView(APIView):
+    """
+    Earnings month by month -- the dashboard's record of months that have
+    closed. See reports.monthly_revenue for what each row counts.
+    """
+    permission_classes = [IsTenantMember]
+
+    def get(self, request):
+        try:
+            months = int(request.query_params.get("months", 12))
+        except (TypeError, ValueError):
+            months = 12
+        return Response({"results": monthly_revenue(months)})
 
 
 class DailyRevenueView(APIView):

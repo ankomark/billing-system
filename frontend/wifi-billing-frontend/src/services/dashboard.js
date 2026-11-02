@@ -1,5 +1,14 @@
 import api from "./api";
 
+/**
+ * Earnings month by month, newest first, the month in progress included.
+ * See reports.monthly_revenue on the server for what each row counts.
+ */
+export const fetchMonthlyRevenue = async (months = 12) => {
+  const res = await api.get("reports/revenue/monthly/", { params: { months } });
+  return res.data.results;
+};
+
 export const fetchDashboardSummary = async () => {
   const res = await api.get("reports/revenue/");
   return res.data;

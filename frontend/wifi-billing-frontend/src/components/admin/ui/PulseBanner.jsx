@@ -36,6 +36,24 @@ export default function PulseBanner({ title = "Money in", items = [], loading })
     return <div className="h-[132px] rounded-2xl bg-slate-900/80 animate-pulse" />;
   }
 
+  // Three figures sit in one row from sm up. Four would be cramped there,
+  // so they go two-by-two until there is room for a row of four.
+  const layout = items.length >= 4
+    ? {
+        grid: "grid grid-cols-2 lg:grid-cols-4 gap-4 lg:gap-0",
+        rule: "lg:border-l lg:border-white/20 lg:pl-6",
+        first: "lg:pr-6",
+        // Two to a row on a phone is ~150px each: a seven-figure amount at
+        // 2xl would run out of its column.
+        value: "text-xl sm:text-2xl lg:text-3xl",
+      }
+    : {
+        grid: "grid grid-cols-1 sm:grid-cols-3 gap-4 sm:gap-0",
+        rule: "sm:border-l sm:border-white/20 sm:pl-6",
+        first: "sm:pr-6",
+        value: "text-2xl sm:text-3xl",
+      };
+
   return (
     <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-emerald-700 via-emerald-800 to-emerald-900 shadow-lg shadow-emerald-950/40">
       {/* A soft highlight so the band reads as a surface rather than a flat
@@ -54,20 +72,22 @@ export default function PulseBanner({ title = "Money in", items = [], loading })
           </h2>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 sm:gap-0">
+        <div className={layout.grid}>
           {items.map((item, i) => (
             <div
               key={item.label}
               className={
                 // Hairline separators between columns, not around them, so the
-                // three read as one band rather than three cards again.
-                i > 0 ? "sm:border-l sm:border-white/20 sm:pl-6" : "sm:pr-6"
+                // figures read as one band rather than separate cards again.
+                // Only where they sit in one row: four wrap two-by-two below
+                // lg, and a rule down the left of the third would start a row.
+                i > 0 ? layout.rule : layout.first
               }
             >
               <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-emerald-100">
                 {item.label}
               </p>
-              <p className="mt-1 text-2xl sm:text-3xl font-bold text-white tracking-tight">
+              <p className={`mt-1 ${layout.value} font-bold text-white tracking-tight break-words`}>
                 {item.value}
               </p>
               {item.sub && (

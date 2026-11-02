@@ -9,6 +9,7 @@ import AdminUsageGraph from "../../components/usage/AdminUsageGraph";
 import AnalyticsPanels from "../../components/admin/AnalyticsPanels";
 import CustomerQuickSearch from "../../components/admin/CustomerQuickSearch";
 import IssueVoucherCard from "../../components/admin/IssueVoucherCard";
+import MonthlyEarnings from "../../components/admin/MonthlyEarnings";
 import {
   Card, CardHeader, Note, PageHeader, PulseBanner, Section, StatTile, KES, num,
 } from "../../components/admin/ui";
@@ -65,6 +66,14 @@ export default function Dashboard() {
   }
 
   const rev = data?.revenue_summary;
+  // Named, so "Last month" says which month it means on the 1st and the 31st
+  // alike.
+  const lastMonthName = (() => {
+    const d = new Date();
+    d.setDate(1);
+    d.setMonth(d.getMonth() - 1);
+    return d.toLocaleDateString("en-KE", { month: "long" });
+  })();
   const stats = data?.customer_stats;
   const skeleton = (
     <div className="h-[92px] rounded-xl border border-white/10 bg-slate-900/80 shadow-lg shadow-black/20 animate-pulse" />
@@ -93,14 +102,25 @@ export default function Dashboard() {
           </button>
         </PageHeader>
 
-        {/* The three figures an operator opens this page for, in the hero form
-            rather than as three more tiles competing with the counts below. */}
+        {/* The figures an operator opens this page for, in the hero form
+            rather than as more tiles competing with the counts below.
+
+            Last month is here so the page keeps a memory: at midnight on the
+            1st "This month" goes back to zero, and the month that had just
+            closed used to vanish from the dashboard with it. */}
         <PulseBanner
           title="Money in"
           loading={isLoading}
           items={[
             { label: "Today", value: KES(rev?.today) },
             { label: "This month", value: KES(rev?.this_month) },
+            {
+              label: "Last month",
+              // A dash, not KES 0, if the server has not sent it: zero would
+              // be a claim about last month's takings.
+              value: rev?.last_month == null ? "—" : KES(rev.last_month),
+              sub: lastMonthName,
+            },
             { label: "This year", value: KES(rev?.this_year) },
           ]}
         />
@@ -185,6 +205,10 @@ export default function Dashboard() {
             those, and the same number twice on one screen makes a reader stop
             to check whether they disagree. */}
         <AnalyticsPanels compact defaultDays={30} />
+
+        {/* Every month's takings, the closed ones included -- the record the
+            charts above, which look back thirty days, cannot keep. */}
+        <MonthlyEarnings />
 
         {/* Last, deliberately. It is the figure an operator checks rather than
             acts on — the reason to open a MikroTik at all, now that it is
