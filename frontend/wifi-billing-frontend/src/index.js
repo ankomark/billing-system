@@ -7,6 +7,7 @@ import App from "./App";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { queryClient } from "./lib/queryClient";
 import "./index.css";
+import StepUpPrompt from "./components/security/StepUpPrompt";
 
 const root = ReactDOM.createRoot(document.getElementById("root"));
 
@@ -16,6 +17,7 @@ root.render(
       <QueryClientProvider client={queryClient}>
         <BrowserRouter>
           <App />
+          <StepUpPrompt />
           <Toaster
             position="top-right"
             toastOptions={{

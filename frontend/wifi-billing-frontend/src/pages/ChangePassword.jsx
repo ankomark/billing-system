@@ -94,7 +94,7 @@ export default function ChangePassword({ forced = false }) {
         <Field
           label="New password"
           error={fieldError("new_password")}
-          hint="At least 8 characters, and not something guessable."
+          hint="At least 12 characters (8 for a subscriber login), and not one that has appeared in a data breach."
         >
           <input
             type="password"

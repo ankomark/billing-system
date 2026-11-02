@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { KeyRound, User as UserIcon } from "lucide-react";
 import toast from "react-hot-toast";
 import AdminLayout from "../../components/admin/AdminLayout";
+import SecurityPanel from "../../components/security/SecurityPanel";
 import { fetchProfile, updateProfile } from "../../services/account";
 import { getUser } from "../../services/auth";
 
@@ -148,6 +149,8 @@ export default function MyAccount() {
                 Change password
               </Link>
             </div>
+
+            <SecurityPanel />
           </>
         )}
       </div>

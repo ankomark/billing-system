@@ -78,8 +78,8 @@ export default function NewOperator() {
     e.preventDefault();
     if (!form.name.trim()) return toast.error("Give the operator a name");
     if (!form.admin_username.trim()) return toast.error("The admin needs a username");
-    if (form.admin_password.length < 8)
-      return toast.error("Admin password must be at least 8 characters");
+    if (form.admin_password.length < 12)
+      return toast.error("Admin password must be at least 12 characters");
 
     // Send only what was filled in — the serializer treats absent optional
     // fields differently from empty ones for the slug and prefix defaults.
@@ -183,7 +183,7 @@ export default function NewOperator() {
           <Field
             label="Password"
             required
-            hint="At least 8 characters. Pass it to them directly — it is not emailed."
+            hint="At least 12 characters. Pass it to them directly — it is not emailed."
             error={errors.admin_password}
           >
             <input

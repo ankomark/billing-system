@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { KeyRound, ShieldAlert, User as UserIcon } from "lucide-react";
 import toast from "react-hot-toast";
 import PlatformLayout from "../../components/platform/PlatformLayout";
+import SecurityPanel from "../../components/security/SecurityPanel";
 import { Card, CardHeader, PageHeader } from "../../components/platform/ui";
 import { fetchProfile, updateProfile } from "../../services/account";
 import { getUser } from "../../services/auth";
@@ -157,6 +158,8 @@ export default function PlatformAccount() {
                 </li>
               </ul>
             </Card>
+
+            <SecurityPanel />
           </>
         )}
       </div>
