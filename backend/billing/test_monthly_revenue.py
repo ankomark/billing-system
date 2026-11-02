@@ -113,17 +113,23 @@ class MonthlyEarnings(TestCase):
         self.assertEqual(r["change"], 50.0)
         self.assertEqual(r["change_against"], "previous month")
 
-    def test_the_month_in_progress_is_compared_with_the_same_days(self):
-        days_in = (timezone.localdate() - self.this_month).days + 1
-        # Inside the same days of last month, and after them.
-        self.pay(self.alice, "100", local(self.last_month))
-        self.pay(self.alice, "9999", local(self.last_month + timedelta(days=27), hour=23))
-        self.pay(self.alice, "150", local(self.this_month))
+    def test_the_month_in_progress_is_compared_with_the_same_point(self):
+        """
+        Up to the same day AND time of day. Whole days compared a morning
+        with a full day, so the month in progress always looked down.
+        """
+        now = timezone.now()
+        elapsed = now - local(self.this_month, hour=0)
+        last_start = local(self.last_month, hour=0)
+        # Just before and just after "this point" last month.
+        self.pay(self.alice, "100", last_start + elapsed - timedelta(minutes=5))
+        self.pay(self.alice, "9999", last_start + elapsed + timedelta(minutes=5))
+        self.pay(self.alice, "150", now - timedelta(minutes=1))
         with tenant_context(self.tenant):
             r = monthly_revenue(12)[0]
-        if days_in < 28:   # the late payment falls outside the window compared
+        if last_start + elapsed + timedelta(minutes=5) < local(self.this_month, hour=0):
             self.assertEqual(r["change"], 50.0)
-        self.assertIn("of last month", r["change_against"])
+        self.assertEqual(r["change_against"], "same point last month")
 
     def test_one_operator_never_sees_anothers_months(self):
         other = Tenant.objects.create(name="Other ISP", slug="other-monthly")

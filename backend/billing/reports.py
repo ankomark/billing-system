@@ -125,8 +125,8 @@ def monthly_revenue(months=12):
 
     `change` compares with the month before. For the month in progress that
     would compare a part-month with a whole one and always look like a fall,
-    so it is compared with the same number of days of last month instead --
-    the rule the analytics pulse uses.
+    so it is compared with last month up to the same point -- the same day
+    and time of day.
     """
     months = max(1, min(int(months), 36))
     today = timezone.localdate()
@@ -167,14 +167,18 @@ def monthly_revenue(months=12):
         m["by_method"][r["method"]] = m["by_method"].get(r["method"], 0.0) + amount
     paying = {key(r["month"]): r["n"] for r in customers}
 
-    # The same days of last month, for the month in progress.
-    days_in = (today - this_month).days + 1
+    # The same point in last month, for the month in progress: as far into
+    # it as we now are into this one, to the minute. Whole days would compare
+    # a morning of today with all of that day last month, so the month in
+    # progress would read as down every day until midnight.
+    elapsed = timezone.now() - _local_midnight(this_month)
+    days_in = elapsed.days + 1
     last_month = _add_months(this_month, -1)
-    same_days_end = min(last_month + timedelta(days=days_in), this_month)
+    same_point = min(_local_midnight(last_month) + elapsed, _local_midnight(this_month))
     prior_to_date = float(
         Payment.objects.filter(
             paid_at__gte=_local_midnight(last_month),
-            paid_at__lt=_local_midnight(same_days_end),
+            paid_at__lt=same_point,
         ).aggregate(t=Sum("amount"))["t"] or 0
     )
 
@@ -196,8 +200,7 @@ def monthly_revenue(months=12):
             "by_method": {k: round(v, 2) for k, v in m.get("by_method", {}).items()},
             "change": _pct_change(revenue, against),
             "change_against": (
-                f"first {days_in} day{'s' if days_in != 1 else ''} of last month"
-                if in_progress else "previous month"),
+                "same point last month" if in_progress else "previous month"),
             "in_progress": in_progress,
         })
     return result
