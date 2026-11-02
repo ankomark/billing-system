@@ -149,7 +149,7 @@ def check_code(user, code):
     """
     from .models import LoginEvent, MFABackupCode, User
 
-    if not user.mfa_secret:
+    if not user.mfa_secret or not isinstance(code, (str, int)) or len(str(code)) > 20:
         return None
 
     step = matching_step(user.mfa_secret, code)
@@ -187,6 +187,8 @@ def read_ticket(ticket, purpose):
     """The user a ticket was issued for, or None if it is bad, old or stale."""
     from .models import User
 
+    if not isinstance(ticket, str) or len(ticket) > 1000:
+        return None
     try:
         data = signing.loads(ticket or "", salt=TICKET_SALT, max_age=TICKET_MAX_AGE)
     except signing.BadSignature:

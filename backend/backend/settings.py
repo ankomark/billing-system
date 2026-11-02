@@ -466,10 +466,14 @@ AUTHENTICATION_BACKENDS = ["billing.login_security.LockoutModelBackend"]
 
 # Roles that must use two-step sign-in. They are walked through setting it up
 # at their next sign-in; a password alone no longer gets them a session.
-# Comma-separated, and an environment variable so it can be relaxed without a
-# deploy if it ever has to be.
+#
+# Platform accounts only: they see every operator. Operators sign in with a
+# username and password, protected by the lockout and the IP block in
+# billing/login_security.py, and may turn two-step on for themselves.
+# Comma-separated, and an environment variable so it can change without a
+# deploy.
 MFA_REQUIRED_ROLES = os.getenv(
-    "MFA_REQUIRED_ROLES", "platform_owner,platform_staff,tenant_admin")
+    "MFA_REQUIRED_ROLES", "platform_owner,platform_staff")
 
 # Where the Django admin is served. Default unchanged; set it in .env to a
 # path nobody would guess, which takes it out of the way of scanners that

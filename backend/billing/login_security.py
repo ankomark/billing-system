@@ -18,7 +18,17 @@ This adds two counters and a record:
     well above anything a person does by hand, because a lock that is easy to
     trip is a way for anyone to keep an operator out of their own dashboard.
 
+  * per address, across every username -- thirty wrong attempts in an hour
+    from one address blocks that address from signing in for an hour. The
+    two counters above are per username, so an attacker trying one common
+    password against every account ("password spraying") never trips them;
+    this is what stops that.
+
   * LoginEvent -- every attempt, kept so a person can read it later.
+
+And a shape check before any of it: a username or password that could not be
+real -- too long, odd characters, an oversized request -- is refused without
+touching the database and counted against the address like a wrong password.
 
 Counted by the username as typed, whether or not such an account exists, so
 that "locked" can be said out loud without telling anyone which usernames are
@@ -35,6 +45,7 @@ do the job a delay would.
 
 import hashlib
 import logging
+import re
 import time
 
 from django.contrib.auth.backends import ModelBackend
@@ -50,6 +61,19 @@ PAIR_WINDOW = 15 * 60
 ACCOUNT_LIMIT = 50        # wrong attempts for one username from anywhere
 ACCOUNT_WINDOW = 60 * 60
 LOCK_SECONDS = 15 * 60
+IP_LIMIT = 30             # wrong attempts from one address, any usernames
+IP_WINDOW = 60 * 60
+IP_BLOCK_SECONDS = 60 * 60
+
+# What a sign-in may look like. Django usernames are at most 150 characters of
+# letters, digits and @ . + - _ ; nothing else can match an account, so
+# anything else is refused before it reaches the database, a log line or an
+# admin page. Passwords are capped because hashing is deliberately slow: a
+# megabyte "password" costs the server real time to reject.
+MAX_USERNAME = 150
+MAX_PASSWORD = 128
+MAX_BODY_BYTES = 4096
+USERNAME_RE = re.compile(r"^[\w.@+-]+$")
 
 # Roles whose new-device sign-ins are worth a text message. Staff sign in
 # often and their admin can read the list; a customer's portal login is not a
@@ -68,6 +92,8 @@ def _norm(username):
 def _keys(username, ip):
     u = _h(_norm(username))
     return {
+        "ip_count": f"login:fail:ip:{_h(ip)}",
+        "ip_block": f"login:block:ip:{_h(ip)}",
         "pair_count": f"login:fail:pair:{u}:{_h(ip)}",
         "pair_lock": f"login:lock:pair:{u}:{_h(ip)}",
         "acct_count": f"login:fail:acct:{u}",
@@ -90,7 +116,8 @@ def _incr(key, window):
 def locked_for(username, ip):
     """Seconds until this username may try again from this address; 0 if now."""
     k = _keys(username, ip)
-    until = max(cache.get(k["pair_lock"]) or 0, cache.get(k["acct_lock"]) or 0)
+    until = max(cache.get(k["pair_lock"]) or 0, cache.get(k["acct_lock"]) or 0,
+                cache.get(k["ip_block"]) or 0)
     return max(0, int(until - time.time()))
 
 
@@ -110,7 +137,30 @@ def note_failure(username, ip):
         cache.set(k["acct_lock"], until, LOCK_SECONDS)
         cache.delete(k["acct_count"])
         tripped = True
+    if ip and _incr(k["ip_count"], IP_WINDOW) >= IP_LIMIT and not cache.get(k["ip_block"]):
+        cache.set(k["ip_block"], time.time() + IP_BLOCK_SECONDS, IP_BLOCK_SECONDS)
+        cache.delete(k["ip_count"])
+        logger.warning("[login] blocked %s after %s failed sign-ins", ip, IP_LIMIT)
     return tripped
+
+
+def malformed(username, password):
+    """
+    Why this cannot be a real sign-in, or None if it could be.
+
+    Both must be plain strings: a JSON body can carry a list or an object
+    where a string belongs, and that should be refused here rather than
+    discovered deep inside the auth stack.
+    """
+    if not isinstance(username, str) or not isinstance(password, str):
+        return "not text"
+    if not username or not password:
+        return "empty"
+    if len(username) > MAX_USERNAME or len(password) > MAX_PASSWORD:
+        return "too long"
+    if not USERNAME_RE.match(username.strip()):
+        return "bad characters"
+    return None
 
 
 def clear_failures(username, ip):
@@ -263,6 +313,10 @@ class LockoutModelBackend(ModelBackend):
         if request is not None and username is not None:
             if locked_for(username, client_ip(request)):
                 raise PermissionDenied("locked")
+            if malformed(username, password):
+                # None, not an exception: authenticate() then fires
+                # user_login_failed and it is counted like a wrong password.
+                return None
         return super().authenticate(request, username=username, password=password, **kwargs)
 
 

@@ -1504,10 +1504,16 @@ What protects the dashboard login, and the knobs. Code: `billing/login_security.
   locks that pair for 15 minutes; 50 from anywhere in an hour locks the
   username. Covers the Django admin too. The account's operator gets an SMS
   on their contact phone when it trips.
+- **IP block.** 30 failed sign-ins from one IP in an hour, across any
+  usernames, blocks that IP from signing in for an hour (password spraying).
+- **Input limits.** Usernames: at most 150 characters of letters, digits and
+  `@ . + - _`; passwords at most 128; the request at most 4 KB. Anything else
+  is refused before it reaches the database, and counts as a failure.
 - **Two-step sign-in** is required for `MFA_REQUIRED_ROLES` (default
-  `platform_owner,platform_staff,tenant_admin`). Those accounts are walked
-  through setting it up at their next sign-in. To relax it in an emergency,
-  set `MFA_REQUIRED_ROLES=` (empty, or fewer roles) in `.env` and restart web.
+  `platform_owner,platform_staff` -- operators sign in with username and
+  password, and may turn two-step on themselves under My account). Required
+  accounts are walked through setting it up at their next sign-in. Change
+  the list in `.env` and restart web.
 - **Lost phone and lost backup codes:**
   `docker compose exec -T web python manage.py reset_mfa <username>` — turns it
   off and ends their sessions; they set it up again at the next sign-in.

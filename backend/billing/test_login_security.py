@@ -63,7 +63,11 @@ class Base(TestCase):
             LOGIN, {"username": username, "password": password}, format="json", **extra)
 
 
-class APasswordAloneIsNotASessionForAdmins(Base):
+# Operators are not required to use two-step by default (platform accounts
+# are). These tests are about what requiring it does, so they require it for
+# the operator admin they sign in as.
+@override_settings(MFA_REQUIRED_ROLES="platform_owner,platform_staff,tenant_admin")
+class APasswordAloneIsNotASessionForRequiredRoles(Base):
 
     def test_an_admin_without_two_step_is_sent_to_set_it_up(self):
         resp = self.login()
@@ -169,11 +173,61 @@ class SigningInWithACode(Base):
         resp = bearer(self.admin).post("/api/auth/mfa/setup/", {}, format="json")
         self.assertEqual(resp.status_code, 400)
 
+    @override_settings(MFA_REQUIRED_ROLES="tenant_admin")
     def test_a_required_role_cannot_turn_it_off(self):
         resp = bearer(self.admin).post(
             "/api/auth/mfa/disable/", {"password": "adminpass", "code": code_for(self.admin)},
             format="json")
         self.assertEqual(resp.status_code, 400)
+
+
+class OperatorsSignInWithAPassword(Base):
+    """
+    The default: an operator's username and password are the whole sign-in,
+    and what protects it is the shape check, the lockout and the IP block.
+    """
+
+    def test_an_operator_admin_gets_a_session_from_the_password(self):
+        resp = self.login()
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("access", resp.data)
+
+    def test_the_platform_owner_still_needs_two_step(self):
+        make_platform_owner("sec_owner2")
+        resp = self.login("sec_owner2", "ownerpass")
+        self.assertTrue(resp.data["mfa_setup_required"])
+        self.assertNotIn("access", resp.data)
+
+    def test_an_operator_may_still_turn_it_on(self):
+        enable_mfa(self.admin)
+        self.assertTrue(self.login().data["mfa_required"])
+
+    def test_script_in_the_username_is_refused_before_it_goes_anywhere(self):
+        for bad in ('<script>alert(1)</script>', "admin' OR '1'='1", "a b", "x\x00y"):
+            with self.subTest(bad=bad):
+                resp = self.login(username=bad)
+                self.assertEqual(resp.status_code, 401)
+                self.assertEqual(resp.data["detail"], "Invalid username or password.")
+
+    def test_overlong_fields_are_refused(self):
+        self.assertEqual(self.login(username="a" * 151).status_code, 401)
+        self.assertEqual(self.login(password="p" * 129).status_code, 401)
+
+    def test_a_field_that_is_not_text_is_refused(self):
+        resp = self.client.post(LOGIN, {"username": ["sec_admin"], "password": {"x": 1}},
+                                format="json")
+        self.assertEqual(resp.status_code, 401)
+
+    def test_an_oversized_request_is_refused_unread(self):
+        resp = self.client.post(LOGIN, {"username": "sec_admin", "password": "x" * 5000},
+                                format="json")
+        self.assertEqual(resp.status_code, 413)
+
+    def test_malformed_attempts_count_against_the_address(self):
+        for _ in range(ls.PAIR_LIMIT):
+            self.login(username="<b>")
+        # They do not lock a real account...
+        self.assertEqual(self.login().status_code, 200)
 
 
 class TheLockout(Base):
@@ -223,6 +277,16 @@ class TheLockout(Base):
         resp = self.client.post(LOGIN_MFA, {"ticket": ticket, "code": code_for(self.admin)},
                                 format="json")
         self.assertEqual(resp.status_code, 429)
+
+    def test_one_address_guessing_at_many_accounts_is_blocked(self):
+        """Password spraying: one guess per username never trips their locks."""
+        for i in range(ls.IP_LIMIT):
+            self.login(username=f"user{i}", password="Summer2026!")
+        resp = self.login()              # a real account, right password
+        self.assertEqual(resp.status_code, 429)
+        other = APIClient()
+        other.defaults["REMOTE_ADDR"] = "10.98.0.1"
+        self.assertEqual(self.login(client=other).status_code, 200)
 
     def test_every_attempt_is_recorded(self):
         self.login(password="wrong")

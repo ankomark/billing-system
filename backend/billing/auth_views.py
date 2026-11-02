@@ -58,6 +58,20 @@ def _bad_code(request, user):
         status=status.HTTP_400_BAD_REQUEST)
 
 
+def _invalid_credentials():
+    return Response(
+        {"detail": "Invalid username or password.", "code": "invalid_credentials"},
+        status=status.HTTP_401_UNAUTHORIZED)
+
+
+def _too_big(request):
+    """Whether the body is larger than any sign-in could need -- checked before it is parsed."""
+    try:
+        return int(request.META.get("CONTENT_LENGTH") or 0) > ls.MAX_BODY_BYTES
+    except ValueError:
+        return True
+
+
 def _ticket_expired():
     return Response(
         {"detail": "That sign-in has expired. Please start again.",
@@ -80,10 +94,25 @@ class LoginView(APIView):
     throttle_classes = [LoginRateThrottle]
 
     def post(self, request):
-        username = str(request.data.get("username") or "")
-        wait = ls.locked_for(username, client_ip(request))
+        ip = client_ip(request)
+        if _too_big(request):
+            ls.note_failure("", ip)
+            return Response({"detail": "Request too large."},
+                            status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
+
+        raw_username = request.data.get("username")
+        raw_password = request.data.get("password")
+        username = raw_username if isinstance(raw_username, str) else ""
+        wait = ls.locked_for(username, ip)
         if wait:
-            return _locked_response(request, username, wait)
+            return _locked_response(request, username[:ls.MAX_USERNAME], wait)
+
+        # Nothing that could not be a real username or password goes further:
+        # not to the database, not to the password hasher. Answered exactly
+        # like a wrong password, and counted like one against this address.
+        if ls.malformed(raw_username, raw_password):
+            ls.failed(request, username[:ls.MAX_USERNAME])
+            return _invalid_credentials()
 
         serializer = TenantTokenObtainPairSerializer(
             data=request.data, context={"request": request})
@@ -95,9 +124,7 @@ class LoginView(APIView):
             # simplejwt raises DRF's own AuthenticationFailed here. Answered
             # directly: this view has no authentication classes, so left to
             # DRF it would become a 403.
-            return Response(
-                {"detail": "Invalid username or password.", "code": "invalid_credentials"},
-                status=status.HTTP_401_UNAUTHORIZED)
+            return _invalid_credentials()
 
         user = serializer.user
         ls.clear_failures(username, client_ip(request))
@@ -122,6 +149,9 @@ class MFALoginView(APIView):
     throttle_classes = [MFARateThrottle]
 
     def post(self, request):
+        if _too_big(request):
+            return Response({"detail": "Request too large."},
+                            status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
         user = mfa.read_ticket(request.data.get("ticket"), mfa.VERIFY)
         if user is None:
             return _ticket_expired()
