@@ -611,6 +611,12 @@ WG_INTERFACE_NAME = os.getenv("WG_INTERFACE_NAME", "wg-smartbill")
 WG_SPOOL_DIR = os.getenv("WG_SPOOL_DIR", "/var/spool/wg-requests")
 
 CELERY_BEAT_SCHEDULE = {
+    # The sign-in record keeps 180 days. Every failed attempt -- including an
+    # attacker's -- writes a row, so without this the table only grows.
+    "prune-login-events": {
+        "task": "billing.tasks.security_tasks.prune_login_events_task",
+        "schedule": crontab(hour=3, minute=25),
+    },
     # Every minute, not every five.
     #
     # This is what actually ends a subscription: it marks the row expired and

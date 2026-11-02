@@ -22,6 +22,7 @@ from .auto_failover import (
 )
 from .mpesa_tasks import initiate_stk_push_task
 from .provisioning import ensure_customer_access_task
+from .security_tasks import prune_login_events_task
 from .platform_billing_tasks import (
     generate_tenant_invoices,
     mark_overdue_tenants,

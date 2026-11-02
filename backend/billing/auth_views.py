@@ -65,10 +65,20 @@ def _invalid_credentials():
 
 
 def _too_big(request):
-    """Whether the body is larger than any sign-in could need -- checked before it is parsed."""
+    """
+    Whether the body is larger than any sign-in could need -- checked before
+    it is parsed.
+
+    The declared length first, which costs nothing. Then the body itself: a
+    chunked request declares no length at all, so trusting the header alone
+    would let one through unchecked. Django has already capped what it will
+    read (DATA_UPLOAD_MAX_MEMORY_SIZE), and refuses beyond that.
+    """
     try:
-        return int(request.META.get("CONTENT_LENGTH") or 0) > ls.MAX_BODY_BYTES
-    except ValueError:
+        if int(request.META.get("CONTENT_LENGTH") or 0) > ls.MAX_BODY_BYTES:
+            return True
+        return len(request._request.body) > ls.MAX_BODY_BYTES
+    except Exception:
         return True
 
 
@@ -246,6 +256,7 @@ class MFAConfirmView(APIView):
         codes = mfa.issue_backup_codes(user)
         mfa.mark_recent(user)
         record_admin_action(user, AdminActionLog.ENABLE_MFA, target_user=user)
+        ls.alert_mfa_changed(user, enabled=True)
 
         data = {"backup_codes": codes}
         if via_ticket:
@@ -292,6 +303,7 @@ class MFADisableView(APIView):
 
         _clear_mfa(user)
         record_admin_action(user, AdminActionLog.DISABLE_MFA, target_user=user)
+        ls.alert_mfa_changed(user, enabled=False)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 

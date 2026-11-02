@@ -266,6 +266,21 @@ def alert_new_device(user, event):
     ))
 
 
+def alert_mfa_changed(user, *, enabled):
+    """
+    Two-step switched on or off. Told to the operator whatever the role:
+    someone holding a stolen session could switch it on with THEIR phone and
+    lock the real owner out, and this is how the owner finds out in time.
+    """
+    if user.role == "customer":
+        return
+    state = "turned ON" if enabled else "turned OFF"
+    _send(user, (
+        f"SmartBill: two-step sign-in was {state} for {user.username}. If this "
+        "was not you, contact SmartBill support immediately."
+    ))
+
+
 def alert_locked(username, ip):
     """Tell the account's owner that someone has been guessing at it."""
     from .models import User

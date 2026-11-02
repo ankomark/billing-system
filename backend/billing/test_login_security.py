@@ -491,3 +491,36 @@ class Totp(TestCase):
         self.assertEqual(mfa._code_at(secret, 1), "287082")
         self.assertEqual(mfa.matching_step(secret, "287082", now=59), 1)
         self.assertIsNone(mfa.matching_step(secret, "287082", now=59 + 5 * 30))
+
+
+class FromTheRescan(Base):
+    """Gaps found re-reviewing the sign-in, each pinned."""
+
+    def test_turning_two_step_on_texts_the_operator(self):
+        api = bearer(self.admin)
+        api.post("/api/auth/mfa/setup/", {}, format="json")
+        resp = api.post("/api/auth/mfa/confirm/", {"code": code_for(self.admin)}, format="json")
+        self.assertEqual(resp.status_code, 200)
+        messages = [c[0][1] for c in self.alerts.call_args_list]
+        self.assertTrue(any("turned ON" in m for m in messages), messages)
+
+    def test_old_sign_in_records_are_pruned(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from billing.tasks.security_tasks import prune_login_events_task
+
+        old = LoginEvent.objects.create(username="x", outcome=LoginEvent.FAILED)
+        LoginEvent.objects.filter(pk=old.pk).update(
+            created_at=timezone.now() - timedelta(days=181))
+        recent = LoginEvent.objects.create(username="y", outcome=LoginEvent.FAILED)
+
+        self.assertEqual(prune_login_events_task(), 1)
+        self.assertEqual(list(LoginEvent.objects.values_list("pk", flat=True)), [recent.pk])
+
+    def test_a_normal_sign_in_still_parses_after_the_body_is_measured(self):
+        """Reading the body to measure it must not leave nothing for the parser."""
+        resp = self.login()
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("access", resp.data)
