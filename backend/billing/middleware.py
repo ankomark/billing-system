@@ -211,3 +211,27 @@ class TenantMiddleware(MiddlewareMixin):
             write_db_tenant(None, local=False)
         except Exception:
             logger.exception("[tenancy] Could not clear database tenant scope")
+
+
+from django.middleware.gzip import GZipMiddleware  # noqa: E402
+
+
+class ApiGZipMiddleware(GZipMiddleware):
+    """
+    Django's gzip, minus the responses where compression is a risk.
+
+    BREACH recovers a secret from a compressed response by watching its size
+    change while the attacker varies something reflected beside it. Ordinary
+    API reads here carry no secret -- authentication is a header the response
+    never echoes -- but the sign-in endpoints hand out tokens, two-step
+    secrets and backup codes, and the Django admin carries a CSRF token. Those
+    are sent as they were; everything else is compressed.
+    """
+
+    def process_response(self, request, response):
+        from django.conf import settings
+
+        path = request.path
+        if path.startswith("/api/auth/") or path.startswith("/" + settings.DJANGO_ADMIN_PATH):
+            return response
+        return super().process_response(request, response)

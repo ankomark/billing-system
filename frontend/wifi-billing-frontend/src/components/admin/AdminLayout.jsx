@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Menu, Clock, X, AlertTriangle } from "lucide-react";
 import AdminSidebar from "./AdminSidebar";
 import { getUser } from "../../services/auth";
 import ImpersonationBanner from "../platform/ImpersonationBanner";
 import useSessionTimeout from "../../hooks/useSessionTimeout";
+import prefetchOperatorPages from "../../lib/prefetchPages";
 
 const ROLE_LABELS = {
   tenant_admin: "Admin",
@@ -90,6 +91,11 @@ const AMBIENT = {
 };
 
 export default function AdminLayout({ children, ambient = false }) {
+  // Once the first page is up, quietly fetch the rest so later clicks are
+  // instant. See lib/prefetchPages.js.
+  useEffect(() => {
+    prefetchOperatorPages();
+  }, []);
   const user = getUser();
   const initials = (user?.username || "A").charAt(0).toUpperCase();
   // Exposed on the profile so the shell could warn without a second request,

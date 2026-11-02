@@ -176,6 +176,11 @@ MIDDLEWARE = [
     # gunicorn, which (unlike runserver with DEBUG=True) does not serve static
     # itself — without this the Django admin loads with no CSS.
     "whitenoise.middleware.WhiteNoiseMiddleware",
+    # Compress API answers. The proxy in front does not, so every JSON reply
+    # crossed the operator's mobile connection at full size -- an 87 KB
+    # router history is about 9 KB gzipped. Placed above everything that
+    # writes the body. See billing/middleware.py for what is left alone.
+    "billing.middleware.ApiGZipMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -485,6 +490,11 @@ DJANGO_ADMIN_PATH = os.getenv("DJANGO_ADMIN_PATH", "admin/")
 # password's SHA-1 and nothing else. Fails open: if the service cannot be
 # reached the password is judged on the other rules alone.
 PASSWORD_BREACH_CHECK = os.getenv("PASSWORD_BREACH_CHECK", "1") == "1"
+
+# Short-lived caching of the heaviest dashboard reports (usage, analytics).
+# See billing/response_cache.py. Off for the test run, where every test
+# reuses the same operator id and the same URLs.
+RESPONSE_CACHE_ENABLED = os.getenv("RESPONSE_CACHE_ENABLED", "1") == "1"
 
 # =====================================================
 # CELERY CONFIGURATION (CRITICAL)

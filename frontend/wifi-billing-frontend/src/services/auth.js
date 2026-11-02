@@ -1,5 +1,6 @@
 import api from "./api";
 import { isPlatformRole } from "../constants/roles";
+import { clearPersistedCache } from "../lib/persistCache";
 
 const IMPERSONATE_KEY = "impersonate";
 
@@ -33,11 +34,15 @@ export const confirmMfaSetup = async (code, ticket) =>
 
 /** Keep the tokens from a finished sign-in. */
 export const storeSession = (data) => {
+  // A new session starts with nothing remembered from whoever was here
+  // before, even if they never signed out.
+  clearPersistedCache();
   localStorage.setItem("access_token", data.access);
   localStorage.setItem("refresh_token", data.refresh);
 };
 
 const clearLocalSession = () => {
+  clearPersistedCache();
   localStorage.removeItem("access_token");
   localStorage.removeItem("refresh_token");
   localStorage.removeItem("user");

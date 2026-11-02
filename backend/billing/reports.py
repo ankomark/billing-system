@@ -8,11 +8,15 @@ from .models import Payment, Invoice, Subscription
 
 
 def revenue_summary():
-    # localdate(), not now().date(): the latter is the UTC date, while the
-    # database evaluates paid_at__date in TIME_ZONE (Africa/Nairobi, UTC+3).
-    # Between 21:00 and midnight UTC those are different days, so "today's
-    # revenue" silently reported the wrong figure for three hours daily —
-    # invisible on SQLite, which converts differently.
+    """
+    Today, last month, this month and this year, by the operator's calendar.
+
+    Boundaries are local midnights (Africa/Nairobi), compared against paid_at
+    itself. This used paid_at__date, which converts every row's timestamp to
+    a local date before comparing -- correct, but it cannot use the
+    (tenant, paid_at) index, so each of the four figures read every payment
+    the operator had ever taken. Same answer, from an index range.
+    """
     today = timezone.localdate()
     start_month = today.replace(day=1)
     start_year = today.replace(month=1, day=1)
@@ -21,22 +25,17 @@ def revenue_summary():
     # had just closed was nowhere on the page.
     start_last_month = (start_month - timedelta(days=1)).replace(day=1)
 
+    def total(start, end=None):
+        qs = Payment.objects.filter(paid_at__gte=_local_midnight(start))
+        if end is not None:
+            qs = qs.filter(paid_at__lt=_local_midnight(end))
+        return qs.aggregate(total=Sum("amount"))["total"] or 0
+
     return {
-        "today": Payment.objects.filter(
-            paid_at__date=today
-        ).aggregate(total=Sum("amount"))["total"] or 0,
-
-        "last_month": Payment.objects.filter(
-            paid_at__date__gte=start_last_month, paid_at__date__lt=start_month
-        ).aggregate(total=Sum("amount"))["total"] or 0,
-
-        "this_month": Payment.objects.filter(
-            paid_at__date__gte=start_month
-        ).aggregate(total=Sum("amount"))["total"] or 0,
-
-        "this_year": Payment.objects.filter(
-            paid_at__date__gte=start_year
-        ).aggregate(total=Sum("amount"))["total"] or 0,
+        "today": total(today),
+        "last_month": total(start_last_month, start_month),
+        "this_month": total(start_month),
+        "this_year": total(start_year),
 
         # Which month "last_month" is, by the server's calendar. Worked out in
         # the browser, a phone with its clock or time zone wrong would name

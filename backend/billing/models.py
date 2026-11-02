@@ -2535,6 +2535,15 @@ class PPPoEUsageRecord(TenantScopedModel):
     class Meta:
         indexes = [
             models.Index(fields=["customer", "period_start"]),
+            # The operator-wide question -- how much did the network carry
+            # since X -- had only (customer, period_start) to go on, so every
+            # usage panel scanned all of an operator's rows (2.75M, 506 MB on
+            # the hotspot table) to keep a few days of them. The byte columns
+            # ride along so the sums are answered from the index alone.
+            # Created concurrently; see migration 0076.
+            models.Index(fields=["tenant", "period_start"],
+                         include=["download_bytes", "upload_bytes"],
+                         name="ppusage_tenant_period_idx"),
         ]
 
     def __str__(self):
@@ -2625,6 +2634,15 @@ class HotspotUsageRecord(TenantScopedModel):
     class Meta:
         indexes = [
             models.Index(fields=["customer", "period_start"]),
+            # The operator-wide question -- how much did the network carry
+            # since X -- had only (customer, period_start) to go on, so every
+            # usage panel scanned all of an operator's rows (2.75M, 506 MB on
+            # the hotspot table) to keep a few days of them. The byte columns
+            # ride along so the sums are answered from the index alone.
+            # Created concurrently; see migration 0076.
+            models.Index(fields=["tenant", "period_start"],
+                         include=["download_bytes", "upload_bytes"],
+                         name="hsusage_tenant_period_idx"),
         ]
 
 

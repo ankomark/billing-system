@@ -55,3 +55,15 @@ class BillingTestRunner(DiscoverRunner):
         # third-party service and on the network of whoever ran it. Its own
         # tests switch it back on with the HTTP call mocked.
         settings.PASSWORD_BREACH_CHECK = False
+
+        # Same kind of reason again: the report cache would hand one test the
+        # answer another test computed, since they share an operator id and
+        # the URLs. Its own tests switch it on.
+        settings.RESPONSE_CACHE_ENABLED = False
+
+        # And through the environment, for --parallel: worker processes are
+        # started afresh and read settings.py again, so the assignments above
+        # never reach them. settings.py reads both of these from os.environ.
+        import os
+        os.environ["PASSWORD_BREACH_CHECK"] = "0"
+        os.environ["RESPONSE_CACHE_ENABLED"] = "0"

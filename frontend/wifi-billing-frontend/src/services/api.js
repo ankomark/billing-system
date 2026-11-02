@@ -35,7 +35,8 @@ api.interceptors.request.use((config) => {
 
 const signOutHere = () => {
   // Keep the device id: it is how the next sign-in from this browser is
-  // recognised as the same device.
+  // recognised as the same device. Everything else goes, the remembered
+  // dashboard (lib/persistCache.js) included.
   const device = localStorage.getItem("device_id");
   localStorage.clear();
   if (device) localStorage.setItem("device_id", device);

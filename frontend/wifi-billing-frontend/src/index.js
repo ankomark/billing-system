@@ -1,11 +1,12 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
-import { QueryClientProvider } from "@tanstack/react-query";
+import { PersistQueryClientProvider } from "@tanstack/react-query-persist-client";
 import { Toaster } from "react-hot-toast";
 import App from "./App";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { queryClient } from "./lib/queryClient";
+import { persistOptions } from "./lib/persistCache";
 import "./index.css";
 import StepUpPrompt from "./components/security/StepUpPrompt";
 
@@ -14,7 +15,7 @@ const root = ReactDOM.createRoot(document.getElementById("root"));
 root.render(
   <React.StrictMode>
     <ErrorBoundary>
-      <QueryClientProvider client={queryClient}>
+      <PersistQueryClientProvider client={queryClient} persistOptions={persistOptions}>
         <BrowserRouter>
           <App />
           <StepUpPrompt />
@@ -36,7 +37,7 @@ root.render(
             }}
           />
         </BrowserRouter>
-      </QueryClientProvider>
+      </PersistQueryClientProvider>
     </ErrorBoundary>
   </React.StrictMode>
 );

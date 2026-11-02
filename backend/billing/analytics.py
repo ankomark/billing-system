@@ -16,8 +16,11 @@ without how many purchases produced it. So the figures come back paired with
 their comparison rather than leaving the frontend to guess at one.
 """
 
+from contextlib import contextmanager
 from datetime import timedelta
 from decimal import Decimal
+
+from django.db import connection, transaction
 
 from django.db.models import Count, Q, Sum
 from django.db.models.functions import ExtractHour, TruncDate
@@ -163,20 +166,46 @@ def peak_clients_series(start, end, station=None):
     return series
 
 
+@contextmanager
+def _without_nested_loops():
+    """
+    Steer one query away from a nested-loop plan the row security misleads
+    the planner into.
+
+    The tenant policy adds a COALESCE(current_setting(...)) filter the planner
+    cannot estimate, so it expects one row where there are thousands and
+    picks a nested loop: for the package breakdown, every one of an
+    operator's 79,000 subscriptions probed for payments, instead of the
+    month's payments joined in one pass -- 423 ms against 207 on production
+    for the same rows.
+
+    SET LOCAL lasts only to the end of the transaction opened here, so it
+    cannot leak onto the next query or request using this connection.
+    """
+    if connection.vendor != "postgresql":
+        yield
+        return
+    with transaction.atomic():
+        with connection.cursor() as cursor:
+            cursor.execute("SET LOCAL enable_nestloop = off")
+        yield
+
+
 def revenue_by_package(start, end, station=None):
     """Which packages actually earn, with the volume behind each figure."""
     qs = Payment.objects.filter(paid_at__gte=start, paid_at__lt=end)
     if station:
         qs = qs.filter(customer__router__station_id=station)
-    rows = (
-        qs.values("subscription__package__name")
-        .annotate(
-            revenue=Sum("amount"),
-            purchases=Count("id"),
-            customers=Count("customer", distinct=True),
+    with _without_nested_loops():
+        rows = list(
+            qs.values("subscription__package__name")
+            .annotate(
+                revenue=Sum("amount"),
+                purchases=Count("id"),
+                customers=Count("customer", distinct=True),
+            )
+            .order_by("-revenue")
         )
-        .order_by("-revenue")
-    )
     return [
         {
             "name": r["subscription__package__name"] or "Unknown",

@@ -22,6 +22,7 @@ from rest_framework import status, permissions
 from rest_framework.exceptions import ValidationError
 from django.shortcuts import get_object_or_404
 from .mfa import require_recent_mfa
+from .response_cache import cached_get
 from .security import (
     device_token_for,
     device_token_matches,
@@ -1158,10 +1159,12 @@ class RevenueDashboardView(APIView):
     permission_classes = [IsTenantMember]
 
     def get(self, request):
+        # revenue_by_method and revenue_by_package used to ride along here:
+        # two aggregations over every payment the operator has ever taken,
+        # about 460 ms of this request, and nothing on the dashboard read
+        # either. The analytics endpoint has the windowed versions.
         return Response({
             "revenue_summary": revenue_summary(),
-            "revenue_by_method": revenue_by_method(),
-            "revenue_by_package": revenue_by_package(),
             "customer_stats": customer_stats(),
         })
 
@@ -5106,6 +5109,8 @@ class AdminUsageTotalsView(APIView):
 
     permission_classes = [IsTenantMember]
 
+    # Usage is collected every five minutes; see billing/response_cache.py.
+    @cached_get("usage-totals", 120)
     def get(self, request):
         station = request.query_params.get("station") or None
         totals = estate_usage_totals(station=station)
@@ -5118,6 +5123,8 @@ class AdminUsageTotalsView(APIView):
 class AdminUsageDailyView(APIView):
     permission_classes = [IsTenantMember]
 
+    # Usage is collected every five minutes; see billing/response_cache.py.
+    @cached_get("usage-daily", 120)
     def get(self, request):
         days = min(max(int(request.query_params.get("days", 7)), 1), 365)
         since = timezone.now() - timezone.timedelta(days=days)
@@ -5533,6 +5540,8 @@ class OperatorAnalyticsView(APIView):
 
     MAX_DAYS = 366
 
+    # Thirty days of charts do not visibly move in a minute; see billing/response_cache.py.
+    @cached_get("analytics", 60)
     def get(self, request):
         now = timezone.now()
 

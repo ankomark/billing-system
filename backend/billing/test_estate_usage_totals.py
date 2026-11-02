@@ -129,6 +129,38 @@ class EstateUsageTotals(TestCase):
 
         self.assertEqual(totals["week"]["total"], 7 * GB)
 
+    def test_the_raw_deltas_are_read_from_the_oldest_one_not_from_january(self):
+        """
+        Every day before the first delta is "uncovered" by the rollup too.
+        Starting the raw query at the earliest of those read every raw row on
+        every request -- 1.7 s in production. It must start at the oldest delta
+        and still count a missed day after it.
+        """
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        yesterday = self.today - dt.timedelta(days=1)
+        three_ago = self.today - dt.timedelta(days=3)
+        self._raw(self._at(three_ago), down=2 * GB, up=0)    # oldest delta; rollup missed it
+        self._raw(self._at(yesterday), down=6 * GB, up=1 * GB)
+        self._rolled(self.today - dt.timedelta(days=2), down=1 * GB, up=0)
+
+        with CaptureQueriesContext(connection) as q:
+            totals = estate_usage_totals(now=self.now)
+
+        self.assertEqual(totals["year"]["total"], 10 * GB)
+        raw_sums = [x["sql"] for x in q.captured_queries
+                    if "SUM" in x["sql"].upper() and "usagerecord" in x["sql"].lower()
+                    and "period_start" in x["sql"]]
+        # Local midnight of the oldest delta's day, as the database sees it (UTC).
+        bound = timezone.make_aware(
+            dt.datetime.combine(three_ago, dt.time.min), timezone.get_current_timezone()
+        ).astimezone(dt.timezone.utc).strftime("%Y-%m-%d %H:%M")
+        self.assertTrue(raw_sums)
+        for sql in raw_sums:
+            self.assertNotIn(f"{self.today.year - 1}-12-31 21:00", sql)   # 1 Jan local
+            self.assertIn(bound, sql)
+
     # ------------------------------------------------------------- windows
 
     def test_the_windows_are_calendar_not_rolling(self):

@@ -354,12 +354,18 @@ def estate_usage_totals(station=None, now=None):
     }
     window_start = starts["year"]
 
+    # The scoped managers, not all_tenants(): same rows -- the operator in
+    # context, or everyone when there is none -- but they say so as a plain
+    # tenant_id = N, which the (tenant, period_start) indexes can use. With
+    # all_tenants() the only operator filter left was row security's
+    # COALESCE(current_setting(...), tenant_id), which no index matches, so
+    # the indexes added for exactly these queries would have sat unused.
     def _scope(qs):
         return qs.filter(customer__router__station_id=station) if station else qs
 
     # ---- whole days the rollup has covered -------------------------------
     rolled = _scope(
-        UsageRecord.objects.all_tenants()
+        UsageRecord.objects
         .filter(date__gte=window_start, date__lt=today)
     )
     by_date = {
@@ -378,6 +384,24 @@ def estate_usage_totals(station=None, now=None):
         for i in range((today - window_start).days)
     }
     uncovered = (expected - covered) | {today}
+
+    # Only where raw deltas can exist. Every day of the year before this
+    # operator started -- or past the raw retention -- is "uncovered" too,
+    # because the rollup has nothing for it, and taking the earliest of those
+    # sent the raw query back to 1 January on every request: all 2.75M raw
+    # rows read to sum a few days. Nothing older than the oldest raw row can
+    # be found there, so nothing is lost by starting at it; with the
+    # (tenant, period_start) index that lookup is a single index probe.
+    oldest = [
+        first for first in (
+            _scope(model.objects)
+            .order_by("period_start").values_list("period_start", flat=True).first()
+            for model in (PPPoEUsageRecord, HotspotUsageRecord)
+        ) if first is not None
+    ]
+    if oldest:
+        oldest_day = timezone.localtime(min(oldest)).date()
+        uncovered = {d for d in uncovered if d >= oldest_day} | {today}
     raw_from = min(uncovered)
 
     midnight = timezone.make_aware(
@@ -387,7 +411,7 @@ def estate_usage_totals(station=None, now=None):
 
     for model in (PPPoEUsageRecord, HotspotUsageRecord):
         rows = (
-            _scope(model.objects.all_tenants().filter(period_start__gte=midnight))
+            _scope(model.objects.filter(period_start__gte=midnight))
             .annotate(d=TruncDate("period_start"))
             .values("d")
             .annotate(dn=Sum("download_bytes"), up=Sum("upload_bytes"))
