@@ -306,53 +306,22 @@ def roll_up_day(day):
     return written
 
 
-def estate_usage_totals(station=None, now=None):
+def usage_by_day(window_start, today, station=None):
     """
-    What the whole network has carried today, this week, this month, this year.
+    {date: (download, upload)} for every day from window_start to today
+    inclusive that carried anything, stitched from the two storage tiers.
 
-    Four calendar windows, not rolling ones. "This month" means since the 1st,
-    the way an operator reading a bill means it; a rolling 30 days would move
-    the boundary every time they looked and never agree with an invoice.
-
-    The hard part is the same one usage_since solves for a single subscriber,
-    and for the same reason: usage lives in two places. Whole days are folded
-    into UsageRecord by the nightly rollup, and everything the rollup has not
-    reached is still only in the five-minute deltas. Reading one without the
-    other is wrong in a different direction each way -- the rollup alone loses
-    today entirely, the raw rows alone lose every day past the 90-day retention.
-
-    So this reads which days the rollup has ACTUALLY covered rather than which
-    it ought to have. usage_since records why: the rollup runs at 01:20, so
-    between midnight and then yesterday has none, and assuming otherwise
-    "silently dropped a whole day from everybody's total for eighty minutes
-    every night". Anything uncovered -- today always, plus any day the rollup
-    missed or has not yet reached -- comes from the raw deltas, and no day is
-    ever counted from both.
-
-    rx_bytes is download and tx_bytes is upload, which is worth stating because
-    it was the other way round until migration 0064: the collector wrote the
-    router's rx into download from the first commit, and production held 63GB
-    of "download" against 718GB of "upload" before it was put right.
+    Whole days come from the nightly rollup (UsageRecord); today, and any day
+    the rollup has not covered, from the five-minute deltas -- never a day
+    from both. Shared by estate_usage_totals and the dashboard's daily usage
+    graph, so the two cannot disagree. See estate_usage_totals for the
+    history of why each rule here exists.
     """
-    from django.db.models import Sum
     from django.db.models.functions import TruncDate
 
     from billing.models import (
         HotspotUsageRecord, PPPoEUsageRecord, UsageRecord,
     )
-
-    now = now or timezone.now()
-    today = timezone.localdate(now)
-
-    starts = {
-        "today": today,
-        # Monday, because that is the week a Kenyan operator's week starts on
-        # and the one a rolling seven days would never line up with.
-        "week": today - timezone.timedelta(days=today.weekday()),
-        "month": today.replace(day=1),
-        "year": today.replace(month=1, day=1),
-    }
-    window_start = starts["year"]
 
     # The scoped managers, not all_tenants(): same rows -- the operator in
     # context, or everyone when there is none -- but they say so as a plain
@@ -424,6 +393,59 @@ def estate_usage_totals(station=None, now=None):
                 continue
             down, up = by_date.get(day, (0, 0))
             by_date[day] = (down + (r["dn"] or 0), up + (r["up"] or 0))
+
+    return by_date
+
+
+def estate_usage_totals(station=None, now=None):
+    """
+    What the whole network has carried today, this week, this month, this year.
+
+    Four calendar windows, not rolling ones. "This month" means since the 1st,
+    the way an operator reading a bill means it; a rolling 30 days would move
+    the boundary every time they looked and never agree with an invoice.
+
+    The hard part is the same one usage_since solves for a single subscriber,
+    and for the same reason: usage lives in two places. Whole days are folded
+    into UsageRecord by the nightly rollup, and everything the rollup has not
+    reached is still only in the five-minute deltas. Reading one without the
+    other is wrong in a different direction each way -- the rollup alone loses
+    today entirely, the raw rows alone lose every day past the 90-day retention.
+
+    So this reads which days the rollup has ACTUALLY covered rather than which
+    it ought to have. usage_since records why: the rollup runs at 01:20, so
+    between midnight and then yesterday has none, and assuming otherwise
+    "silently dropped a whole day from everybody's total for eighty minutes
+    every night". Anything uncovered -- today always, plus any day the rollup
+    missed or has not yet reached -- comes from the raw deltas, and no day is
+    ever counted from both.
+
+    rx_bytes is download and tx_bytes is upload, which is worth stating because
+    it was the other way round until migration 0064: the collector wrote the
+    router's rx into download from the first commit, and production held 63GB
+    of "download" against 718GB of "upload" before it was put right.
+    """
+    from django.db.models import Sum
+    from django.db.models.functions import TruncDate
+
+    from billing.models import (
+        HotspotUsageRecord, PPPoEUsageRecord, UsageRecord,
+    )
+
+    now = now or timezone.now()
+    today = timezone.localdate(now)
+
+    starts = {
+        "today": today,
+        # Monday, because that is the week a Kenyan operator's week starts on
+        # and the one a rolling seven days would never line up with.
+        "week": today - timezone.timedelta(days=today.weekday()),
+        "month": today.replace(day=1),
+        "year": today.replace(month=1, day=1),
+    }
+    window_start = starts["year"]
+
+    by_date = usage_by_day(window_start, today, station=station)
 
     # ---- slice the days into the four windows ----------------------------
     out = {}

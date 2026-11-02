@@ -250,3 +250,46 @@ class EstateUsageTotals(TestCase):
         self.assertEqual(estate_usage_totals(now=self.now)["week"]["download"], 10 * GB)
         self.assertEqual(
             estate_usage_totals(station=station.id, now=self.now)["week"]["download"], 6 * GB)
+
+
+class TheDailyUsageGraph(EstateUsageTotals):
+    """
+    The dashboard's daily graph, read the same way as the totals. Inherits the
+    fixtures above (and re-runs those tests, which is cheap).
+    """
+
+    def graph(self, days=7):
+        from unittest.mock import patch
+
+        from rest_framework.test import APIClient
+
+        from billing.auth_tokens import TenantTokenObtainPairSerializer
+        from billing.tests import make_admin
+
+        api = APIClient()
+        api.credentials(HTTP_AUTHORIZATION="Bearer " + str(
+            TenantTokenObtainPairSerializer.get_token(make_admin("graph_admin")).access_token))
+        with patch("django.utils.timezone.now", return_value=self.now):
+            resp = api.get("/api/admin/usage/daily/", {"days": days})
+        self.assertEqual(resp.status_code, 200)
+        return {str(r["day"]): r["download_gb"] + r["upload_gb"] for r in resp.data}
+
+    def test_finished_days_come_from_the_rollup_and_today_from_the_deltas(self):
+        yesterday = self.today - dt.timedelta(days=1)
+        self._rolled(yesterday, down=5 * GB, up=2 * GB)
+        self._raw(self._at(yesterday), down=5 * GB, up=2 * GB)   # never counted twice
+        self._raw(self._at(self.today), down=3 * GB, up=1 * GB)
+        days = self.graph()
+        self.assertEqual(days[str(yesterday)], 7)
+        self.assertEqual(days[str(self.today)], 4)
+
+    def test_the_oldest_bar_is_a_whole_day(self):
+        """Not 7 x 24 hours back from now, which cut the first day short."""
+        first = self.today - dt.timedelta(days=6)
+        self._raw(self._at(first, hour=1), down=1 * GB, up=0)    # early morning
+        self.assertEqual(self.graph()[str(first)], 1)
+
+    def test_a_long_range_reaches_past_the_raw_retention(self):
+        old = self.today - dt.timedelta(days=200)
+        self._rolled(old, down=9 * GB, up=0)
+        self.assertEqual(self.graph(days=365)[str(old)], 9)

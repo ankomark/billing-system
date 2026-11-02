@@ -42,7 +42,7 @@ from billing.serializers import BroadcastSerializer
 from billing.mpesa_client import get_mpesa_access_token, missing_mpesa_keys
 from django.db.models import Count, OuterRef, Prefetch, Q, Subquery, Sum
 from django.db.models.functions import TruncDate, TruncMonth
-from billing.services.usage import estate_usage_totals
+from billing.services.usage import estate_usage_totals, usage_by_day
 from billing.services.provisioning_state import is_provisioned
 from .reports import (revenue_summary,revenue_by_method,revenue_by_package,customer_stats,monthly_revenue,yearly_revenue,)
 from .analytics import (
@@ -5126,49 +5126,32 @@ class AdminUsageDailyView(APIView):
     # Usage is collected every five minutes; see billing/response_cache.py.
     @cached_get("usage-daily", 120)
     def get(self, request):
-        days = min(max(int(request.query_params.get("days", 7)), 1), 365)
-        since = timezone.now() - timezone.timedelta(days=days)
-
-        pppoe = (
-            PPPoEUsageRecord.objects
-            .filter(period_start__gte=since)
-            .annotate(day=TruncDate("period_start"))
-            .values("day")
-            .annotate(
-                download=Sum("download_bytes"),
-                upload=Sum("upload_bytes"),
-            )
-        )
-
-        hotspot = (
-            HotspotUsageRecord.objects
-            .filter(period_start__gte=since)
-            .annotate(day=TruncDate("period_start"))
-            .values("day")
-            .annotate(
-                download=Sum("download_bytes"),
-                upload=Sum("upload_bytes"),
-            )
-        )
-
-        # merge PPPoE + Hotspot by day
-        data = {}
-        for x in list(pppoe) + list(hotspot):
-            day = x["day"]
-            if day not in data:
-                data[day] = {"day": day, "download": 0, "upload": 0}
-            data[day]["download"] += x["download"] or 0
-            data[day]["upload"] += x["upload"] or 0
+        try:
+            days = min(max(int(request.query_params.get("days", 7)), 1), 365)
+        except (TypeError, ValueError):
+            days = 7
+        # Whole calendar days, today included, read the way the usage totals
+        # read them: finished days from the nightly rollup, today (and any day
+        # the rollup missed) from the five-minute deltas.
+        #
+        # This used to sum the raw deltas since exactly `days` x 24 hours ago,
+        # which had three faults: it read ~375,000 rows for a week (250 ms);
+        # the oldest bar was always a part-day starting at the current time of
+        # day, so it always looked low; and beyond the 90-day raw retention
+        # the longer ranges it offered were silently empty.
+        today = timezone.localdate()
+        by_date = usage_by_day(today - timezone.timedelta(days=days - 1), today)
 
         return Response([
             {
-                "day": k,
-                "download_gb": round(v["download"] / (1024**3), 2),
-                "upload_gb": round(v["upload"] / (1024**3), 2),
+                "day": day,
+                "download_gb": round(down / (1024**3), 2),
+                "upload_gb": round(up / (1024**3), 2),
             }
-            for k, v in sorted(data.items())
+            for day, (down, up) in sorted(by_date.items())
         ])
-        
+
+
 class AdminUsageAlertsView(APIView):
     permission_classes = [IsTenantMember]
 
