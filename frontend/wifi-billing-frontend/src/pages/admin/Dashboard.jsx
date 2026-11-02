@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import {
   Activity, CreditCard, Clock, RefreshCw, Users, Wallet,
@@ -39,6 +39,7 @@ import { fetchDashboardSummary } from "../../services/dashboard";
  */
 export default function Dashboard() {
   const navigate = useNavigate();
+  const qc = useQueryClient();
 
   const { data, isLoading, isError, isFetching, refetch, dataUpdatedAt } = useQuery({
     queryKey: ["dashboard-summary"],
@@ -68,12 +69,10 @@ export default function Dashboard() {
   const rev = data?.revenue_summary;
   // Named, so "Last month" says which month it means on the 1st and the 31st
   // alike.
-  const lastMonthName = (() => {
-    const d = new Date();
-    d.setDate(1);
-    d.setMonth(d.getMonth() - 1);
-    return d.toLocaleDateString("en-KE", { month: "long" });
-  })();
+  // From the server's calendar, not this device's clock.
+  const lastMonthName = rev?.last_month_start
+    ? new Date(`${rev.last_month_start}T12:00:00`).toLocaleDateString("en-KE", { month: "long" })
+    : undefined;
   const stats = data?.customer_stats;
   const skeleton = (
     <div className="h-[92px] rounded-xl border border-white/10 bg-slate-900/80 shadow-lg shadow-black/20 animate-pulse" />
@@ -93,7 +92,13 @@ export default function Dashboard() {
             </span>
           )}
           <button
-            onClick={() => refetch()}
+            onClick={() => {
+              refetch();
+              // The earnings table too, or it lags the banner above it by
+              // up to its five-minute cache after a payment.
+              qc.invalidateQueries({ queryKey: ["monthly-revenue"] });
+              qc.invalidateQueries({ queryKey: ["yearly-revenue"] });
+            }}
             disabled={isFetching}
             className="inline-flex items-center gap-1.5 rounded-lg border border-white/15 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-white/5 disabled:opacity-50 transition-colors"
           >

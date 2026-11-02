@@ -37,6 +37,11 @@ def revenue_summary():
         "this_year": Payment.objects.filter(
             paid_at__date__gte=start_year
         ).aggregate(total=Sum("amount"))["total"] or 0,
+
+        # Which month "last_month" is, by the server's calendar. Worked out in
+        # the browser, a phone with its clock or time zone wrong would name
+        # the wrong month beside the right figure.
+        "last_month_start": start_last_month.isoformat(),
     }
 
 
@@ -172,7 +177,6 @@ def monthly_revenue(months=12):
     # a morning of today with all of that day last month, so the month in
     # progress would read as down every day until midnight.
     elapsed = timezone.now() - _local_midnight(this_month)
-    days_in = elapsed.days + 1
     last_month = _add_months(this_month, -1)
     same_point = min(_local_midnight(last_month) + elapsed, _local_midnight(this_month))
     prior_to_date = float(
@@ -247,10 +251,19 @@ def yearly_revenue(years=10):
                   .values("y").annotate(n=Count("customer", distinct=True)))
     }
 
-    # Last year up to the same day and time, for the year in progress.
+    # Last year up to the same date and time, for the year in progress.
+    # By calendar date, not by days elapsed since 1 January: in a leap year
+    # those part ways at 29 February, and from 1 March on every comparison
+    # would have been against a day later last year. 29 February itself has
+    # no twin, so it is compared with the end of 28 February.
     last_year = this_year.replace(year=this_year.year - 1)
-    elapsed = now - _local_midnight(this_year)
-    same_point = min(_local_midnight(last_year) + elapsed, _local_midnight(this_year))
+    local_now = timezone.localtime(now)
+    try:
+        same_point = local_now.replace(year=local_now.year - 1)
+    except ValueError:   # 29 February
+        same_point = local_now.replace(year=local_now.year - 1, month=3, day=1,
+                                       hour=0, minute=0, second=0, microsecond=0)
+    same_point = min(same_point, _local_midnight(this_year))
     prior_to_date = float(
         Payment.objects.filter(
             paid_at__gte=_local_midnight(last_year), paid_at__lt=same_point,

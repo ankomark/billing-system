@@ -221,3 +221,81 @@ class YearlyEarnings(MonthlyEarnings):
         resp = client.get("/api/reports/revenue/yearly/")
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.data["results"][0]["year"], self.this_year.year)
+
+
+class AtTheEdgesOfTheCalendar(TestCase):
+    """
+    The clock frozen at the moments these figures are most likely to be
+    wrong: the turn of the year, the end of a long month after a short one,
+    and a leap year.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.get(slug="skylink")
+        with patch("billing.models.notify_customer"):
+            router = make_router()
+            package = make_package()
+            self.customer = Customer.objects.create(
+                tenant=self.tenant, full_name="Edge", phone="254711000077",
+                connection_type="pppoe", router=router)
+            self.sub = Subscription.objects.create(customer=self.customer, package=package)
+        Payment.objects.all_tenants().all().delete()
+
+    def pay(self, amount, when, method="mpesa"):
+        p = Payment.objects.bulk_create([Payment(
+            tenant=self.tenant, customer=self.customer, subscription=self.sub,
+            amount=Decimal(amount), method=method)])[0]
+        Payment.objects.all_tenants().filter(pk=p.pk).update(paid_at=when)
+
+    def at(self, y, m, d, hh=0, mm=0, ss=0):
+        return timezone.make_aware(datetime(y, m, d, hh, mm, ss))
+
+    def frozen(self, when):
+        return patch("django.utils.timezone.now", return_value=when)
+
+    def test_new_years_morning(self):
+        self.pay("1000", self.at(2026, 12, 31, 23, 59, 59))   # last second of the year
+        self.pay("50", self.at(2027, 1, 1, 0, 0, 0))          # first second of the next
+        with self.frozen(self.at(2027, 1, 1, 0, 10)), tenant_context(self.tenant):
+            months = monthly_revenue(3)
+            years = yearly_revenue()
+            summary = revenue_summary()
+        self.assertEqual([m["month"] for m in months], ["2027-01", "2026-12", "2026-11"])
+        self.assertEqual((months[0]["revenue"], months[1]["revenue"]), (50, 1000))
+        self.assertEqual([(y["year"], y["revenue"], y["in_progress"]) for y in years],
+                         [(2027, 50, True), (2026, 1000, False)])
+        self.assertEqual(summary["last_month_start"], "2026-12-01")
+        self.assertEqual(Decimal(str(summary["last_month"])), Decimal("1000"))
+        self.assertEqual(Decimal(str(summary["this_year"])), Decimal("50"))
+
+    def test_the_end_of_march_is_compared_with_all_of_february(self):
+        self.pay("100", self.at(2027, 2, 1, 9))
+        self.pay("100", self.at(2027, 2, 28, 23))
+        self.pay("300", self.at(2027, 3, 2, 9))
+        with self.frozen(self.at(2027, 3, 31, 22)), tenant_context(self.tenant):
+            now_row = monthly_revenue(1)[0]
+        # Past the end of February: the whole of it, 200, never March's days.
+        self.assertEqual(now_row["change"], 50.0)
+
+    def test_mid_month_is_compared_to_the_minute(self):
+        self.pay("100", self.at(2027, 4, 15, 9, 59))    # before "this point" in April
+        self.pay("999", self.at(2027, 4, 15, 10, 1))    # after it
+        self.pay("150", self.at(2027, 5, 15, 9, 0))
+        with self.frozen(self.at(2027, 5, 15, 10, 0)), tenant_context(self.tenant):
+            self.assertEqual(monthly_revenue(1)[0]["change"], 50.0)
+
+    def test_a_leap_year_compares_by_date_not_by_day_count(self):
+        """1 March 2028 against 1 March 2027 -- not 2 March, a day later."""
+        self.pay("100", self.at(2027, 3, 1, 12))
+        self.pay("999", self.at(2027, 3, 2, 12))        # would count if a day off
+        self.pay("150", self.at(2028, 1, 10))
+        with self.frozen(self.at(2028, 3, 1, 23, 0)), tenant_context(self.tenant):
+            # 2027 up to 1 March 23:00 holds the 100 only.
+            self.assertEqual(yearly_revenue()[0]["change"], 50.0)
+
+    def test_the_leap_day_itself(self):
+        self.pay("100", self.at(2027, 2, 28, 23))
+        self.pay("999", self.at(2027, 3, 1, 0, 30))
+        self.pay("150", self.at(2028, 2, 29, 8))
+        with self.frozen(self.at(2028, 2, 29, 9)), tenant_context(self.tenant):
+            self.assertEqual(yearly_revenue()[0]["change"], 50.0)
