@@ -196,6 +196,11 @@ export default function Login() {
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               autoComplete="username"
+              // The server refuses anything longer, and anything but letters,
+              // digits and @ . + - _ ; that check is the one that counts.
+              maxLength={150}
+              autoCapitalize="none"
+              spellCheck={false}
               required
               autoFocus
             />
@@ -208,6 +213,7 @@ export default function Login() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               autoComplete="current-password"
+              maxLength={128}
               required
             />
           </Field>
@@ -295,6 +301,7 @@ function CodeInput({ value, onChange }) {
       onChange={(e) => onChange(e.target.value)}
       inputMode="numeric"
       autoComplete="one-time-code"
+      maxLength={20}
       placeholder="123456"
       aria-label="Verification code"
       autoFocus
