@@ -217,8 +217,9 @@ class TetheringCaseAdmin(admin.ModelAdmin):
     """
 
     list_display = ("customer", "ip_address", "hops", "mixed_ttl",
-                    "high_connections", "observations", "status", "last_seen")
-    list_filter = ("status", "mixed_ttl", "high_connections", "hops")
+                    "high_connections", "mixed_os", "observations", "status",
+                    "last_seen")
+    list_filter = ("status", "mixed_ttl", "high_connections", "mixed_os", "hops")
     search_fields = ("customer__full_name", "customer__phone", "ip_address",
                      "mac_address")
     readonly_fields = tuple(

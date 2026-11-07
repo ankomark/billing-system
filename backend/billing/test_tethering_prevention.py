@@ -293,3 +293,98 @@ class IPv6OpenTests(TestCase):
             {"address": "::1/128", "interface": "lo"},
             {"address": "2001:db8::1/64", "interface": "bridge1"},
         ]))
+
+
+class ProxySharingTests(_Base):
+    """
+    A proxy app on the phone (NetShare and the like) re-makes the friend's
+    connections itself, so they leave at TTL 64 and the hop rules never see
+    them. Two operating systems' own servers asked from one address is what
+    gives it away.
+    """
+
+    IP = "10.5.50.30"
+    PHONE = "AA:BB:CC:DD:EE:04"
+
+    def case(self):
+        from billing.models import TetheringCase
+        return TetheringCase.objects.all_tenants().filter(
+            tenant=self.t1).first()
+
+    def two_systems(self, timeout="30m"):
+        self.api.suspect(self.IP, "tether-os-android", timeout)
+        self.api.suspect(self.IP, "tether-os-windows", timeout)
+
+    def os_rules(self):
+        return [r for r in self.api.mangle()
+                if "os=" in (r.get("comment") or "")]
+
+    def test_off_by_default(self):
+        self.set(TETHERING_POLICY="kick")
+        self.sweep()
+        self.assertEqual(self.os_rules(), [])
+
+    def test_rules_look_only_at_the_start_of_logged_in_clients_connections(self):
+        self.set(TETHERING_POLICY="kick", TETHERING_OS_MIX="watch")
+        self.sweep()
+        rules = self.os_rules()
+        self.assertTrue(rules)
+        for r in rules:
+            self.assertEqual(r["hotspot"], "auth")
+            self.assertEqual(r["connection-bytes"], "0-4000")
+            self.assertTrue(r.get("tls-host") or r.get("content"))
+        lists = {r["address-list"] for r in rules}
+        self.assertEqual(lists, {"tether-os-windows", "tether-os-apple",
+                                 "tether-os-android"})
+
+    def test_one_system_alone_is_not_sharing(self):
+        self.set(TETHERING_POLICY="kick", TETHERING_OS_MIX="act")
+        self.api.session(self.IP, self.PHONE)
+        self.api.suspect(self.IP, "tether-os-android", "30m")
+        self.sweep()
+        self.assertIsNone(self.case())
+
+    def test_watch_records_but_never_kicks(self):
+        self.set(TETHERING_POLICY="kick", TETHERING_OS_MIX="watch",
+                 TETHERING_MIN_OBSERVATIONS=2)
+        self.api.session(self.IP, self.PHONE)
+        self.two_systems()
+        for _ in range(4):
+            self.sweep()
+        case = self.case()
+        self.assertTrue(case.mixed_os)
+        self.assertEqual(case.status, "watching")
+        self.assertEqual(len(self.api.rows("ip", "hotspot", "active")), 1)
+
+    def test_act_kicks_on_the_ordinary_threshold(self):
+        from billing.models import TetheringCase
+        self.set(TETHERING_POLICY="kick", TETHERING_OS_MIX="act",
+                 TETHERING_MIN_OBSERVATIONS=2, TETHERING_BUSY_OBSERVATIONS=6)
+        self.api.session(self.IP, self.PHONE)
+        self.two_systems()
+        self.sweep()
+        self.sweep()
+        self.assertEqual(self.case().status, TetheringCase.KICKED)
+
+    def test_evidence_left_by_the_last_holder_of_the_address_is_not_counted(self):
+        """Entries 20 minutes old, a session 5 minutes old: not theirs."""
+        self.set(TETHERING_POLICY="kick", TETHERING_OS_MIX="act")
+        self.api.session(self.IP, self.PHONE, uptime="5m")
+        self.two_systems(timeout="10m")
+        self.sweep()
+        case = self.case()
+        self.assertTrue(case is None or not case.mixed_os)
+
+    def test_switching_off_takes_the_rules_off(self):
+        self.set(TETHERING_POLICY="kick", TETHERING_OS_MIX="watch")
+        self.sweep()
+        self.set(TETHERING_OS_MIX="off")
+        self.sweep()
+        self.assertEqual(self.os_rules(), [])
+
+    def test_a_second_sweep_changes_nothing(self):
+        self.set(TETHERING_POLICY="kick", TETHERING_OS_MIX="watch")
+        self.sweep()
+        with patch.object(FakeMikrotik.Table, "update") as update:
+            self.sweep()
+        update.assert_not_called()

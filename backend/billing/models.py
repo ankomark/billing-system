@@ -1866,6 +1866,11 @@ class TetheringCase(TenantScopedModel):
     # `hops` of zero is one this and nothing else has ever seen.
     high_connections = models.BooleanField(default=False)
 
+    # Seen talking to two operating systems' own servers (Windows Update and
+    # Apple push, say) from one address: two devices behind it, which is how
+    # a proxy app on the phone shows itself. See tethering.os_rules().
+    mixed_os = models.BooleanField(default=False)
+
     # The address a throttle was actually applied to, which is not necessarily
     # the address the subscriber has now. Leases move. Without recording what
     # was done, lifting the throttle later means guessing — and guessing wrong

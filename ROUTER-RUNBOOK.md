@@ -496,6 +496,7 @@ Three operator settings, all in `services/tethering.py`:
 |---|---|
 | `TETHERING_PREVENT=true` | Router sets TTL=1 on traffic *to* logged-in clients. The phone gets it; anything behind its hotspot does not. |
 | `TETHERING_REDIRECT=true` | Plain-HTTP from behind a phone (TTL 63/127/254) is NATted to our server, which sends it to `/shared/` — "get your own bundle". Phones show it as *Sign in to network*. Needs PREVENT. |
+| `TETHERING_OS_MIX=watch` or `act` | Proxy apps on the phone (NetShare, Every Proxy) defeat TTL. Mangle rules match OS-only server names (Windows Update, Apple push, Android check-in) by TLS SNI; two OSes on one login = a second device behind it. `watch` records `mixed_os` on cases only; `act` kicks at the ordinary threshold. Run `watch` a day and review the cases before `act`. Android→Android sharing is not caught by this. |
 | `TETHERING_POLICY=kick` | Detection, for the rooted phone that raises TTL back: ends the session and texts the subscriber. |
 
 All three need `TETHERING_POLICY` to be something other than `off`; the sweep

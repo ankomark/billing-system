@@ -111,11 +111,19 @@ HOP1_LIST = "tether-hop1"
 HOP2_LIST = "tether-hop2"
 BUSY_LIST = "tether-busy"
 
+# One list per operating system, filled by the server names only that system
+# contacts. See os_rules().
+OS_LISTS = {
+    "windows": "tether-os-windows",
+    "apple": "tether-os-apple",
+    "android": "tether-os-android",
+}
+
 # How many routers the traffic crossed before it reached ours.
 LIST_HOPS = {NORMAL_LIST: 0, HOP1_LIST: 1, HOP2_LIST: 2}
 
 # Every list this module owns, including the one that is not about hops.
-ALL_LISTS = (NORMAL_LIST, HOP1_LIST, HOP2_LIST, BUSY_LIST)
+ALL_LISTS = (NORMAL_LIST, HOP1_LIST, HOP2_LIST, BUSY_LIST) + tuple(OS_LISTS.values())
 
 # The round numbers senders start with.
 INITIAL_TTLS = (64, 128, 255)
@@ -189,6 +197,100 @@ def mangle_rules(timeout="10m", connection_limit=DEFAULT_CONNECTION_LIMIT):
         "comment": f"{RULE_COMMENT} connections>{connection_limit}",
     })
     return rules
+
+
+# Proxy sharing: the evasion the hop counter cannot see.
+#
+# With TTL=1 in force, a phone's own hotspot gives whatever joins it nothing.
+# What still works is an app on the phone (NetShare, Every Proxy, PdaNet's
+# WiFi-Direct mode) that accepts the friend's requests and makes every
+# connection itself. Those leave the phone at 64, exactly like its own
+# browsing, and connection count does not separate them either: on skylink3 a
+# quarter of ordinary phones hold more than fifty connections, most of it UDP.
+#
+# What a proxy cannot hide is whose software is asking. The friend's laptop
+# still asks Windows Update for updates and the friend's iPhone still keeps its
+# Apple push connection open, and the server name rides in the clear at the
+# start of every TLS connection (and the Host line of plain HTTP), proxied or
+# not. One handset never talks to two operating systems' home servers. An
+# address seen doing both has two devices behind it.
+#
+# The names are the ones only that system's own plumbing uses -- update,
+# push, location and connectivity checks -- not anything an app or a browser
+# on another system would load. Two of the same system (an Android sharing to
+# an Android) look like one and are not caught here.
+#
+# Only the start of each connection is inspected (connection-bytes), so the
+# cost is a string match on a ClientHello, not on every packet of a download.
+OS_HOSTS = {
+    "windows": ("*.update.microsoft.com", "*.delivery.mp.microsoft.com",
+                "*.windowsupdate.com", "settings-win.data.microsoft.com",
+                "*.wns.windows.com"),
+    "apple": ("*.push.apple.com", "*.ls.apple.com", "mesu.apple.com"),
+    "android": ("android.clients.google.com", "android.googleapis.com"),
+}
+OS_HTTP_PROBES = {
+    "windows": "msftconnecttest.com",
+    "apple": "captive.apple.com",
+    "android": "connectivitycheck.gstatic.com",
+}
+# Long enough that a laptop's update check and a phone's push reconnect, which
+# do not happen every ten minutes, can still be seen together.
+OS_LIST_TIMEOUT = "30m"
+
+
+def os_rules(timeout=OS_LIST_TIMEOUT):
+    rules = []
+    for name, hosts in OS_HOSTS.items():
+        for host in hosts:
+            rules.append({
+                "chain": "prerouting",
+                "action": "add-src-to-address-list",
+                "address-list": OS_LISTS[name],
+                "address-list-timeout": timeout,
+                "hotspot": "auth",
+                "protocol": "tcp",
+                "dst-port": "443",
+                "connection-bytes": "0-4000",
+                "tls-host": host,
+                "comment": f"{RULE_COMMENT} os={name} {host}",
+            })
+        rules.append({
+            "chain": "prerouting",
+            "action": "add-src-to-address-list",
+            "address-list": OS_LISTS[name],
+            "address-list-timeout": timeout,
+            "hotspot": "auth",
+            "protocol": "tcp",
+            "dst-port": "80",
+            "connection-bytes": "0-4000",
+            "content": OS_HTTP_PROBES[name],
+            "comment": f"{RULE_COMMENT} os={name} http",
+        })
+    return rules
+
+
+def mixed_os_addresses(lists, sessions, configured_seconds):
+    """
+    {address: entries} for every address seen talking to two or more operating
+    systems' servers during the session on it now.
+
+    Each entry must be the current session's own, for the reason
+    caused_by_this_session gives: an entry left by the last holder of the
+    address would otherwise pair with the next holder's own phone and accuse
+    them of a device they never had.
+    """
+    seen = {}
+    for list_name in OS_LISTS.values():
+        for ip, entry in lists.get(list_name, {}).items():
+            session = sessions.get(ip)
+            if not session:
+                continue
+            if caused_by_this_session(entry, session,
+                                      configured_seconds) is not True:
+                continue
+            seen.setdefault(ip, []).append(entry)
+    return {ip: entries for ip, entries in seen.items() if len(entries) >= 2}
 
 
 # Prevention, as opposed to everything else in this module, which detects.
@@ -481,7 +583,7 @@ def _filter_drift(current, rule):
 
 
 def ensure_rules(api, *, timeout="10m", connections=DEFAULT_CONNECTION_LIMIT,
-                 block_lists=(), prevent=False, redirect_to=None):
+                 block_lists=(), prevent=False, redirect_to=None, os_mix=False):
     """
     Install the detection rules, or leave them alone if they are already right.
 
@@ -499,6 +601,8 @@ def ensure_rules(api, *, timeout="10m", connections=DEFAULT_CONNECTION_LIMIT,
     phone has a working connection and no reason to read a sales page.
     """
     wanted = mangle_rules(timeout, connections)
+    if os_mix:
+        wanted += os_rules()
     nat = []
     allowed = []
     if prevent:
@@ -926,6 +1030,24 @@ def prevents(tenant=None):
     return str(raw).strip().lower() in ("1", "true", "yes", "on")
 
 
+OS_MIX_OFF, OS_MIX_WATCH, OS_MIX_ACT = "off", "watch", "act"
+
+
+def os_mix_mode(tenant=None):
+    """
+    TETHERING_OS_MIX: off (default), watch, or act.
+
+    `watch` installs the rules and records which cases had two systems behind
+    one address, without that evidence on its own costing anybody anything --
+    the way to see what it would do on a real network before it does it.
+    `act` lets it open and act on a case at the ordinary threshold, like a hop
+    mismatch: two operating systems on one address has one explanation.
+    """
+    raw = str(get_setting("TETHERING_OS_MIX", OS_MIX_OFF, tenant=tenant)
+              or "").strip().lower()
+    return raw if raw in (OS_MIX_WATCH, OS_MIX_ACT) else OS_MIX_OFF
+
+
 SHARED_PAGE_PATH = "/shared/"
 
 
@@ -1114,6 +1236,7 @@ def sweep_router(router, *, now=None):
     # router that was on `block` yesterday.
     blocking = block_lists_for(tenant_id) if action == BLOCK else ()
     prevent = prevents(tenant_id)
+    os_mode = os_mix_mode(tenant_id)
 
     try:
         # Marked before the attempt, not after. A run that adds the rule and
@@ -1124,7 +1247,8 @@ def sweep_router(router, *, now=None):
         ensure_rules(api, timeout=timeout,
                      connections=connection_limit(tenant_id),
                      block_lists=blocking, prevent=prevent,
-                     redirect_to=redirect_target(tenant_id) if prevent else None)
+                     redirect_to=redirect_target(tenant_id) if prevent else None,
+                     os_mix=os_mode != OS_MIX_OFF)
         # Deliberately not cleared here when `blocking` is empty. This is one
         # router of possibly several, and clearing on the first one that came
         # clean would strand the reject rules on a sibling that was unreachable
@@ -1184,10 +1308,25 @@ def sweep_router(router, *, now=None):
 
     configured = _timeout_seconds(timeout)
 
+    # Two operating systems behind one address. Their entries were already
+    # checked against the session holding it, so freshness is settled for an
+    # address that is here on this evidence alone.
+    mixed_os = (mixed_os_addresses(lists, sessions,
+                                   _timeout_seconds(OS_LIST_TIMEOUT))
+                if os_mode != OS_MIX_OFF else {})
+    os_only = set()
+    for ip, entries in mixed_os.items():
+        if ip not in suspects:
+            suspects[ip] = (0, entries[0])
+            os_only.add(ip)
+
     for ip, (hops, entry) in suspects.items():
         session = sessions.get(ip)
-        fresh = (caused_by_this_session(entry, session, configured)
-                 if session else None)
+        if ip in os_only:
+            fresh = True
+        else:
+            fresh = (caused_by_this_session(entry, session, configured)
+                     if session else None)
         if session and fresh is None:
             logger.warning(
                 "[tether] %s did not report enough to tell whether the entry "
@@ -1199,6 +1338,7 @@ def sweep_router(router, *, now=None):
             hops=hops,
             mixed=ip in lists[NORMAL_LIST],
             busy=ip in lists[BUSY_LIST],
+            os_mixed=ip in mixed_os,
             session=session,
             fresh=fresh,
             now=now,
@@ -1206,7 +1346,8 @@ def sweep_router(router, *, now=None):
         if case is None:
             continue
         seen += 1
-        if _act(api, case, action, threshold, tenant_id, now, session):
+        if _act(api, case, action, threshold, tenant_id, now, session,
+                os_mode=os_mode):
             acted += 1
 
     # A throttled subscriber whose lease moved. Handled here rather than in
@@ -1271,7 +1412,8 @@ def _follow_throttles(api, router, sessions, now):
         case.save(update_fields=["throttled_ip", "ip_address", "last_seen"])
 
 
-def _record(*, router, ip, hops, mixed, busy, session, fresh, now):
+def _record(*, router, ip, hops, mixed, busy, session, fresh, now,
+            os_mixed=False):
     """
     Open or extend the case for one suspicious address.
 
@@ -1340,6 +1482,7 @@ def _record(*, router, ip, hops, mixed, busy, session, fresh, now):
         case.mac_address = session.get("mac", "") or case.mac_address
         case.mixed_ttl = case.mixed_ttl or mixed
         case.high_connections = case.high_connections or busy
+        case.mixed_os = case.mixed_os or os_mixed
         case.observations = (case.observations or 0) + 1
 
     try:
@@ -1356,7 +1499,8 @@ def _record(*, router, ip, hops, mixed, busy, session, fresh, now):
     return case
 
 
-def _act(api, case, action, threshold, tenant_id, now, session=None):
+def _act(api, case, action, threshold, tenant_id, now, session=None,
+         os_mode=OS_MIX_OFF):
     """
     Apply the operator's policy when the evidence has held up.
 
@@ -1402,8 +1546,18 @@ def _act(api, case, action, threshold, tenant_id, now, session=None):
     # Connection count on its own is the weaker signal and answers to the
     # longer threshold. hops is 0 only when nothing but tether-busy has ever
     # seen this address.
+    #
+    # Two operating systems on one address is as strong as a hop mismatch and
+    # answers to the same threshold -- once the operator has watched it and
+    # said so with TETHERING_OS_MIX=act. Under `watch` it is recorded and that
+    # is all: a case with nothing else against it goes no further.
     if not case.hops:
-        threshold = busy_observations(tenant_id)
+        if case.mixed_os and os_mode == OS_MIX_ACT:
+            pass
+        elif case.high_connections:
+            threshold = busy_observations(tenant_id)
+        else:
+            return False
 
     if case.observations - case.acted_observations < threshold:
         return False

@@ -55,6 +55,9 @@ ALL_SETTING_KEYS = [
     # Whether a device behind a phone's hotspot is sent to the /shared/ page
     # rather than left with no internet. Only alongside TETHERING_PREVENT.
     "TETHERING_REDIRECT",
+    # off / watch / act: catching proxy-app sharing by two operating systems
+    # behind one address. See tethering.os_mix_mode().
+    "TETHERING_OS_MIX",
     # Written by the sweep, not by an operator: whether a router of theirs may
     # still be carrying rules that stop traffic. It is what the off path reads
     # before deciding to dial anybody. See tethering.BLOCK_MARKER.
