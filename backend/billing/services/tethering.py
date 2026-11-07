@@ -218,6 +218,13 @@ def mangle_rules(timeout="10m", connection_limit=DEFAULT_CONNECTION_LIMIT):
 # operator's own access point, a camera), is ever affected.
 PREVENT_COMMENT = f"{RULE_COMMENT} prevent ttl=1"
 
+# Addresses whose replies keep their ordinary hop counter: our own server,
+# which serves the page a tethered device is sent to. Without the exemption
+# the redirect below would deliver that page at TTL=1, and it would die at
+# the phone like everything else.
+ALLOWED_LIST = "tether-allowed"
+ALLOWED_COMMENT = f"{RULE_COMMENT} allowed"
+
 
 def prevent_rules():
     return [{
@@ -226,8 +233,61 @@ def prevent_rules():
         "new-ttl": "set:1",
         "passthrough": "yes",
         "hotspot": "to-client,auth",
+        "src-address-list": f"!{ALLOWED_LIST}",
         "comment": PREVENT_COMMENT,
     }]
+
+
+# Sending the device behind the phone to a page that sells it a bundle.
+#
+# Prevention alone leaves the friend with a hotspot that "has no internet".
+# This turns that into a sales page. Their plain-HTTP connections -- which is
+# what every phone's "is there internet?" check uses -- are recognised by the
+# same signal detection uses, one hop short of a starting value, and NATted to
+# our server, which answers every one with a redirect to /shared/. The phone
+# sees that as a captive portal and pops up "Sign in to network" with our page
+# in it. HTTPS cannot be redirected without certificate errors and is left to
+# prevention, which already stops it.
+#
+# A packet mark, not a connection mark. The first packet of a connection is
+# the only one dstnat looks at, so a packet mark is enough, and connection
+# marks are already spoken for on routers that steer overflow out a second
+# uplink by them (skylink3's Starlink rules) -- overwriting one would re-route
+# somebody's connection.
+REDIRECT_MARK = "tether-redirect"
+REDIRECT_COMMENT = f"{RULE_COMMENT} redirect"
+
+
+def redirect_rules(target_ip):
+    """(mangle rules, nat rules) that send tethered HTTP to `target_ip`."""
+    mangle = [{
+        "chain": "prerouting",
+        "action": "mark-packet",
+        "new-packet-mark": REDIRECT_MARK,
+        "passthrough": "yes",
+        "hotspot": "auth",
+        "connection-state": "new",
+        "protocol": "tcp",
+        "dst-port": "80",
+        "dst-address-list": f"!{ALLOWED_LIST}",
+        "ttl": f"equal:{ttl}",
+        "comment": f"{REDIRECT_COMMENT} ttl={ttl}",
+    } for ttl in TTL_LISTS[HOP1_LIST]]
+    nat = [{
+        "chain": "dstnat",
+        "action": "dst-nat",
+        "packet-mark": REDIRECT_MARK,
+        "protocol": "tcp",
+        "to-addresses": target_ip,
+        "to-ports": "80",
+        "comment": REDIRECT_COMMENT,
+    }]
+    return mangle, nat
+
+
+def allowed_entries(target_ip):
+    return [{"list": ALLOWED_LIST, "address": target_ip,
+             "comment": ALLOWED_COMMENT}]
 
 
 def filter_rules(lists):
@@ -325,9 +385,16 @@ def _reconcile(path, rules, drift, *, at_top=False):
     # Where the top of the chain is, for rules that have to sit above whatever
     # the operator already has. Read before anything is added so the anchor is
     # not one of our own rules.
+    #
+    # The first *static* row. The hotspot writes its own jumps at the top of
+    # filter and nat as dynamic rules, and RouterOS refuses place-before
+    # against a dynamic rule -- which _reconcile would log and skip, leaving
+    # the rule not installed at all. Under them is as high as anything can go.
     anchor = None
     if at_top:
         for row in path:
+            if str(row.get("dynamic", "false")).lower() in ("true", "yes"):
+                continue
             anchor = row.get(".id")
             break
 
@@ -369,16 +436,31 @@ def _reconcile(path, rules, drift, *, at_top=False):
     return added, updated, removed
 
 
+def _same(actual, wanted):
+    """
+    RouterOS's spelling of a value against ours. It reorders comma lists on
+    the way back -- hotspot=to-client,auth is read as auth,to-client -- so a
+    plain comparison rewrites the rule on every sweep for no change at all.
+    """
+    norm = lambda v: sorted(p.strip() for p in str(v or "").split(","))
+    return norm(actual) == norm(wanted)
+
+
+def _keys_drift(current, rule):
+    """
+    Every key we wrote, compared. For the rules that stop or steer traffic,
+    where a hand-edited copy matching something else must be put back rather
+    than trusted.
+    """
+    return {key: value for key, value in rule.items()
+            if key not in ("comment", "passthrough")
+            and not _same(current.get(key), value)}
+
+
 def _mangle_drift(current, rule):
     changes = {}
     if "address-list" not in rule:
-        # The prevention rule. Compared on what it does; a hand-edited copy
-        # that sets some other counter, or matches some other traffic, is put
-        # back rather than trusted.
-        for key in ("chain", "action", "new-ttl", "hotspot"):
-            if str(current.get(key, "")).replace(" ", "") != rule[key]:
-                changes[key] = rule[key]
-        return changes
+        return _keys_drift(current, rule)
 
     if current.get("address-list") != rule["address-list"]:
         changes["address-list"] = rule["address-list"]
@@ -399,7 +481,7 @@ def _filter_drift(current, rule):
 
 
 def ensure_rules(api, *, timeout="10m", connections=DEFAULT_CONNECTION_LIMIT,
-                 block_lists=(), prevent=False):
+                 block_lists=(), prevent=False, redirect_to=None):
     """
     Install the detection rules, or leave them alone if they are already right.
 
@@ -412,15 +494,36 @@ def ensure_rules(api, *, timeout="10m", connections=DEFAULT_CONNECTION_LIMIT,
     force.
 
     `prevent` is the same: False takes the TTL rule off, it does not leave it.
+    So is `redirect_to`, the address tethered HTTP is sent to; it only means
+    anything alongside prevention, because without it the device behind the
+    phone has a working connection and no reason to read a sales page.
     """
     wanted = mangle_rules(timeout, connections)
+    nat = []
+    allowed = []
     if prevent:
         wanted += prevent_rules()
+        if redirect_to:
+            mangle_redirect, nat = redirect_rules(redirect_to)
+            wanted += mangle_redirect
+            allowed = allowed_entries(redirect_to)
     added, updated, removed = _reconcile(
         api.path("ip", "firewall", "mangle"),
         wanted,
         _mangle_drift,
     )
+
+    # The exemption first in time as well as in meaning: an entry added after
+    # the redirect would leave a sweep's worth of redirected pages dying at
+    # the phone. Order within one run does not matter to the router, but a
+    # run that dies between the two should leave the harmless half.
+    for path, rules, top in (
+            (api.path("ip", "firewall", "address-list"), allowed, False),
+            # Top of dstnat, above the hotspot's own jump, so nothing the
+            # operator or the hotspot has written gets the packet first.
+            (api.path("ip", "firewall", "nat"), nat, True)):
+        a, u, r = _reconcile(path, rules, _keys_drift, at_top=top)
+        added, updated, removed = added + a, updated + u, removed + r
 
     # Top of the chain: the stock forward chain accepts established connections
     # first, and a reject underneath that would stop new connections while
@@ -491,11 +594,18 @@ def remove_block_rules(api):
             path.remove(row[".id"])
             removed += 1
 
-    mangle = api.path("ip", "firewall", "mangle")
-    for row in list(mangle):
-        if (row.get("comment") or "") == PREVENT_COMMENT:
-            mangle.remove(row[".id"])
-            removed += 1
+    # And the redirect, which steers traffic rather than stopping it but is no
+    # more explicable once the setting behind it is gone.
+    for table, owned in (
+            (("ip", "firewall", "mangle"),
+             lambda c: c == PREVENT_COMMENT or c.startswith(REDIRECT_COMMENT)),
+            (("ip", "firewall", "nat"), lambda c: c.startswith(RULE_COMMENT)),
+            (("ip", "firewall", "address-list"), lambda c: c == ALLOWED_COMMENT)):
+        path = api.path(*table)
+        for row in list(path):
+            if owned(row.get("comment") or ""):
+                path.remove(row[".id"])
+                removed += 1
     return removed
 
 
@@ -816,6 +926,41 @@ def prevents(tenant=None):
     return str(raw).strip().lower() in ("1", "true", "yes", "on")
 
 
+SHARED_PAGE_PATH = "/shared/"
+
+
+def redirect_target(tenant=None):
+    """
+    The IPv4 address tethered HTTP is sent to, or None to send it nowhere.
+
+    Off unless TETHERING_REDIRECT is on, and only alongside prevention. The
+    address is our own API host's, resolved here: dst-nat takes an address,
+    not a name, and re-resolving every sweep means a move of the server
+    reaches the routers on its own. Whatever answers port 80 there has to
+    redirect every host to SHARED_PAGE_PATH -- see the Caddy block in
+    ROUTER-RUNBOOK.md.
+    """
+    import socket
+    from urllib.parse import urlparse
+
+    from django.conf import settings
+
+    raw = get_setting("TETHERING_REDIRECT", "false", tenant=tenant)
+    if str(raw).strip().lower() not in ("1", "true", "yes", "on"):
+        return None
+    host = urlparse(getattr(settings, "PLATFORM_BASE_URL", "") or "").hostname
+    if not host:
+        logger.warning("[tether] TETHERING_REDIRECT is on but PLATFORM_BASE_URL "
+                       "names no host — not redirecting")
+        return None
+    try:
+        return socket.gethostbyname(host)
+    except OSError as e:
+        logger.warning("[tether] could not resolve %s for the redirect: %s",
+                       host, e)
+        return None
+
+
 def block_lists_for(tenant=None):
     """Which address lists the router should reject outright."""
     lists = [HOP1_LIST, HOP2_LIST]
@@ -978,7 +1123,8 @@ def sweep_router(router, *, now=None):
             set_block_marker(tenant_id, True)
         ensure_rules(api, timeout=timeout,
                      connections=connection_limit(tenant_id),
-                     block_lists=blocking, prevent=prevent)
+                     block_lists=blocking, prevent=prevent,
+                     redirect_to=redirect_target(tenant_id) if prevent else None)
         # Deliberately not cleared here when `blocking` is empty. This is one
         # router of possibly several, and clearing on the first one that came
         # clean would strand the reject rules on a sibling that was unreachable

@@ -52,6 +52,9 @@ ALL_SETTING_KEYS = [
     # a phone gets a reply. Prevention rather than detection; see
     # tethering.PREVENT_COMMENT.
     "TETHERING_PREVENT",
+    # Whether a device behind a phone's hotspot is sent to the /shared/ page
+    # rather than left with no internet. Only alongside TETHERING_PREVENT.
+    "TETHERING_REDIRECT",
     # Written by the sweep, not by an operator: whether a router of theirs may
     # still be carrying rules that stop traffic. It is what the off path reads
     # before deciding to dial anybody. See tethering.BLOCK_MARKER.

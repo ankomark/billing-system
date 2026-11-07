@@ -1,6 +1,7 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from . import auth_views
+from .views_shared import shared_connection
 
 from .views import (
     home,
@@ -146,6 +147,8 @@ urlpatterns = [
     # ─── Root ────────────────────────────────────────────────────────────────
     path("",        home,         name="home"),
     path("health/", health_check, name="health-check"),
+    # Where a device behind a phone's hotspot is sent. See views_shared.
+    path("shared/", shared_connection, name="shared-connection"),
 
     # ─── Auth ────────────────────────────────────────────────────────────────
     # Signing in, in one or two steps -- see billing/auth_views.py and mfa.py.

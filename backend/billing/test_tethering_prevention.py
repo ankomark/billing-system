@@ -20,7 +20,7 @@ from billing.tenancy import tenant_context
 from billing.tests import FakeMikrotik, TwoOperatorMixin
 
 
-class TetheringPreventionTests(TwoOperatorMixin, TestCase):
+class _Base(TwoOperatorMixin, TestCase):
 
     def setUp(self):
         cache.clear()
@@ -55,7 +55,7 @@ class TetheringPreventionTests(TwoOperatorMixin, TestCase):
         return [r for r in self.api.mangle()
                 if r.get("comment") == tethering.PREVENT_COMMENT]
 
-    # ---- what goes on the router -------------------------------------------
+class TetheringPreventionTests(_Base):
 
     def test_prevention_sets_ttl_1_towards_logged_in_clients(self):
         self.set(TETHERING_POLICY="kick", TETHERING_PREVENT="true")
@@ -142,6 +142,134 @@ class TetheringPreventionTests(TwoOperatorMixin, TestCase):
                    return_value=self.api):
             detect_tethering_for_tenant.run(self.t1.id)
         self.assertIn("*900", [r[".id"] for r in self.api.mangle()])
+
+
+class TetheringRedirectTests(_Base):
+    """
+    Sending the device behind the phone to a page that sells it a bundle,
+    rather than leaving it with a hotspot that has no internet.
+    """
+
+    SERVER = "203.0.113.10"
+
+    def sweep(self):
+        with patch("socket.gethostbyname", return_value=self.SERVER):
+            return super().sweep()
+
+    def nat(self):
+        from billing.services import tethering
+        return [r for r in self.api.rows("ip", "firewall", "nat")
+                if (r.get("comment") or "").startswith(tethering.RULE_COMMENT)]
+
+    def redirect_marks(self):
+        from billing.services import tethering
+        return [r for r in self.api.mangle()
+                if (r.get("comment") or "").startswith(tethering.REDIRECT_COMMENT)]
+
+    def allowed(self):
+        return [r for r in self.api.rows("ip", "firewall", "address-list")
+                if r.get("list") == "tether-allowed"]
+
+    def on(self):
+        self.set(TETHERING_POLICY="kick", TETHERING_PREVENT="true",
+                 TETHERING_REDIRECT="true")
+
+    def test_tethered_http_is_sent_to_our_server(self):
+        self.on()
+        self.sweep()
+        [rule] = self.nat()
+        self.assertEqual(rule["action"], "dst-nat")
+        self.assertEqual(rule["to-addresses"], self.SERVER)
+        self.assertEqual(rule["to-ports"], "80")
+        self.assertEqual(rule["packet-mark"], "tether-redirect")
+
+    def test_only_traffic_one_hop_short_is_marked(self):
+        """The phone's own browsing arrives at 64 and must never be redirected."""
+        self.on()
+        self.sweep()
+        ttls = sorted(r["ttl"] for r in self.redirect_marks())
+        self.assertEqual(ttls, ["equal:127", "equal:254", "equal:63"])
+        for r in self.redirect_marks():
+            self.assertEqual(r["dst-port"], "80")
+            self.assertEqual(r["hotspot"], "auth")
+
+    def test_a_packet_mark_not_a_connection_mark(self):
+        """
+        Connection marks steer skylink3's Starlink overflow. Overwriting one
+        would send somebody's connection out the wrong uplink.
+        """
+        self.on()
+        self.sweep()
+        for r in self.redirect_marks():
+            self.assertEqual(r["action"], "mark-packet")
+            self.assertNotIn("new-connection-mark", r)
+
+    def test_our_server_is_exempt_from_ttl_1(self):
+        """Otherwise the page itself would die at the phone."""
+        self.on()
+        self.sweep()
+        self.assertEqual([e["address"] for e in self.allowed()], [self.SERVER])
+        self.assertEqual(self.prevent_rules()[0]["src-address-list"],
+                         "!tether-allowed")
+
+    def test_no_redirect_without_prevention(self):
+        """Without prevention the friend has internet and no reason to buy."""
+        self.set(TETHERING_POLICY="kick", TETHERING_REDIRECT="true")
+        self.sweep()
+        self.assertEqual(self.nat(), [])
+        self.assertEqual(self.redirect_marks(), [])
+
+    def test_off_by_default(self):
+        self.set(TETHERING_POLICY="kick", TETHERING_PREVENT="true")
+        self.sweep()
+        self.assertEqual(self.nat(), [])
+
+    def test_goes_under_the_hotspots_dynamic_rules(self):
+        """
+        RouterOS refuses place-before against a dynamic rule, and a refused
+        add is a redirect that never got installed.
+        """
+        self.api.rows("ip", "firewall", "nat").extend([
+            {".id": "*1A", "chain": "dstnat", "action": "jump", "dynamic": "true"},
+            {".id": "*1B", "chain": "srcnat", "action": "masquerade"},
+        ])
+        self.on()
+        self.sweep()
+        self.assertEqual(self.nat()[0].get("place-before"), "*1B")
+
+    def test_switching_off_takes_it_all_off(self):
+        from billing.tasks.tethering_tasks import detect_tethering_for_tenant
+
+        self.on()
+        self.sweep()
+        self.set(TETHERING_POLICY="off")
+        with patch("billing.router_service.safe_connect_router",
+                   return_value=self.api):
+            detect_tethering_for_tenant.run(self.t1.id)
+        self.assertEqual(self.nat(), [])
+        self.assertEqual(self.redirect_marks(), [])
+        self.assertEqual(self.allowed(), [])
+
+    def test_routeros_reordering_a_list_is_not_a_change(self):
+        """
+        It reads hotspot=to-client,auth back as auth,to-client. Treated as a
+        change, every sweep rewrote the rule.
+        """
+        self.on()
+        self.sweep()
+        self.prevent_rules()[0]["hotspot"] = "auth,to-client"
+        with patch.object(FakeMikrotik.Table, "update") as update:
+            self.sweep()
+        update.assert_not_called()
+
+
+class SharedPageTests(TestCase):
+
+    def test_page_is_public_and_uncached(self):
+        response = self.client.get("/shared/", secure=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Disconnect from this hotspot", response.content)
+        self.assertEqual(response["Cache-Control"], "no-store")
 
 
 class IPv6OpenTests(TestCase):

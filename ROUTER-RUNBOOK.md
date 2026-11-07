@@ -484,6 +484,48 @@ disabled — the two things an injector reaches for first on a MikroTik.
 
 ---
 
+## 12. Phone hotspot sharing: stopped, and turned into a sale
+
+A paying phone shares its connection; whatever joins its hotspot browses free.
+Measured on skylink3 the evening this was switched on (2026-11-07): about one
+new connection in ten arrived one hop short — from behind somebody's phone.
+
+Three operator settings, all in `services/tethering.py`:
+
+| Setting | Does |
+|---|---|
+| `TETHERING_PREVENT=true` | Router sets TTL=1 on traffic *to* logged-in clients. The phone gets it; anything behind its hotspot does not. |
+| `TETHERING_REDIRECT=true` | Plain-HTTP from behind a phone (TTL 63/127/254) is NATted to our server, which sends it to `/shared/` — "get your own bundle". Phones show it as *Sign in to network*. Needs PREVENT. |
+| `TETHERING_POLICY=kick` | Detection, for the rooted phone that raises TTL back: ends the session and texts the subscriber. |
+
+All three need `TETHERING_POLICY` to be something other than `off`; the sweep
+that installs them is the policy's sweep. Switching it to `off` takes every
+rule above back off the router.
+
+**The redirect needs the server to answer port 80 for any host.** Caddy
+answers only the hosts it is configured for and 308s the rest to their own
+https — which, for `connectivitycheck.gstatic.com`, is a certificate error.
+Append to `/etc/caddy/Caddyfile` (needs sudo), then validate and reload:
+
+```
+# Tethered devices land here: any host, plain HTTP, sent to the sales page.
+# Named sites above keep their own http->https redirects; this catches the rest.
+http:// {
+	redir https://api.smartbillsolution.com/shared/ 302
+}
+```
+
+```bash
+sudo caddy validate --config /etc/caddy/Caddyfile
+sudo systemctl reload caddy
+curl -sI -H "Host: connectivitycheck.gstatic.com" http://127.0.0.1/generate_204   # want 302 -> /shared/
+curl -sI http://api.smartbillsolution.com/                                       # still 308 -> https
+```
+
+What it cannot do: sell to the friend where they stand. A purchase binds to
+the device the router sees, which is the phone they are tethered to. The page
+tells them to leave the hotspot and join the WiFi directly.
+
 ## Standing configuration
 
 Values that should be true on every router. All are asserted hourly; this is
