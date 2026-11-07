@@ -360,7 +360,6 @@ def collect_hotspot_usage_snapshots(self):
     tenant_ids = list(
         Customer.objects.all_tenants()
         .filter(status="active", connection_type="hotspot")
-        .exclude(hotspot_username="")
         .values_list("tenant_id", flat=True)
         .distinct()
     )
@@ -392,7 +391,12 @@ def collect_hotspot_usage_for_tenant(self, tenant_id):
         Customer.objects.all_tenants()
         .select_related("router", "tenant")
         .filter(tenant_id=tenant_id, status="active", connection_type="hotspot")
-        .exclude(hotspot_username="")
+        # Not narrowed to customers with a hotspot_username. Sessions are
+        # matched by device MAC from CustomerDevice below; the field is only a
+        # legacy fallback, and an eviction blanks it when it named the device
+        # released. Excluding blanks made those subscribers invisible: on
+        # 2026-11-07 customers 2835 and 3315 had live, paid sessions and no
+        # usage recorded for hours, the portal and the cap reading zero.
     )
 
     # The subscription each cap is measured against, fetched alongside the

@@ -1563,7 +1563,122 @@ def _voucher_first_used_here(subscription, mac_address):
     ).exists()
 
 
-def _evict_idle_device(customer, devices, *, reclaiming=False, deliberate=False):
+# How long after a purchase another device may still take the place of the
+# phone it was bought on. Long enough to walk the code to the television it was
+# bought for; see _protected_buyer_device.
+SETUP_WINDOW_SECONDS = 2 * 60 * 60
+
+# How long the phone a bundle was bought on has to have been gone before
+# another device may take its place: a phone that was lost, replaced, or has
+# rotated to a new address for good.
+BUYER_AWAY_SECONDS = 24 * 60 * 60
+
+
+def _protected_buyer_device(customer, subscription, devices, now=None):
+    """
+    The device among `devices` that no other device may displace, or None.
+
+    The phone a bundle was bought on, while it is still in use. Before this,
+    a place was free whenever its device had no live session for ten minutes
+    -- which a phone in a pocket reaches within the hour -- so anybody holding
+    the buyer's code, or simply their M-Pesa confirmation SMS (which redeems
+    like one), took the bundle over every time the buyer's phone went quiet.
+    Voucher R0Q8ZZ, customer 2326, 2026-11-03 to 11-07: five other people's
+    handsets typed in "UJP3M0L1Z1 Confirmed. Ksh300.00 paid to...", pushed the
+    buyer off 24 times in four days, and at least 6.5 GB of an 80 GB bundle
+    went on their phones.
+
+    Not protected:
+    * in the first SETUP_WINDOW_SECONDS after purchase -- somebody buying on
+      their phone for the television in the next room;
+    * once the buyer's phone has not been seen online for BUYER_AWAY_SECONDS
+      -- a lost or replaced phone must not strand three weeks of paid data.
+    "Seen" is the usage collector's last sighting of that address with a live
+    session, which is the only record of being online that every router feeds.
+    """
+    from billing.models import HotspotUsageState
+
+    if subscription is None:
+        return None
+    now = now or timezone.now()
+    started = getattr(subscription, "start_date", None)
+    if started and (now - started).total_seconds() < SETUP_WINDOW_SECONDS:
+        return None
+
+    buyer = next((d for d in devices
+                  if _voucher_first_used_here(subscription, d.mac_address)), None)
+    if buyer is None:
+        return None
+
+    last = (
+        HotspotUsageState.objects.all_tenants()
+        .filter(customer_id=customer.pk,
+                mac_address__in=mac_variants(normalize_mac(buyer.mac_address)))
+        .order_by("-last_seen_at")
+        .values_list("last_seen_at", flat=True)
+        .first()
+    )
+    if last is None or (now - last).total_seconds() > BUYER_AWAY_SECONDS:
+        return None
+    return buyer
+
+
+# At most one "a new device joined" text per bundle in this long. Somebody
+# passing their code around should hear about it; somebody whose own phone
+# rotates its address should not be texted every time it does.
+NEW_DEVICE_SMS_EVERY_SECONDS = 6 * 60 * 60
+
+
+def _tell_buyer_new_device(customer, subscription, mac_address, now=None):
+    """
+    Text the buyer that a device other than the one they bought on has just
+    joined their bundle.
+
+    The other half of _protected_buyer_device. Protection stops a stranger
+    taking the bundle while the buyer is using it; this tells the buyer when
+    somebody gets on anyway -- inside the setup window, or once their phone
+    has been away -- so that "who used my data?" is answered the day it
+    happens, not three weeks later at the end of the bundle.
+
+    Never fatal: the device is already bound by the time this runs, and a
+    message that cannot be sent must not undo that.
+    """
+    from django.core.cache import cache
+
+    try:
+        if subscription is None or not customer.phone:
+            return
+        now = now or timezone.now()
+        started = getattr(subscription, "start_date", None)
+        if started and (now - started).total_seconds() < SETUP_WINDOW_SECONDS:
+            return  # the buyer setting up their own devices
+        if _voucher_first_used_here(subscription, mac_address):
+            return  # their own phone
+        key = f"new-device-sms:{subscription.pk}"
+        if not cache.add(key, 1, NEW_DEVICE_SMS_EVERY_SECONDS):
+            return
+
+        from billing.tasks.notification_tasks import notify_customer_task
+
+        # After the commit. Redemption runs inside a transaction holding the
+        # device rows; a text queued before it commits is sent even when the
+        # binding it reports is rolled back.
+        phone, tenant_id = customer.phone, customer.tenant_id
+        transaction.on_commit(lambda: notify_customer_task.delay(
+            phone,
+            "A new device has just connected to your WiFi bundle. If this "
+            "wasn't you, don't share your code or M-Pesa message: anyone who "
+            "has it can use your data.",
+            tenant_id=tenant_id,
+        ))
+    except Exception:
+        logger.exception(
+            "[hotspot] could not tell customer %s about new device %s",
+            customer.pk, mac_address)
+
+
+def _evict_idle_device(customer, devices, *, reclaiming=False, deliberate=False,
+                       subscription=None):
     """
     Free the place held by a device that is not actually connected.
 
@@ -1611,6 +1726,16 @@ def _evict_idle_device(customer, devices, *, reclaiming=False, deliberate=False)
 
     if not devices:
         return None
+
+    # The buyer's own phone, while they are still using it, is not available
+    # to anybody else -- not as an idle device, and not as an auto-bound one.
+    # `reclaiming` is that phone asking, so it is never protected from itself.
+    if not reclaiming:
+        protected = _protected_buyer_device(customer, subscription, devices)
+        if protected is not None:
+            devices = [d for d in devices if d.pk != protected.pk]
+            if not devices:
+                return None
 
     # A place we gave away ourselves, to a device that never asked for it. The
     # router has nothing to say about this — the flag is our own record of how
@@ -2262,11 +2387,33 @@ class HotspotVoucherValidateView(APIView):
                     # has every device online at once, nothing is evictable,
                     # and the refusal below still happens.
                     evicted = _evict_idle_device(
-                        customer, devices, deliberate=not auto_bound)
+                        customer, devices, deliberate=not auto_bound,
+                        subscription=subscription)
                     if evicted is None:
                         _record_attempt(
                             tenant, code, mac_address,
                             ConnectionAttempt.DEVICE_LIMIT)
+                        if _protected_buyer_device(
+                                customer, subscription, devices) is not None:
+                            # Said differently, because the person reading it
+                            # may be the buyer: a phone whose WiFi privacy
+                            # setting gave it a new address looks exactly like
+                            # a stranger here, and needs to be told the fix.
+                            return Response(
+                                {
+                                    "detail": (
+                                        "This bundle is in use on the phone it "
+                                        "was bought on. If this is that phone, "
+                                        "turn off 'Private WiFi address' for "
+                                        "this network and try again, or "
+                                        "contact your provider."
+                                    ),
+                                    "devices_allowed": allowed,
+                                    "devices_used": len(devices),
+                                    "held_by_buyer": True,
+                                },
+                                status=status.HTTP_409_CONFLICT,
+                            )
                         return Response(
                             {
                                 "detail": (
@@ -2293,6 +2440,7 @@ class HotspotVoucherValidateView(APIView):
                             mac_address=mac_address,
                             auto_bound=auto_bound,
                         )
+                    _tell_buyer_new_device(customer, subscription, mac_address)
                 except IntegrityError:
                     # (tenant, mac_address) is unique, and everything that
                     # could hold it has just been released above. Reaching

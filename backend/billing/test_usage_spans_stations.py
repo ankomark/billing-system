@@ -263,6 +263,29 @@ class UsageSpansStations(TestCase):
         self.assertEqual(self._recorded(), 1 * GB)
 
 
+    # -------------------------------------------------------- blank username
+
+    def test_a_customer_with_no_username_is_measured_by_their_device(self):
+        """
+        An eviction blanks hotspot_username when it named the device released,
+        and the collector skipped every customer with a blank one -- though it
+        finds sessions by the device registry, not by that field. Customers
+        2835 and 3315 (2026-11-07) were online on paid bundles with nothing
+        recorded.
+        """
+        with tenant_context(self.tenant):
+            Customer.objects.filter(pk=self.customer.pk).update(
+                hotspot_username="")
+            CustomerDevice.objects.create(
+                tenant=self.tenant, customer=self.customer,
+                subscription=self.sub, mac_address="A8:64:F1:87:D4:7B")
+
+        self._collect(at_a=(0, 0), mac="A8:64:F1:87:D4:7B")
+        self._collect(at_a=(0, 2 * GB), mac="A8:64:F1:87:D4:7B")
+
+        self.assertEqual(self._recorded(), 2 * GB)
+
+
 class SessionsFromEveryStation(TestCase):
     """
     tenant_sessions_everywhere keeps them all; tenant_sessions keeps the first.
@@ -311,3 +334,4 @@ class SessionsFromEveryStation(TestCase):
                    return_value=[self.a, self.b]):
             self.assertEqual(
                 tenant_sessions_everywhere(self.tenant.id, lambda r: {}), {})
+
