@@ -23,6 +23,10 @@ celery>=5.3
 django-celery-results>=2.5
 django-celery-beat>=2.6
 redis>=5.0
+# kombu 5.7's redis transport imports packaging without declaring it. A rebuild
+# on 2026-11-07 picked up 5.7.0 and worker, beat and flower crash-looped on
+# start with "No module named 'packaging'" -- web stayed up, so /health/ said ok.
+packaging>=23.0
 flower>=2.0             # the `flower` service in docker-compose.yml needs this
 
 # ── Integrations ─────────────────────────────────────────────────────────────
