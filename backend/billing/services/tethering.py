@@ -191,6 +191,45 @@ def mangle_rules(timeout="10m", connection_limit=DEFAULT_CONNECTION_LIMIT):
     return rules
 
 
+# Prevention, as opposed to everything else in this module, which detects.
+#
+# Every packet the router forwards to a logged-in hotspot client leaves with
+# its hop counter set to 1. The phone it is addressed to receives it normally
+# -- arriving is not a hop. A laptop behind that phone's hotspot does not: the
+# phone has to forward the packet, forwarding subtracts one, and a packet at
+# zero is dropped. The phone browses, whatever is tethered to it gets nothing
+# back, and nobody had to be judged for it.
+#
+# It needs no evidence, so it has none of the costs the rest of this module
+# spends its length on: no threshold, no false accusation, no text to somebody
+# who was running a VM. A subscriber behind their own travel router loses the
+# same way a tethered laptop does, which is the point -- that is sharing too.
+#
+# It is not airtight. A rooted handset can raise the counter again before
+# forwarding. That subscriber still sends upstream at one below a starting
+# value, so the detection rules above still see them, and the policy decides
+# what happens next. The two are meant to run together.
+#
+# chain=forward, so only traffic crossing the router is touched; the login
+# page and DNS answers the router gives itself are output traffic and keep
+# their ordinary counter. hotspot=to-client,auth limits it to packets headed
+# for a logged-in hotspot client -- the same matcher RouterOS's own hotspot
+# chain uses -- so nothing on a non-hotspot port, and no bypassed binding (an
+# operator's own access point, a camera), is ever affected.
+PREVENT_COMMENT = f"{RULE_COMMENT} prevent ttl=1"
+
+
+def prevent_rules():
+    return [{
+        "chain": "forward",
+        "action": "change-ttl",
+        "new-ttl": "set:1",
+        "passthrough": "yes",
+        "hotspot": "to-client,auth",
+        "comment": PREVENT_COMMENT,
+    }]
+
+
 def filter_rules(lists):
     """
     The rules that actually stop traffic, for the `block` policy.
@@ -332,6 +371,15 @@ def _reconcile(path, rules, drift, *, at_top=False):
 
 def _mangle_drift(current, rule):
     changes = {}
+    if "address-list" not in rule:
+        # The prevention rule. Compared on what it does; a hand-edited copy
+        # that sets some other counter, or matches some other traffic, is put
+        # back rather than trusted.
+        for key in ("chain", "action", "new-ttl", "hotspot"):
+            if str(current.get(key, "")).replace(" ", "") != rule[key]:
+                changes[key] = rule[key]
+        return changes
+
     if current.get("address-list") != rule["address-list"]:
         changes["address-list"] = rule["address-list"]
 
@@ -351,7 +399,7 @@ def _filter_drift(current, rule):
 
 
 def ensure_rules(api, *, timeout="10m", connections=DEFAULT_CONNECTION_LIMIT,
-                 block_lists=()):
+                 block_lists=(), prevent=False):
     """
     Install the detection rules, or leave them alone if they are already right.
 
@@ -362,10 +410,15 @@ def ensure_rules(api, *, timeout="10m", connections=DEFAULT_CONNECTION_LIMIT,
     to something gentler. A rule that only disappears when the feature is
     switched off entirely would leave people cut off by a policy no longer in
     force.
+
+    `prevent` is the same: False takes the TTL rule off, it does not leave it.
     """
+    wanted = mangle_rules(timeout, connections)
+    if prevent:
+        wanted += prevent_rules()
     added, updated, removed = _reconcile(
         api.path("ip", "firewall", "mangle"),
-        mangle_rules(timeout, connections),
+        wanted,
         _mangle_drift,
     )
 
@@ -425,12 +478,23 @@ def remove_block_rules(api):
 
     The narrow half of remove_rules, for the operator who has stepped down from
     `block` rather than switched the feature off. Returns how many came off.
+
+    The TTL rule counts as one of these. It is the other thing here that stops
+    traffic -- for whatever is tethered, not for the subscriber -- and left on
+    a router after prevention was switched off it would go on doing so with no
+    setting anywhere that says why.
     """
-    path = api.path("ip", "firewall", "filter")
     removed = 0
+    path = api.path("ip", "firewall", "filter")
     for row in list(path):
         if (row.get("comment") or "").startswith(RULE_COMMENT):
             path.remove(row[".id"])
+            removed += 1
+
+    mangle = api.path("ip", "firewall", "mangle")
+    for row in list(mangle):
+        if (row.get("comment") or "") == PREVENT_COMMENT:
+            mangle.remove(row[".id"])
             removed += 1
     return removed
 
@@ -587,12 +651,16 @@ def ipv6_is_open(api):
         for row in api.path("ipv6", "address"):
             if str(row.get("disabled", "false")).lower() in ("true", "yes"):
                 continue
-            address = row.get("address", "") or ""
+            address = (row.get("address", "") or "").lower()
             # Link-local is unroutable and present on every interface whether
-            # IPv6 is in use or not. A global address is the one that means
-            # traffic can leave.
-            if address and not address.lower().startswith("fe80"):
-                return True
+            # IPv6 is in use or not, and so is loopback -- every RouterOS 7 box
+            # carries ::1 on lo, which made this answer yes on routers with no
+            # IPv6 anywhere (skylink3, 2026-11-07). A global address is the one
+            # that means traffic can leave.
+            if (not address or address.startswith("fe80")
+                    or address.split("/")[0] == "::1"):
+                continue
+            return True
         return False
     except Exception:
         # RouterOS without the ipv6 package has no such path at all, which is
@@ -731,6 +799,20 @@ def block_busy(tenant=None):
     anyway can switch it on. It should be a decision, not a default.
     """
     raw = get_setting("TETHERING_BLOCK_BUSY", "false", tenant=tenant)
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
+def prevents(tenant=None):
+    """
+    Whether this operator's routers set TTL=1 towards their clients, so
+    nothing tethered behind a phone can use the connection. Off by default:
+    it changes every subscriber's traffic, so it is a decision, not an upgrade.
+
+    Only consulted while TETHERING_POLICY is something other than off -- the
+    sweep that installs it is the policy's sweep. `log` is enough for an
+    operator who wants prevention without anything happening to anybody.
+    """
+    raw = get_setting("TETHERING_PREVENT", "false", tenant=tenant)
     return str(raw).strip().lower() in ("1", "true", "yes", "on")
 
 
@@ -886,16 +968,17 @@ def sweep_router(router, *, now=None):
     # other policy this is empty, which actively takes the reject rules off a
     # router that was on `block` yesterday.
     blocking = block_lists_for(tenant_id) if action == BLOCK else ()
+    prevent = prevents(tenant_id)
 
     try:
         # Marked before the attempt, not after. A run that adds the rule and
         # then dies leaves the router blocking and the marker unset, and
         # nothing would ever come back for it.
-        if blocking:
+        if blocking or prevent:
             set_block_marker(tenant_id, True)
         ensure_rules(api, timeout=timeout,
                      connections=connection_limit(tenant_id),
-                     block_lists=blocking)
+                     block_lists=blocking, prevent=prevent)
         # Deliberately not cleared here when `blocking` is empty. This is one
         # router of possibly several, and clearing on the first one that came
         # clean would strand the reject rules on a sibling that was unreachable

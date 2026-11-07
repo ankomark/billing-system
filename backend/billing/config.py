@@ -48,6 +48,10 @@ ALL_SETTING_KEYS = [
     # it is the signal a torrent client sets off, and under `block` there is no
     # threshold between the signal and somebody losing their connection.
     "TETHERING_BLOCK_BUSY",
+    # Whether the router sets TTL=1 towards clients, so nothing tethered behind
+    # a phone gets a reply. Prevention rather than detection; see
+    # tethering.PREVENT_COMMENT.
+    "TETHERING_PREVENT",
     # Written by the sweep, not by an operator: whether a router of theirs may
     # still be carrying rules that stop traffic. It is what the off path reads
     # before deciding to dial anybody. See tethering.BLOCK_MARKER.
