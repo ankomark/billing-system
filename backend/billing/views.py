@@ -1,5 +1,6 @@
 import secrets
 import string
+from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from django.conf import settings
 from django.http import HttpResponse
@@ -805,6 +806,42 @@ class MpesaSTKPushView(APIView):
         )
 
 
+# How long after an invoice is raised a payment may still be matched to it by
+# payer and amount alone. A prompt lives for about a minute and the callback
+# follows within seconds; this is that, with room for Safaricom running late.
+LOST_PUSH_WINDOW = timedelta(minutes=10)
+
+
+def _invoice_for_lost_push(tenant, phone, amount):
+    """
+    The pending invoice a paid callback belongs to when its id was never
+    recorded — see the call site. None unless one fits on every count.
+    """
+    try:
+        total = Decimal(str(amount))
+    except (InvalidOperation, ValueError):
+        return None
+
+    return (
+        Invoice.objects.all_tenants()
+        .select_related("customer", "subscription", "tenant")
+        .filter(
+            tenant=tenant,
+            payment_status="pending",
+            customer__phone=str(phone),
+            total_amount=total,
+            created_at__gte=timezone.now() - LOST_PUSH_WINDOW,
+        )
+        .filter(
+            Q(mpesa_checkout_request_id__isnull=True)
+            | Q(mpesa_checkout_request_id="")
+        )
+        # The newest attempt is the prompt most likely still on the phone.
+        .order_by("-created_at")
+        .first()
+    )
+
+
 class MpesaSTKCallbackView(APIView):
     """
     Safaricom posts results here. There is no JWT, so the operator is resolved
@@ -989,6 +1026,43 @@ class MpesaSTKCallbackView(APIView):
                 {"detail": "Cannot attribute callback"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        # ── A paid push whose CheckoutRequestID we never wrote down ─────────
+        #
+        # The id is recorded from Safaricom's *reply* to the push. When that
+        # reply is lost — a read timeout, a 5xx, a dropped connection — the
+        # push has often gone through anyway: the customer gets the prompt,
+        # pays, and the callback arrives naming an id this platform has never
+        # seen. A till callback carries no account reference either, so there
+        # was nothing left to resolve on and the payment ended as "Invoice not
+        # found": money taken, no voucher. Twenty-four customers in thirty-five
+        # minutes on 13 November 2026, while Daraja was answering slowly.
+        #
+        # What such a payment does still carry is who paid and how much. So it
+        # is matched to the invoice that fits a lost reply exactly: this
+        # operator's, still pending, raised for that phone number, for that
+        # amount, in the last few minutes, and with no id recorded against it.
+        # An invoice that has an id is waiting for a different callback and is
+        # never taken by this one.
+        #
+        # Only reachable from an address on the Safaricom list. A callback from
+        # anywhere else has already had to correlate on an id or reference to
+        # get this far, and so already has its invoice.
+        if invoice is None and result_code == 0 and phone and amount:
+            invoice = _invoice_for_lost_push(resolved, phone, amount)
+            if invoice is not None:
+                reference = invoice.invoice_number
+                if checkout_id:
+                    Invoice.objects.all_tenants().filter(pk=invoice.pk).update(
+                        mpesa_checkout_request_id=checkout_id
+                    )
+                logger.warning(
+                    "[mpesa] Receipt %s (CheckoutRequestID %s) matched no "
+                    "recorded push; credited to invoice %s by payer %s and "
+                    "amount %s. The reply to that push was lost.",
+                    mpesa_receipt, checkout_id, invoice.invoice_number,
+                    phone, amount,
+                )
 
         # Idempotency — use get_or_create to prevent race conditions where two
         # concurrent Safaricom retry callbacks both pass an .exists() check before

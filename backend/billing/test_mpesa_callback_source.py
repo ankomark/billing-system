@@ -238,3 +238,140 @@ class BuyGoodsCallbackTests(TestCase):
             self.url, self._buy_goods_payload(checkout="ws_CO_NOT_OURS"),
             content_type="application/json", REMOTE_ADDR=SAFARICOM)
         self.assertEqual(resp.status_code, 400)
+
+
+@override_settings(MPESA_TRUSTED_IPS=[SAFARICOM], MPESA_ALLOW_LOCAL_CALLBACK=False)
+class LostPushReplyTests(TestCase):
+    """
+    A customer who pays a prompt whose CheckoutRequestID we never recorded.
+
+    The id is taken from Safaricom's reply to the push. When that reply times
+    out the push has often gone through regardless: the prompt appears, the
+    customer pays, and the callback names an id nobody here wrote down. A till
+    sends no account reference, so the payment was booked as "Invoice not
+    found" — charged, no voucher. Twenty-four customers in thirty-five minutes
+    on 13 November 2026.
+    """
+
+    PHONE = "254114435900"
+
+    def setUp(self):
+        self.tenant = Tenant.objects.get(slug="skylink")
+        with tenant_context(self.tenant):
+            router = RouterDevice.objects.create(
+                tenant=self.tenant, name="r3", ip_address="10.0.0.3",
+                username="a", password="p")
+            self.package = Package.objects.create(
+                tenant=self.tenant, name="3hrs", download_speed=5,
+                upload_speed=2, price=Decimal("10.00"), duration_value=3,
+                duration_unit="hours", data_cap_mb=0, is_hotspot=True)
+            self.customer = Customer.objects.create(
+                tenant=self.tenant, full_name="Hotspot 5900", phone=self.PHONE,
+                connection_type="hotspot", router=router)
+            self.invoice = self._pending_invoice()
+        self.url = f"/api/mpesa/callback/{self.tenant.public_token}/"
+
+    def _pending_invoice(self, checkout=None):
+        subscription = Subscription.objects.create(
+            tenant=self.tenant, customer=self.customer, package=self.package,
+            status="active", expiry_date=timezone.now() + timedelta(hours=3))
+        invoice = Invoice.objects.get(subscription=subscription)
+        invoice.payment_status = "pending"
+        invoice.mpesa_checkout_request_id = checkout
+        invoice.save(update_fields=[
+            "payment_status", "mpesa_checkout_request_id"])
+        return invoice
+
+    def _paid(self, receipt="UKDE724IEM", checkout="ws_CO_NEVER_RECORDED",
+              amount=10, phone=None):
+        payload = {"Body": {"stkCallback": {
+            "MerchantRequestID": "m-lost",
+            "CheckoutRequestID": checkout,
+            "ResultCode": 0,
+            "ResultDesc": "The service request is processed successfully.",
+            "CallbackMetadata": {"Item": [
+                {"Name": "Amount", "Value": amount},
+                {"Name": "MpesaReceiptNumber", "Value": receipt},
+                {"Name": "TransactionDate", "Value": 20261113214200},
+                {"Name": "PhoneNumber", "Value": int(phone or self.PHONE)},
+            ]},
+        }}}
+        return self.client.post(
+            self.url, payload, content_type="application/json",
+            REMOTE_ADDR=SAFARICOM)
+
+    def test_the_payment_is_credited_to_the_payers_pending_invoice(self):
+        resp = self._paid()
+
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.invoice.refresh_from_db()
+        self.assertEqual(
+            self.invoice.payment_status, "paid",
+            "the customer paid and was left without a voucher")
+        self.assertEqual(
+            self.invoice.mpesa_checkout_request_id, "ws_CO_NEVER_RECORDED")
+
+    def test_the_newest_attempt_is_the_one_credited(self):
+        """Two tries, one payment: the later prompt is the one on the phone."""
+        newer = self._pending_invoice()
+        Invoice.objects.all_tenants().filter(pk=self.invoice.pk).update(
+            created_at=timezone.now() - timedelta(minutes=2))
+
+        self._paid()
+
+        newer.refresh_from_db()
+        self.invoice.refresh_from_db()
+        self.assertEqual(newer.payment_status, "paid")
+        self.assertEqual(self.invoice.payment_status, "pending")
+
+    def test_an_invoice_awaiting_its_own_callback_is_not_taken(self):
+        """An invoice with an id recorded belongs to a different push."""
+        self.invoice.mpesa_checkout_request_id = "ws_CO_SOMETHING_ELSE"
+        self.invoice.save(update_fields=["mpesa_checkout_request_id"])
+
+        resp = self._paid()
+
+        self.assertEqual(resp.status_code, 400)
+        self.invoice.refresh_from_db()
+        self.assertEqual(self.invoice.payment_status, "pending")
+
+    def test_a_different_amount_matches_nothing(self):
+        resp = self._paid(amount=40)
+        self.assertEqual(resp.status_code, 400)
+        self.invoice.refresh_from_db()
+        self.assertEqual(self.invoice.payment_status, "pending")
+
+    def test_a_different_payer_matches_nothing(self):
+        resp = self._paid(phone="254700999888")
+        self.assertEqual(resp.status_code, 400)
+        self.invoice.refresh_from_db()
+        self.assertEqual(self.invoice.payment_status, "pending")
+
+    def test_an_old_invoice_is_not_matched(self):
+        Invoice.objects.all_tenants().filter(pk=self.invoice.pk).update(
+            created_at=timezone.now() - timedelta(hours=1))
+
+        resp = self._paid()
+
+        self.assertEqual(resp.status_code, 400)
+        self.invoice.refresh_from_db()
+        self.assertEqual(self.invoice.payment_status, "pending")
+
+    def test_a_stranger_cannot_claim_a_pending_invoice_this_way(self):
+        """Payer and amount are guessable; only Safaricom may use them."""
+        payload = {"Body": {"stkCallback": {
+            "MerchantRequestID": "m-x", "CheckoutRequestID": "ws_CO_FORGED",
+            "ResultCode": 0, "ResultDesc": "ok",
+            "CallbackMetadata": {"Item": [
+                {"Name": "Amount", "Value": 10},
+                {"Name": "MpesaReceiptNumber", "Value": "FORGED0001"},
+                {"Name": "PhoneNumber", "Value": int(self.PHONE)},
+            ]},
+        }}}
+        resp = self.client.post(
+            self.url, payload, content_type="application/json",
+            REMOTE_ADDR=STRANGER)
+
+        self.assertEqual(resp.status_code, 403)
+        self.invoice.refresh_from_db()
+        self.assertEqual(self.invoice.payment_status, "pending")
